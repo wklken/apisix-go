@@ -197,9 +197,11 @@ func TestServerlessLogPhaseRunsDetachedAndRejectsResponseMutation(t *testing.T) 
 			ngx.req.set_header("X-Detached", "yes")
 		end`},
 	})
-	snapshot := base.BuildLogSnapshot(
+	snapshot := base.BuildLogSnapshotFromOwnedInputs(
 		httptest.NewRequest(http.MethodGet, "http://example.com/log", nil),
 		base.ResponseCaptureSnapshot{Header: http.Header{"Content-Type": {"text/plain"}}, Body: []byte("body")},
+		nil,
+		false,
 		apisixctx.ResponseOutcome{Status: http.StatusOK},
 		apisixctx.ResponseSourceUpstream,
 		time.Time{}, time.Time{},
@@ -226,9 +228,11 @@ func TestServerlessLogPhaseReadsDetachedResponseSnapshot(t *testing.T) {
 			end
 		end`},
 	})
-	snapshot := base.BuildLogSnapshot(
+	snapshot := base.BuildLogSnapshotFromOwnedInputs(
 		httptest.NewRequest(http.MethodGet, "http://example.com/log", nil),
 		base.ResponseCaptureSnapshot{Header: http.Header{"X-Final": {"yes"}}, Body: []byte("final-body")},
+		nil,
+		false,
 		apisixctx.ResponseOutcome{Status: http.StatusTeapot},
 		apisixctx.ResponseSourceUpstream,
 		time.Time{}, time.Time{},
@@ -247,9 +251,11 @@ func TestServerlessLogPhasePolicyPreservesBodiesThroughDetachedClone(t *testing.
 	if policy.RequestBodyBytes != base.MAX_REQ_BODY || policy.ResponseBodyBytes != base.MAX_RESP_BODY {
 		t.Fatalf("log capture policy = %+v, want bounded request/response limits", policy)
 	}
-	snapshot := base.BuildLogSnapshot(
+	snapshot := base.BuildLogSnapshotFromOwnedInputs(
 		httptest.NewRequest(http.MethodPost, "http://example.com/log", strings.NewReader("request-body")),
 		base.ResponseCaptureSnapshot{Body: []byte("final-body")},
+		[]byte("request-body"),
+		false,
 		apisixctx.ResponseOutcome{Status: http.StatusOK},
 		apisixctx.ResponseSourceUpstream,
 		time.Time{}, time.Time{},

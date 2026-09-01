@@ -44,8 +44,7 @@ type LogSnapshotSanitizerSelectorPlugin interface {
 }
 
 // GetFieldsFromSnapshot keeps field expansion in the detached snapshot layer
-// while giving plugin packages the same base-level entry point as the legacy
-// live-request helper.
+// while giving plugin packages a base-level entry point.
 func GetFieldsFromSnapshot(snapshot LogSnapshot, logFormat map[string]string) map[string]any {
 	return apisixlog.GetFieldsFromSnapshot(snapshot, logFormat)
 }
@@ -72,31 +71,6 @@ func ValidateLogCapturePolicy(policy LogCapturePolicy) error {
 		)
 	}
 	return nil
-}
-
-// BuildLogSnapshot converts the outer response capture into the detached
-// canonical representation used by all log/finalizer callbacks.
-func BuildLogSnapshot(
-	r *http.Request,
-	response ResponseCaptureSnapshot,
-	outcome apisixctx.ResponseOutcome,
-	source apisixctx.ResponseSource,
-	started,
-	finished time.Time,
-) LogSnapshot {
-	return apisixlog.BuildSnapshot(
-		r,
-		apisixlog.ResponseSnapshot{
-			Header:        response.Header,
-			Trailer:       response.Trailer,
-			Body:          response.Body,
-			BodyTruncated: response.BodyTruncated,
-		},
-		outcome,
-		source,
-		started,
-		finished,
-	)
 }
 
 // BuildLogSnapshotFromOwnedInputs transfers detached response capture and a

@@ -285,8 +285,6 @@ func resetBufferedResponse(w http.ResponseWriter) {
 	switch writer := w.(type) {
 	case *base.BufferedResponseWriter:
 		writer.Reset()
-	case *base.SharedResponseRecorder:
-		resetBufferedResponse(writer.ResponseWriter)
 	case interface{ Unwrap() http.ResponseWriter }:
 		if underlying := writer.Unwrap(); underlying != w {
 			resetBufferedResponse(underlying)

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
@@ -22,7 +24,14 @@ func BenchmarkFileLoggerPayloadEstimator(b *testing.B) {
 			"body":   strings.Repeat("x", 512),
 		},
 	}
-	record := fileLogRecord{kind: fileLogFieldsRecord, fields: fields}
+	record := fileLogRecord{
+		kind: fileLogSnapshotRecord,
+		snapshot: base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{
+				APISIXVars: map[string]any{"$benchmark_fields": fields},
+			},
+		},
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -53,26 +62,37 @@ func BenchmarkFileLoggerWrite(b *testing.B) {
 	}
 	b.Cleanup(p.Stop)
 
-	entry := map[string]any{
-		"request": map[string]any{
-			"method":  "GET",
-			"uri":     "/orders/123?include=summary",
-			"headers": map[string]any{"host": "gateway.test", "user-agent": "benchmark"},
+	snapshot := base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: "GET",
+			URI:    "/orders/123?include=summary",
+			Header: map[string][]string{"Host": {"gateway.test"}, "User-Agent": {"benchmark"}},
 		},
-		"response": map[string]any{"status": 200, "size": 512},
-		"route_id": "benchmark-route",
-		"latency":  1.25,
+		Outcome: apisixctx.ResponseOutcome{Status: 200, Bytes: 512},
 	}
 
 	b.SetBytes(256)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := p.sendBatch(context.Background(), []map[string]any{entry}, 1); err != nil {
-			b.Fatalf("sendBatch() error = %v", err)
+		if err := p.RunLogPhase(snapshot); err != nil {
+			b.Fatalf("RunLogPhase() error = %v", err)
+		}
+		if (i+1)%fileLoggerBatchMaxEntries == 0 {
+			ack, err := p.processor.pushBarrier()
+			if err != nil {
+				b.Fatalf("pushBarrier() error = %v", err)
+			}
+			if err := <-ack; err != nil {
+				b.Fatalf("barrier error = %v", err)
+			}
 		}
 	}
 	b.StopTimer()
-	if err := p.logger.Sync(); err != nil {
-		b.Fatalf("Sync() error = %v", err)
+	ack, err := p.processor.pushBarrier()
+	if err != nil {
+		b.Fatalf("pushBarrier() error = %v", err)
+	}
+	if err := <-ack; err != nil {
+		b.Fatalf("barrier error = %v", err)
 	}
 }

@@ -1,7 +1,6 @@
 package tencent_cloud_cls
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -24,6 +23,8 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -561,7 +562,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 	}
 }
 
-func TestSendPostsCLSProtobufPayload(t *testing.T) {
+func TestSendBatchPostsCLSProtobufPayload(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	bodies := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -585,11 +586,13 @@ func TestSendPostsCLSProtobufPayload(t *testing.T) {
 		Timeout:   1000,
 	})
 
-	p.Send(map[string]any{
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{
 		"route_id": "r1",
 		"status":   200,
 		"nested":   map[string]any{"ok": true},
-	})
+	}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	req := waitRequest(t, requests)
 	if req.Method != http.MethodPost {
@@ -920,7 +923,7 @@ func TestCLSStopBeforePostInitPreventsPublication(t *testing.T) {
 	}
 }
 
-func TestHandlerSendsFormattedRequestLog(t *testing.T) {
+func TestRunLogPhaseSendsFormattedRequestLog(t *testing.T) {
 	bodies := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -947,14 +950,13 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 		BatchMaxSize: 1,
 	})
 
-	req := httptest.NewRequest(http.MethodPatch, "http://example.com/orders/1?debug=true", nil)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", rr.Code)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPatch, URI: "/orders/1?debug=true",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusAccepted},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
 	}
 
 	logs := decodeCLSBody(t, waitBody(t, bodies))
@@ -972,7 +974,7 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name         string
 		requestBody  string
@@ -1022,35 +1024,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
 
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = (%d, %q), want (%d, %q)",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 			logs := decodeCLSBody(t, waitBody(t, bodies))
 			if len(logs) != 1 {
@@ -1205,7 +1191,7 @@ func TestMetadataDecodeFailsBeforeCLSClientAndProcessorAcquisition(t *testing.T)
 	}
 }
 
-func TestHandlerBatchesCLSLogs(t *testing.T) {
+func TestRunLogPhaseBatchesCLSLogs(t *testing.T) {
 	bodies := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1230,11 +1216,14 @@ func TestHandlerBatchesCLSLogs(t *testing.T) {
 		},
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+	for _, uri := range []string{"/first", "/second"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: uri},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+		}); err != nil {
+			t.Fatalf("RunLogPhase() error = %v", err)
+		}
+	}
 
 	logs := decodeCLSBody(t, waitBody(t, bodies))
 	if len(logs) != 2 {

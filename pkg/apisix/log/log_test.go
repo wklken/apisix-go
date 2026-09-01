@@ -58,15 +58,3 @@ func TestGetFieldResolvesDynamicRegisteredVariables(t *testing.T) {
 		}
 	}
 }
-
-func TestGetFieldsExpandsVariableValues(t *testing.T) {
-	request := httptest.NewRequest(http.MethodPost, "http://example.test/orders", nil)
-
-	fields := GetFields(request, map[string]string{"method": "$request_method", "tag": "edge"})
-	want := map[string]any{"method": "POST", "tag": "edge"}
-	for key, value := range want {
-		if got := fields[key]; got != value {
-			t.Fatalf("GetFields()[%q] = %#v, want %#v", key, got, value)
-		}
-	}
-}

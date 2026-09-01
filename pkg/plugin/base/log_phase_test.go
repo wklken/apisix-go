@@ -33,9 +33,18 @@ func TestValidateLogCapturePolicyPreservesZeroAndHardBounds(t *testing.T) {
 
 func TestCloneLogSnapshotForPolicyIsFreshAndBounded(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/", strings.NewReader("request-body"))
-	snapshot := BuildLogSnapshot(request, ResponseCaptureSnapshot{
-		Header: http.Header{"X-Test": {"one"}}, Body: []byte("response-body"), BodyTruncated: true,
-	}, ctx.ResponseOutcome{Status: http.StatusOK}, ctx.ResponseSourceUpstream, time.Time{}, time.Time{})
+	snapshot := BuildLogSnapshotFromOwnedInputs(
+		request,
+		ResponseCaptureSnapshot{
+			Header: http.Header{"X-Test": {"one"}}, Body: []byte("response-body"), BodyTruncated: true,
+		},
+		[]byte("request-body"),
+		false,
+		ctx.ResponseOutcome{Status: http.StatusOK},
+		ctx.ResponseSourceUpstream,
+		time.Time{},
+		time.Time{},
+	)
 	clone := CloneLogSnapshotForPolicy(snapshot, LogCapturePolicy{RequestBodyBytes: 4, ResponseBodyBytes: 5})
 	if string(clone.Request.Body) != "requ" || !clone.Request.BodyTruncated {
 		t.Fatalf("request body = %q/%t", clone.Request.Body, clone.Request.BodyTruncated)

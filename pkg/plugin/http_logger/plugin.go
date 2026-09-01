@@ -12,9 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/go-resty/resty/v2"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -473,83 +471,6 @@ func validateBodyExpression(name string, expression []any) error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		var requestBody string
-		captureRequestBody := p.config.IncludeReqBody || logFormatContains(p.logFormat, "$request_body")
-		if captureRequestBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		captureResponseBody := p.config.IncludeRespBody ||
-			logFormatContains(p.logFormat, "$resp_body") ||
-			len(p.logFormat) == 0
-		if captureResponseBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		status := metrics.Code
-
-		var responseBody string
-		if recorder != nil && recorder.HasBody() &&
-			base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			responseBody = recorder.BodyDecoded(
-				p.config.MaxRespBodyBytes,
-				w.Header().Get("Content-Encoding"),
-			)
-		}
-
-		var logFields map[string]any
-		if len(p.logFormat) > 0 {
-			logFields = resolveLogFormat(p.logFormat, r, requestBody, responseBody, status, p.routeLabels)
-			base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
-		} else {
-			logFields = p.defaultLogFields(r, status)
-		}
-		if p.config.IncludeReqBody && requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if p.config.IncludeRespBody && responseBody != "" {
-			base.NestedLogMap(logFields, "response")["body"] = responseBody
-		}
-
-		_ = p.enqueueLogIfRunning(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
-func (p *Plugin) defaultLogFields(r *http.Request, status int) map[string]any {
-	routeID := base.RequestVar(r, "$route_id", status)
-	if routeID == "" {
-		routeID = p.RouteID
-	}
-	if routeID == "" {
-		routeID = "no-matched"
-	}
-	fields := map[string]any{
-		"route_id": routeID,
-		"request": map[string]any{
-			"method": r.Method,
-			"uri":    r.URL.RequestURI(),
-		},
-		"response": map[string]any{"status": status},
-	}
-	if serviceID := base.RequestVar(r, "$service_id", status); serviceID != "" {
-		fields["service_id"] = serviceID
-	}
-	if consumerName := base.RequestVar(r, "$consumer_name", status); consumerName != "" {
-		fields["consumer"] = map[string]any{"username": consumerName}
-	}
-	return fields
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	policy := p.LogCapturePolicy()
 	requestBody := ""
@@ -616,50 +537,6 @@ func (p *Plugin) defaultSnapshotLogFields(snapshot base.LogSnapshot) map[string]
 		routeID = "no-matched"
 	}
 	return base.BuildAccessLogFromSnapshot(snapshot, routeID, p.ServerAddr)
-}
-
-func resolveLogFormat(
-	format map[string]any,
-	r *http.Request,
-	requestBody string,
-	responseBody string,
-	status int,
-	routeLabels map[string]any,
-) map[string]any {
-	return base.ResolveLogFormat(format, func(value string) any {
-		switch value {
-		case "$request_body":
-			return requestBody
-		case "$resp_body":
-			return responseBody
-		case "$status":
-			return status
-		case "$a6_route_labels":
-			return routeLabels
-		case "$host":
-			return r.Host
-		case "$remote_addr":
-			return base.RemoteIP(r.RemoteAddr)
-		default:
-			return apisixlog.GetField(r, value)
-		}
-	})
-}
-
-func logFormatContains(format map[string]any, variable string) bool {
-	for _, value := range format {
-		switch typed := value.(type) {
-		case map[string]any:
-			if logFormatContains(typed, variable) {
-				return true
-			}
-		case string:
-			if typed == variable {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {

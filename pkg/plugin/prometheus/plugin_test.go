@@ -120,9 +120,11 @@ func TestRunLogPhaseRecordsRequestMetrics(t *testing.T) {
 	apisixctx.RegisterRequestVar(request, "$llm_completion_tokens", int64(5))
 	apisixctx.RegisterRequestVar(request, "$response_source", "request-source")
 	started := time.Unix(1, 0)
-	snapshot := base.BuildLogSnapshot(
+	snapshot := base.BuildLogSnapshotFromOwnedInputs(
 		request,
 		base.ResponseCaptureSnapshot{},
+		nil,
+		false,
 		apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusCreated, Bytes: 5},
 		apisixctx.ResponseSourceCacheHit,
 		started,

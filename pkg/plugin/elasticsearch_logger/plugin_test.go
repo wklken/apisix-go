@@ -1,7 +1,6 @@
 package elasticsearch_logger
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -12,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -1337,7 +1337,7 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	}
 }
 
-func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
+func TestSendBatchWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -1386,7 +1386,9 @@ func TestSendWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 		Headers:       map[string]string{"X-Cluster": "logs"},
 		Timeout:       10,
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case body := <-received:
@@ -1528,7 +1530,7 @@ func TestSendBatchWritesMultipleBulkEntries(t *testing.T) {
 	}
 }
 
-func TestSendSelectsRandomEndpointAddr(t *testing.T) {
+func TestSendBatchSelectsRandomEndpointAddr(t *testing.T) {
 	firstRequests := make(chan struct{}, 1)
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstRequests <- struct{}{}
@@ -1572,7 +1574,9 @@ func TestSendSelectsRandomEndpointAddr(t *testing.T) {
 		Field:         FieldConfig{Index: "apisix-logs"},
 		Timeout:       10,
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case <-secondRequests:
@@ -1587,7 +1591,7 @@ func TestSendSelectsRandomEndpointAddr(t *testing.T) {
 	}
 }
 
-func TestSendDiscoversOlderElasticsearchVersion(t *testing.T) {
+func TestSendBatchDiscoversOlderElasticsearchVersion(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1615,7 +1619,9 @@ func TestSendDiscoversOlderElasticsearchVersion(t *testing.T) {
 		Field:         FieldConfig{Index: "apisix-logs"},
 		Timeout:       10,
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case body := <-received:
@@ -1671,12 +1677,10 @@ func TestBulkBodyIgnoresUnsupportedConfiguredType(t *testing.T) {
 	}
 }
 
-func TestElasticsearchLogFieldsPreservesNginxHostAndRemoteAddress(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "http://unused.example/orders", nil)
-	req.Host = "logs.example"
-	req.RemoteAddr = "127.0.0.1:54321"
-
-	fields := elasticsearchLogFields(req, map[string]string{
+func TestElasticsearchSnapshotLogFieldsPreservesNginxHostAndRemoteAddress(t *testing.T) {
+	fields := elasticsearchSnapshotLogFields(base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Host: "logs.example", RemoteAddr: "127.0.0.1:54321",
+	}}, map[string]string{
 		"custom_host":      "$host",
 		"custom_client_ip": "$remote_addr",
 	})
@@ -1688,7 +1692,7 @@ func TestElasticsearchLogFieldsPreservesNginxHostAndRemoteAddress(t *testing.T) 
 	}
 }
 
-func TestHandlerResolvesIndexTimeAndApisixVariables(t *testing.T) {
+func TestRunLogPhaseResolvesIndexTimeAndApisixVariables(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -1716,12 +1720,20 @@ func TestHandlerResolvesIndexTimeAndApisixVariables(t *testing.T) {
 		BatchMaxSize:  1,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{"$route_id": "route-1"})
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders",
+			URL:    "http://example.com/orders",
+			Host:   "example.com",
+			APISIXVars: map[string]any{
+				"$route_id": "route-1",
+			},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-received:
@@ -1737,7 +1749,7 @@ func TestHandlerResolvesIndexTimeAndApisixVariables(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name         string
 		requestBody  string
@@ -1804,33 +1816,23 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				BatchMaxSize:        1,
 			})
 
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want original request body", body)
-				}
-
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-
-			if rr.Code != http.StatusCreated {
-				t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
-			}
-			if body := rr.Body.String(); body != test.responseBody {
-				t.Fatalf("response body = %q, want upstream response body", body)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost,
+					URI:    "/orders",
+					URL:    "http://example.com/orders",
+					Host:   "example.com",
+					Header: header,
+					Body:   []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {
@@ -1996,7 +1998,7 @@ func extractBulkDocument(t *testing.T, body string) map[string]any {
 	return document
 }
 
-func TestHandlerResolvesBraceFormApisixVariableInIndex(t *testing.T) {
+func TestRunLogPhaseResolvesBraceFormApisixVariableInIndex(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -2024,11 +2026,18 @@ func TestHandlerResolvesBraceFormApisixVariableInIndex(t *testing.T) {
 		BatchMaxSize:  1,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/hello?id=myservice", nil)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/hello?id=myservice",
+			URL:    "http://example.com/hello?id=myservice",
+			Host:   "example.com",
+			Query:  url.Values{"id": {"myservice"}},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-received:
@@ -2045,13 +2054,13 @@ func TestHandlerResolvesBraceFormApisixVariableInIndex(t *testing.T) {
 	}
 }
 
-func TestResolveIndexVariableReferencesMatchesAPISIXTemplateContract(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "http://example.test/orders?id=", nil)
-	req.Host = "logs.example"
-
-	got := resolveIndexVariableReferences(
+func TestResolveIndexVarsSnapshotMatchesAPISIXTemplateContract(t *testing.T) {
+	got := resolveIndexVarsSnapshot(
 		`plain-$host-${ arg_id }-${arg_missing ?? fallback}-${arg_id ?? fallback}-${consumer_name ?? anonymous}-$foo.bar-\$host-${}`,
-		req,
+		base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+			Host: "logs.example", URI: "/orders?id=", URL: "http://example.test/orders?id=",
+			Query: url.Values{"id": {""}},
+		}},
 	)
 	const want = `plain-logs.example--fallback--anonymous--\$host-${}`
 	if got != want {
@@ -2059,7 +2068,7 @@ func TestResolveIndexVariableReferencesMatchesAPISIXTemplateContract(t *testing.
 	}
 }
 
-func TestVersionDetectionRunsOncePerStableConfig(t *testing.T) {
+func TestSendBatchVersionDetectionRunsOncePerStableConfig(t *testing.T) {
 	var versionGets atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -2070,6 +2079,7 @@ func TestVersionDetectionRunsOncePerStableConfig(t *testing.T) {
 			_, _ = w.Write([]byte(`{"version":{"number":"8.11.0"}}`))
 			return
 		}
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"errors":false}`))
 	}))
@@ -2080,8 +2090,12 @@ func TestVersionDetectionRunsOncePerStableConfig(t *testing.T) {
 		Field:         FieldConfig{Index: "apisix-logs"},
 		Timeout:       10,
 	})
-	p.Send(map[string]any{"path": "/a"})
-	p.Send(map[string]any{"path": "/b"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1); err != nil {
+		t.Fatalf("first SendBatch() error = %v", err)
+	}
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/b"}}, 1); err != nil {
+		t.Fatalf("second SendBatch() error = %v", err)
+	}
 
 	if got := versionGets.Load(); got != 1 {
 		t.Fatalf("version detection requests = %d, want 1 per stable config", got)

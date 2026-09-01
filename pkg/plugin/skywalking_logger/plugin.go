@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -306,50 +304,6 @@ func (p *Plugin) Stop() {
 	})
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
-		}
-
-		logFields := p.logFields(r, status)
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-		logFields[internalSkyWalkingEndpoint] = r.URL.Path
-		if sw8 := r.Header.Get("sw8"); sw8 != "" {
-			trace, err := parseTraceContext(sw8)
-			if err != nil {
-				logger.Warnf("failed to parse trace_context header: %s: %v", sw8, err)
-			} else {
-				logFields[internalSkyWalkingTraceContext] = trace
-			}
-		}
-		_ = p.EnqueueLog(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	fields := base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
 	if routeID := fmt.Sprint(base.SnapshotValue(snapshot, "$route_id")); routeID != "" {
@@ -385,31 +339,6 @@ func snapshotPath(snapshot base.LogSnapshot) string {
 		return parsed.Path
 	}
 	return snapshot.Request.URI
-}
-
-func (p *Plugin) logFields(r *http.Request, status int) map[string]any {
-	fields := make(map[string]any, len(p.LogFormat)+2)
-	for key, value := range p.LogFormat {
-		switch value {
-		case "$host", "$remote_addr":
-			fields[key] = base.RequestVar(r, value, status)
-		default:
-			fields[key] = log.GetField(r, value)
-		}
-	}
-	if routeID := base.RequestVar(r, "$route_id", status); routeID != "" {
-		fields["route_id"] = routeID
-	}
-	if serviceID := base.RequestVar(r, "$service_id", status); serviceID != "" {
-		fields["service_id"] = serviceID
-	}
-	return fields
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {

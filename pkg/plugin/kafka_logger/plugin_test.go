@@ -1,7 +1,6 @@
 package kafka_logger
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -11,9 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -893,7 +890,7 @@ func TestMetadataSchemaAcceptsObjectLogFormatAndPendingLimit(t *testing.T) {
 	}
 }
 
-func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
+func TestSendBatchEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		Brokers:    []Broker{{Host: "127.0.0.1", Port: 9092}},
@@ -901,10 +898,12 @@ func TestSendEncodesLogAndPublishesToConfiguredTopic(t *testing.T) {
 		Key:        "route-a",
 	}, sender)
 
-	p.Send(map[string]any{
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{
 		"route_id": "r1",
 		"status":   200,
-	})
+	}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	message := sender.waitForMessage(t)
 	if message.Topic != "apisix-logs" {
@@ -1100,7 +1099,7 @@ func TestSendBatchEncodesEntriesAsSingleKafkaMessage(t *testing.T) {
 	}
 }
 
-func TestHandlerSendsFormattedRequestLog(t *testing.T) {
+func TestRunLogPhaseSendsFormattedRequestLog(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		Brokers:    []Broker{{Host: "127.0.0.1", Port: 9092}},
@@ -1113,15 +1112,13 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 		BatchMaxSize: 1,
 	}, sender)
 
-	req := httptest.NewRequest(http.MethodPatch, "http://example.com/orders/1?debug=true", nil)
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", rr.Code)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPatch, URI: "/orders/1?debug=true",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusAccepted},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
 	}
 
 	message := sender.waitForMessage(t)
@@ -1140,7 +1137,7 @@ func TestHandlerSendsFormattedRequestLog(t *testing.T) {
 	}
 }
 
-func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
+func TestRunLogPhaseSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		Brokers:      []Broker{{Host: "127.0.0.1", Port: 9092}},
@@ -1148,12 +1145,14 @@ func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
 		BatchMaxSize: 1,
 	}, sender)
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders?debug=true", nil)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("accepted"))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?debug=true",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusAccepted, Bytes: 8},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	message := sender.waitForMessage(t)
 	var payload map[string]any
@@ -1170,7 +1169,7 @@ func TestHandlerSendsDefaultAccessLogWhenNoFormatIsConfigured(t *testing.T) {
 	}
 }
 
-func TestHandlerSendsOriginRequestLog(t *testing.T) {
+func TestRunLogPhaseSendsOriginRequestLog(t *testing.T) {
 	sender := &captureSender{}
 	p := newTestPlugin(t, Config{
 		MetaFormat:      "origin",
@@ -1181,23 +1180,15 @@ func TestHandlerSendsOriginRequestLog(t *testing.T) {
 		BatchMaxSize:    1,
 	}, sender)
 
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"http://example.com/orders?debug=true",
-		bytes.NewBufferString(`{"order":1}`),
-	)
-	req.Header.Set("X-Tenant", "gold")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read upstream request body: %v", err)
-		}
-		if string(body) != `{"order":1}` {
-			t.Fatalf("upstream body = %q, want original request body", body)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPost, URI: "/orders?debug=true", Proto: "HTTP/1.1",
+			Host: "example.com", Header: http.Header{"X-Tenant": {"gold"}}, Body: []byte(`{"order":1}`),
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	message := sender.waitForMessage(t)
 	payload := string(message.Value)
@@ -1215,7 +1206,7 @@ func TestHandlerSendsOriginRequestLog(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               [][]any
@@ -1250,34 +1241,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			}, sender)
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = (%d, %q), want (%d, %q)",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			message := sender.waitForMessage(t)

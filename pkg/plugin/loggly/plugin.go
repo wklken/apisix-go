@@ -14,15 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
-
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 type Plugin struct {
@@ -405,61 +401,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		started := time.Now()
-		request := base.CaptureMinimalAccessLogRequest(r, started)
-		if len(p.LogFormat) == 0 {
-			request = base.CaptureAccessLogRequest(r, started, p.ServerAddr)
-		}
-
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		var logFields map[string]any
-		if len(p.LogFormat) > 0 {
-			logFields = resolveLogFormat(r, request, p.LogFormat)
-			logFields["route_id"] = p.RouteID
-		} else {
-			logFields = base.BuildAccessLogSnapshot(
-				request,
-				metrics.Code,
-				w.Header(),
-				metrics.Written,
-				p.RouteID,
-				r,
-				metrics.Duration,
-			)
-		}
-
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() &&
-			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-		logFields[logglyHostField] = request.Host
-		logFields[logglyStatusField] = metrics.Code
-
-		_ = p.enqueueLogglyIfRunning(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
 	if len(p.LogFormat) > 0 {
@@ -504,29 +445,6 @@ func resolveLogglySnapshotFormat(snapshot base.LogSnapshot, format map[string]st
 		}
 		return base.SnapshotValue(snapshot, value)
 	})
-}
-
-type accessRequest = base.AccessLogRequest
-
-func resolveLogFormat(r *http.Request, request accessRequest, format map[string]string) map[string]any {
-	return base.ResolveStringLogFormat(format, func(value string) any {
-		switch value {
-		case "$host":
-			return request.Host
-		case "$remote_addr":
-			return request.ClientIP
-		case "$time_iso8601":
-			return request.Started.Format(time.RFC3339)
-		default:
-			return apisixlog.GetField(r, value)
-		}
-	})
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {

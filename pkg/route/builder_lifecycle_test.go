@@ -14,6 +14,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	apisixjson "github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	pluginpkg "github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/error_log_logger"
@@ -461,7 +462,8 @@ func TestPreparedErrorLogOwnerStopFlushesBatch(t *testing.T) {
 	if !ok {
 		t.Fatalf("plugin type = %T, want *error_log_logger.Plugin", binding.Plugin)
 	}
-	errorLogger.Send(map[string]any{"message": "shutdown error"})
+	errorLogger.StartObserving()
+	logger.Error("shutdown error")
 	errorLogger.Stop()
 
 	select {

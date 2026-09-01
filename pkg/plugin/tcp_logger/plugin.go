@@ -5,18 +5,14 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
-
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 )
 
 const (
@@ -294,80 +290,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		started := time.Now()
-		request := base.CaptureMinimalAccessLogRequest(r, started)
-		if len(p.logFormat) == 0 {
-			request = base.CaptureAccessLogRequest(r, started, p.ServerAddr)
-		}
-
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		metrics := httpsnoop.CaptureMetrics(next, writer, r)
-		var logFields map[string]any
-		if len(p.logFormat) > 0 {
-			logFields = resolveTCPLogFormat(r, request, p.logFormat)
-			logFields["route_id"] = p.RouteID
-			if serviceID := base.ApisixString(r, "$service_id"); serviceID != "" {
-				logFields["service_id"] = serviceID
-			} else {
-				delete(logFields, "service_id")
-			}
-		} else {
-			logFields = base.BuildAccessLogSnapshot(
-				request,
-				metrics.Code,
-				w.Header(),
-				metrics.Written,
-				p.RouteID,
-				r,
-				metrics.Duration,
-			)
-		}
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() &&
-			base.ExprMatched(r, p.config.IncludeRespBodyExpr, metrics.Code) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-
-		_ = p.EnqueueLog(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
-type accessRequest = base.AccessLogRequest
-
-func resolveTCPLogFormat(r *http.Request, request accessRequest, format map[string]any) map[string]any {
-	return base.ResolveLogFormat(format, func(value string) any {
-		switch value {
-		case "$host":
-			return request.Host
-		case "$remote_addr":
-			return request.ClientIP
-		case "$time_iso8601":
-			return request.Started.Format(time.RFC3339)
-		default:
-			return apisixlog.GetField(r, value)
-		}
-	})
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
 	if len(p.logFormat) > 0 {
@@ -403,18 +325,6 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		}
 	}
 	return p.EnqueueLog(fields)
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	logMessage, err := json.Marshal(log)
-	if err != nil {
-		logger.Errorf("failed to marshal log message: %s in tcp-logger", err)
-		return
-	}
-
-	if err := p.sendBody(context.Background(), logMessage); err != nil {
-		logger.Errorf("%s", err)
-	}
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {

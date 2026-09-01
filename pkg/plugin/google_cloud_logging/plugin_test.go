@@ -503,96 +503,52 @@ func TestStopDrainsActiveGoogleSendAndDropsPrivateState(t *testing.T) {
 	}
 }
 
-func TestGoogleStopRejectsRetainedLogCallbacks(t *testing.T) {
+func TestGoogleStopRejectsRetainedLogPhase(t *testing.T) {
 	p := newTestPlugin(t, Config{})
-	retainedHandler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
 	p.Stop()
 
-	handlerDone := make(chan struct{})
+	result := make(chan error, 1)
 	go func() {
-		retainedHandler.ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodGet, "http://gateway.test/retained", nil),
-		)
-		close(handlerDone)
+		result <- p.RunLogPhase(base.LogSnapshot{})
 	}()
 	select {
-	case <-handlerDone:
-	case <-time.After(time.Second):
-		t.Fatal("retained Handler blocked after Stop returned")
-	}
-
-	runDone := make(chan error, 1)
-	go func() {
-		runDone <- p.RunLogPhase(base.LogSnapshot{})
-	}()
-	select {
-	case err := <-runDone:
+	case err := <-result:
 		if !errors.Is(err, base.ErrLogQueueUnavailable) {
 			t.Fatalf("post-Stop RunLogPhase() error = %v, want unavailable queue", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("retained RunLogPhase blocked after Stop returned")
+		t.Fatal("post-Stop RunLogPhase blocked")
 	}
 }
 
-func TestGoogleStopRejectsRetainedFormattedHandler(t *testing.T) {
+func TestGoogleConcurrentRunLogPhaseAndStop(t *testing.T) {
 	p := newTestPlugin(t, Config{})
-	p.LogFormat = map[string]string{"method": "$request_method"}
-	retainedHandler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	p.Stop()
-
-	retainedHandler.ServeHTTP(
-		httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodGet, "http://gateway.test/formatted", nil),
-	)
-}
-
-func TestGoogleConcurrentLogCallbacksAndStop(t *testing.T) {
-	p := newTestPlugin(t, Config{})
-	releaseHandlers := make(chan struct{})
-	retainedHandler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		<-releaseHandlers
-	}))
-
-	var handlers sync.WaitGroup
-	for range 32 {
-		handlers.Go(func() {
-			retainedHandler.ServeHTTP(
-				httptest.NewRecorder(),
-				httptest.NewRequest(http.MethodGet, "http://gateway.test/concurrent", nil),
-			)
-		})
-	}
-
-	stopDone := make(chan struct{})
-	go func() {
-		p.Stop()
-		close(stopDone)
-	}()
-	for !p.stopped.Load() {
-		time.Sleep(time.Millisecond)
-	}
-	close(releaseHandlers)
-
+	start := make(chan struct{})
 	var phases sync.WaitGroup
 	for range 32 {
 		phases.Go(func() {
+			<-start
 			for range 32 {
 				_ = p.RunLogPhase(base.LogSnapshot{})
 			}
 		})
 	}
-	handlers.Wait()
+	stopDone := make(chan struct{})
+	go func() {
+		<-start
+		p.Stop()
+		close(stopDone)
+	}()
+
+	close(start)
 	phases.Wait()
 	select {
 	case <-stopDone:
 	case <-time.After(time.Second):
-		t.Fatal("Stop did not finish with concurrent retained log callbacks")
+		t.Fatal("Stop did not finish with concurrent RunLogPhase callbacks")
+	}
+	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
+		t.Fatalf("post-concurrency RunLogPhase() error = %v, want unavailable queue", err)
 	}
 }
 
@@ -955,9 +911,11 @@ func TestServiceAccountAssertionUsesConfiguredClaims(t *testing.T) {
 		},
 	})
 
-	auth, err := p.authConfig()
+	p.lifecycleMu.RLock()
+	auth, err := p.authConfigLocked()
+	p.lifecycleMu.RUnlock()
 	if err != nil {
-		t.Fatalf("authConfig() error = %v", err)
+		t.Fatalf("authConfigLocked() error = %v", err)
 	}
 	if _, _, err := p.accessTokenFor(context.Background(), auth); err != nil {
 		t.Fatalf("accessTokenFor() error = %v", err)
@@ -1032,7 +990,7 @@ func TestBuildEntryUsesCloudLoggingShape(t *testing.T) {
 		LogFormat: map[string]string{"path": "$uri"},
 	})
 
-	entry := p.buildEntry(map[string]any{"path": "/orders"})
+	entry := p.buildEntryForProject(map[string]any{"path": "/orders"}, "project-a")
 	if entry.LogName != "projects/project-a/logs/apisix.apache.org%2Flogs" {
 		t.Fatalf("logName = %q, want project log name", entry.LogName)
 	}
@@ -1050,7 +1008,7 @@ func TestBuildEntryUsesCloudLoggingShape(t *testing.T) {
 	}
 }
 
-func TestHandlerBuildsDefaultHTTPRequestEntry(t *testing.T) {
+func TestRunLogPhaseBuildsDefaultHTTPRequestEntry(t *testing.T) {
 	p := &Plugin{config: Config{
 		AuthConfig: &AuthConfig{
 			ProjectID: "project-a",
@@ -1071,20 +1029,26 @@ func TestHandlerBuildsDefaultHTTPRequestEntry(t *testing.T) {
 	})
 	t.Cleanup(p.BatchProcessor.Stop)
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders?debug=true", strings.NewReader("payload"))
-	req.RemoteAddr = "203.0.113.10:12345"
-	req.Header.Set("User-Agent", "apisix-go-test")
-	req = apisixctx.WithApisixVars(req, map[string]string{
-		"$route_id":   "route-1",
-		"$service_id": "service-1",
-	})
-	req = apisixctx.WithRequestVars(req)
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("created"))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method:        http.MethodPost,
+			URI:           "/orders?debug=true",
+			URL:           "http://example.com/orders?debug=true",
+			Host:          "example.com",
+			RemoteAddr:    "203.0.113.10:12345",
+			Header:        http.Header{"User-Agent": {"apisix-go-test"}},
+			ContentLength: 7,
+			APISIXVars: map[string]any{
+				"$route_id":   "route-1",
+				"$service_id": "service-1",
+			},
+		},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 7},
+		Started:  time.Unix(10, 0),
+		Finished: time.Unix(10, 500000000),
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	var fields map[string]any
 	select {
@@ -1093,7 +1057,7 @@ func TestHandlerBuildsDefaultHTTPRequestEntry(t *testing.T) {
 		t.Fatal("timed out waiting for google log fields")
 	}
 
-	entry := p.buildEntry(fields)
+	entry := p.buildEntryForProject(fields, "project-a")
 	if entry.HTTPRequest == nil {
 		t.Fatal("httpRequest is nil")
 	}
@@ -1141,7 +1105,7 @@ func TestBuildEntryKeepsCustomLogFormatInJSONPayload(t *testing.T) {
 		LogFormat: map[string]string{"path": "$uri"},
 	})
 
-	entry := p.buildEntry(map[string]any{"path": "/orders"})
+	entry := p.buildEntryForProject(map[string]any{"path": "/orders"}, "project-a")
 	if entry.HTTPRequest != nil {
 		t.Fatalf("httpRequest = %#v, want nil for custom log_format", entry.HTTPRequest)
 	}
@@ -1460,9 +1424,11 @@ func TestLoadAuthConfigFromFile(t *testing.T) {
 	file := writeTempAuthFile(t, pemKey)
 	p := newTestPlugin(t, Config{AuthFile: file})
 
-	auth, err := p.authConfig()
+	p.lifecycleMu.RLock()
+	auth, err := p.authConfigLocked()
+	p.lifecycleMu.RUnlock()
 	if err != nil {
-		t.Fatalf("authConfig() error = %v", err)
+		t.Fatalf("authConfigLocked() error = %v", err)
 	}
 	if auth.ProjectID != "project-from-file" {
 		t.Fatalf("project_id = %q, want project-from-file", auth.ProjectID)

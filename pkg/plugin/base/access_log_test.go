@@ -1,10 +1,7 @@
 package base
 
 import (
-	"context"
 	"net/http"
-	"net/http/httptest"
-	"reflect"
 	"testing"
 	"time"
 
@@ -86,119 +83,6 @@ func TestBuildAccessLogFromSnapshotPreservesFullDefaultShape(t *testing.T) {
 	}
 }
 
-func TestCaptureAccessLogRequest(t *testing.T) {
-	started := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
-	r := httptest.NewRequest(http.MethodPost, "http://example.com/foo?x=1&x=2&y=3", nil)
-	r.Host = "example.com:8080"
-	r.RemoteAddr = "192.168.1.10:54321"
-	r.ContentLength = 42
-	r.Header.Set("X-Custom", "a")
-
-	request := CaptureAccessLogRequest(r, started, "10.0.0.1:9080")
-
-	if request.Method != http.MethodPost {
-		t.Fatalf("Method = %q, want POST", request.Method)
-	}
-	if request.URI != "/foo?x=1&x=2&y=3" {
-		t.Fatalf("URI = %q", request.URI)
-	}
-	if request.URL != "http://example.com:9080/foo?x=1&x=2&y=3" {
-		t.Fatalf("URL = %q", request.URL)
-	}
-	if request.Host != "example.com" {
-		t.Fatalf("Host = %q, want example.com", request.Host)
-	}
-	if request.ClientIP != "192.168.1.10" {
-		t.Fatalf("ClientIP = %q", request.ClientIP)
-	}
-	if request.ContentLength != 42 {
-		t.Fatalf("ContentLength = %d, want 42", request.ContentLength)
-	}
-	if got := request.Headers["x-custom"]; got != "a" {
-		t.Fatalf("Headers[x-custom] = %v, want a", got)
-	}
-	if got := request.Headers["host"]; got != "example.com:8080" {
-		t.Fatalf("Headers[host] = %v, want example.com:8080", got)
-	}
-	if got := request.QueryString["x"]; got == nil {
-		t.Fatalf("QueryString[x] = nil, want multi-value")
-	}
-	if got := request.QueryString["y"]; got != "3" {
-		t.Fatalf("QueryString[y] = %v, want 3", got)
-	}
-	if !request.Started.Equal(started) {
-		t.Fatalf("Started = %v, want %v", request.Started, started)
-	}
-}
-
-func TestCaptureAccessLogRequestUsesEffectiveRemoteIP(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
-	r.RemoteAddr = "10.0.0.2:54321"
-	r = r.WithContext(context.WithValue(r.Context(), apisixctx.RemoteAddrKey, "198.51.100.20"))
-
-	request := CaptureAccessLogRequest(r, time.Unix(100, 0), "10.0.0.1:9080")
-	if request.ClientIP != "198.51.100.20" {
-		t.Fatalf("ClientIP = %q, want effective remote address", request.ClientIP)
-	}
-}
-
-func TestBuildAccessLogSnapshot(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-	r = apisixctx.WithApisixVars(r, map[string]string{
-		"$service_id":    "svc-1",
-		"$consumer_name": "user-1",
-		"$balancer_ip":   "10.1.1.1",
-		"$balancer_port": "8000",
-	})
-	started := time.Date(2026, time.July, 11, 1, 2, 3, 0, time.UTC)
-	request := AccessLogRequest{
-		Method:        http.MethodGet,
-		URI:           "/",
-		URL:           "http://example.com/",
-		Host:          "example.com",
-		ClientIP:      "192.168.1.10",
-		ContentLength: 0,
-		Headers:       map[string]any{"host": "example.com"},
-		QueryString:   map[string]any{},
-		Started:       started,
-	}
-	responseHeaders := http.Header{"Content-Type": {"application/json"}}
-
-	snapshot := BuildAccessLogSnapshot(request, http.StatusOK, responseHeaders, 15, "route-1", r, 2500*time.Microsecond)
-
-	if got := snapshot["route_id"]; got != "route-1" {
-		t.Fatalf("route_id = %v, want route-1", got)
-	}
-	if got := snapshot["service_id"]; got != "svc-1" {
-		t.Fatalf("service_id = %v, want svc-1", got)
-	}
-	consumer, ok := snapshot["consumer"].(map[string]any)
-	if !ok || consumer["username"] != "user-1" {
-		t.Fatalf("consumer = %#v, want username user-1", snapshot["consumer"])
-	}
-	requestFields, ok := snapshot["request"].(map[string]any)
-	if !ok || requestFields["url"] != "http://example.com/" || requestFields["method"] != http.MethodGet {
-		t.Fatalf("request fields = %#v", snapshot["request"])
-	}
-	responseFields, ok := snapshot["response"].(map[string]any)
-	if !ok || responseFields["status"] != http.StatusOK || responseFields["size"] != int64(15) {
-		t.Fatalf("response fields = %#v", snapshot["response"])
-	}
-	responseHeadersCollapsed := responseFields["headers"].(map[string]any)
-	if got := responseHeadersCollapsed["content-type"]; got != "application/json" {
-		t.Fatalf("response headers = %#v", responseHeadersCollapsed)
-	}
-	if got := snapshot["upstream"]; got != "10.1.1.1:8000" {
-		t.Fatalf("upstream = %v, want 10.1.1.1:8000", got)
-	}
-	if got := snapshot["latency"]; got != 2.5 {
-		t.Fatalf("latency = %v, want 2.5ms", got)
-	}
-	if got := snapshot["apisix_latency"]; got != 2.5 {
-		t.Fatalf("apisix_latency = %v, want 2.5", got)
-	}
-}
-
 func TestApplyMatchedRouteFieldsMatchesAPISIX317CustomLogFormat(t *testing.T) {
 	fields := map[string]any{
 		"case": "logger", "route_id": "configured-route", "service_id": "configured-service",
@@ -224,47 +108,7 @@ func TestApplyMatchedRouteFieldsMatchesAPISIX317CustomLogFormat(t *testing.T) {
 	}
 }
 
-func TestBuildAccessLogDefaultsRedactSensitiveHeaders(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
-	r.Host = "gateway.test:9443"
-	r.Header = testAccessLogHeaders()
-	request := CaptureAccessLogRequest(r, time.Unix(100, 0), "10.0.0.1:9080")
-
-	live := BuildAccessLogSnapshot(
-		request,
-		http.StatusOK,
-		testAccessLogHeaders(),
-		0,
-		"route-1",
-		r,
-		time.Second,
-	)
-	assertSafeDefaultAccessLogHeaders(t, live)
-
-	manual := BuildAccessLogSnapshot(
-		AccessLogRequest{
-			Headers: map[string]any{
-				"Authorization": "secret",
-				"X-Visible":     "visible",
-				"Host":          "gateway.test",
-			},
-		},
-		http.StatusOK,
-		nil,
-		0,
-		"route-1",
-		r,
-		0,
-	)
-	manualRequest := manual["request"].(map[string]any)
-	manualHeaders := manualRequest["headers"].(map[string]any)
-	if _, ok := manualHeaders["authorization"]; ok {
-		t.Fatalf("manual request headers = %#v, want authorization omitted", manualHeaders)
-	}
-	if manualHeaders["x-visible"] != "visible" || manualHeaders["host"] != "gateway.test" {
-		t.Fatalf("manual request headers = %#v, want safe lowercase fields", manualHeaders)
-	}
-
+func TestBuildAccessLogFromSnapshotRedactsSensitiveHeaders(t *testing.T) {
 	detached := BuildAccessLogFromSnapshot(LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{
 			Method: http.MethodGet,
@@ -277,31 +121,6 @@ func TestBuildAccessLogDefaultsRedactSensitiveHeaders(t *testing.T) {
 		Finished: time.Unix(101, 0),
 	}, "route-1")
 	assertSafeDefaultAccessLogHeaders(t, detached)
-}
-
-func TestBuildAccessLogSnapshotRedactsQueryRegisteredAfterCapture(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders?keep=yes&ticket=secret&ticket=again", nil)
-	request := CaptureAccessLogRequest(r, time.Unix(100, 0), "10.0.0.1:9080")
-	apisixctx.RegisterSensitiveQueryName(r, "ticket")
-
-	snapshot := BuildAccessLogSnapshot(request, http.StatusOK, nil, 0, "route-1", r, 0)
-	fields := snapshot["request"].(map[string]any)
-	if fields["url"] != "http://gateway.test:9080/orders?keep=yes&ticket=***&ticket=***" {
-		t.Fatalf("legacy access-log URL = %v", fields["url"])
-	}
-	if fields["uri"] != "/orders?keep=yes&ticket=***&ticket=***" {
-		t.Fatalf("legacy access-log URI = %v", fields["uri"])
-	}
-	query := fields["querystring"].(map[string]any)
-	if got := query["ticket"]; !reflect.DeepEqual(got, []string{"***", "***"}) {
-		t.Fatalf("legacy query ticket = %#v", got)
-	}
-	if query["keep"] != "yes" {
-		t.Fatalf("legacy query keep = %#v", query["keep"])
-	}
-	if got := r.URL.RequestURI(); got != "/orders?keep=yes&ticket=secret&ticket=again" {
-		t.Fatalf("legacy access log changed live request: %q", got)
-	}
 }
 
 var testSensitiveAccessLogHeaders = []string{

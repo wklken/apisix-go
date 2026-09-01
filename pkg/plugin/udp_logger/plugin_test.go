@@ -8,7 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -288,7 +289,7 @@ func TestPostInitDefaultsWithoutMetadataStore(t *testing.T) {
 	}
 }
 
-func TestSendWritesUDPMessage(t *testing.T) {
+func TestSendBatchWritesUDPMessage(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -301,7 +302,9 @@ func TestSendWritesUDPMessage(t *testing.T) {
 		Timeout:   3,
 		LogFormat: map[string]string{"path": "$uri"},
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/orders"}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -313,7 +316,7 @@ func TestSendWritesUDPMessage(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesUDPLogs(t *testing.T) {
+func TestRunLogPhaseBatchesUDPLogs(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -329,11 +332,14 @@ func TestHandlerBatchesUDPLogs(t *testing.T) {
 		BufferDuration:  60,
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+	for _, path := range []string{"/one", "/two"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: path},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", path, err)
+		}
+	}
 
 	select {
 	case message := <-received:
@@ -349,7 +355,7 @@ func TestHandlerBatchesUDPLogs(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
+func TestRunLogPhaseDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -359,23 +365,25 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: host, Port: mustAtoi(t, port), BatchMaxSize: 1})
 	p.SetRouteContext("route-default", "127.0.0.1:9080")
 
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders?ID=1", nil)
-	req.Host = "gateway.example"
-	req.RemoteAddr = "192.0.2.10:54321"
-	req.Header.Set("X-Request", "request-value")
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$balancer_ip", "198.51.100.20")
-		apisixctx.RegisterApisixVar(r, "$balancer_port", "1980")
-		apisixctx.RegisterApisixVar(r, "$service_id", "service-default")
-		apisixctx.RegisterApisixVar(r, "$consumer_name", "alice")
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
-		apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(7))
-		w.Header().Set("X-Upstream", "response-value")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("created"))
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?ID=1", Host: "gateway.example",
+			RemoteAddr: "192.0.2.10:54321", ContentLength: 8,
+			Header: http.Header{"Host": {"gateway.example"}, "X-Request": {"request-value"}},
+			Query:  url.Values{"ID": {"1"}},
+			APISIXVars: map[string]any{
+				"$balancer_ip": "198.51.100.20", "$balancer_port": "1980",
+				"$service_id": "service-default",
+			},
+			RequestVars: map[string]any{"$upstream_latency": int64(7)},
+			Consumer:    apisixlog.SafeConsumerLogIdentity{Username: "alice"},
+		},
+		Response: apisixlog.ResponseLogSnapshot{Header: http.Header{"X-Upstream": {"response-value"}}},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 7},
+		Started:  time.Unix(100, 0), Finished: time.Unix(101, 0),
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForUDPPayload(t, received)
 	assertNestedField(t, payload, "request", "url", "http://gateway.example:9080/orders?ID=1")
@@ -438,7 +446,7 @@ func TestHandlerDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
+func TestRunLogPhaseResolvesCustomFormatAfterDownstream(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -457,15 +465,19 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 		},
 	})
 	p.SetRouteContext("resolved-route", "127.0.0.1:9080")
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$consumer_name", "downstream-consumer")
-		apisixctx.RegisterApisixVar(r, "$service_id", "resolved-service")
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
-		w.WriteHeader(http.StatusCreated)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/hello",
+			APISIXVars: map[string]any{
+				"$consumer_name": "downstream-consumer",
+				"$service_id":    "resolved-service",
+			},
+			Consumer: apisixlog.SafeConsumerLogIdentity{Username: "downstream-consumer"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForUDPPayload(t, received)
 	if payload["status"] != float64(http.StatusCreated) {
@@ -482,7 +494,7 @@ func TestHandlerResolvesCustomFormatAfterDownstream(t *testing.T) {
 	}
 }
 
-func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
+func TestRunLogPhaseCustomFormatOmitsAbsentServiceID(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -497,12 +509,12 @@ func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
 		},
 	})
 	p.SetRouteContext("route-without-service", "127.0.0.1:9080")
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/hello"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	payload := waitForUDPPayload(t, received)
 	if _, ok := payload["service_id"]; ok {
@@ -510,7 +522,7 @@ func TestHandlerCustomFormatOmitsAbsentServiceID(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesUDPLoggerVariables(t *testing.T) {
+func TestRunLogPhaseResolvesUDPLoggerVariables(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -527,15 +539,17 @@ func TestHandlerResolvesUDPLoggerVariables(t *testing.T) {
 			"@timestamp": "$time_iso8601",
 		},
 	})
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/hello", nil)
-	req.Host = "logs.example:9080"
-	req.RemoteAddr = "192.0.2.10:54321"
-	before := time.Now()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Host = "upstream.internal:1980"
-		r.RemoteAddr = "198.51.100.30:12345"
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	started := time.Now()
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/hello", Host: "logs.example:9080",
+			RemoteAddr: "192.0.2.10:54321",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		Started: started,
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 	after := time.Now()
 
 	payload := waitForUDPPayload(t, received)
@@ -553,7 +567,7 @@ func TestHandlerResolvesUDPLoggerVariables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse @timestamp %q: %v", timestamp, err)
 	}
-	if parsed.Before(before.Add(-time.Second)) || parsed.After(after.Add(time.Second)) {
+	if parsed.Before(started.Add(-time.Second)) || parsed.After(after.Add(time.Second)) {
 		t.Fatalf("@timestamp = %s, want current request time", parsed)
 	}
 }
@@ -570,7 +584,7 @@ func TestSendBodyConnectionErrorIncludesDestination(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               []any
@@ -610,28 +624,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
 
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				strings.NewReader(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("upstream read body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream request body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Body.String() != test.responseBody {
-				t.Fatalf("response body = %q, want %q", rr.Body.String(), test.responseBody)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {

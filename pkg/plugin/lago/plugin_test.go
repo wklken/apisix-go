@@ -1,8 +1,6 @@
 package lago
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -11,11 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"math"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -434,14 +431,6 @@ func TestLagoStopDrainsActiveSendAndPreventsResurrection(t *testing.T) {
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
 		t.Fatalf("post-Stop RunLogPhase() error = %v", err)
 	}
-	nextCalled := false
-	handler := p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		nextCalled = true
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-	if !nextCalled {
-		t.Fatal("post-Stop handler did not call next")
-	}
 	if err := p.PostInit(); !errors.Is(err, secret.ErrCredentialUnavailable) {
 		t.Fatalf("post-Stop PostInit() error = %v", err)
 	}
@@ -612,48 +601,6 @@ func TestRunLogPhasePreservesLagoTemplateFieldsAndBodies(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("detached Lago entry was not delivered")
-	}
-}
-
-type capabilityResponseWriter struct {
-	http.ResponseWriter
-	conn    net.Conn
-	flushed bool
-}
-
-func (w *capabilityResponseWriter) Flush() {
-	w.flushed = true
-}
-
-func (w *capabilityResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
-}
-
-func TestResponseRecorderExposesResponseWriterCapabilities(t *testing.T) {
-	client, server := net.Pipe()
-	t.Cleanup(func() { _ = client.Close() })
-	t.Cleanup(func() { _ = server.Close() })
-
-	underlying := &capabilityResponseWriter{conn: server}
-	recorder := &responseRecorder{ResponseWriter: underlying}
-
-	controller := http.NewResponseController(recorder)
-	if err := controller.Flush(); err != nil {
-		t.Fatalf("Flush() error = %v, want delegated flush", err)
-	}
-	if !underlying.flushed {
-		t.Fatal("Flush() did not reach the underlying writer")
-	}
-
-	conn, rw, err := controller.Hijack()
-	if err != nil {
-		t.Fatalf("Hijack() error = %v, want delegated hijack", err)
-	}
-	if conn == nil {
-		t.Fatal("Hijack() returned nil connection")
-	}
-	if rw == nil {
-		t.Fatal("Hijack() returned nil ReadWriter")
 	}
 }
 
@@ -835,7 +782,7 @@ func TestEndpointURLSelectsFromEndpointAddrs(t *testing.T) {
 	}
 }
 
-func TestSendPostsLagoBatchEvent(t *testing.T) {
+func TestSendBatchPostsLagoBatchEvent(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	bodies := make(chan lagoPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -858,10 +805,12 @@ func TestSendPostsLagoBatchEvent(t *testing.T) {
 		Timeout:             1000,
 	})
 
-	p.Send(map[string]any{
+	if _, err := p.SendBatch(context.Background(), []map[string]any{{
 		"request_id":    "req-1",
 		"consumer_name": "sub-1",
-	})
+	}}, 1); err != nil {
+		t.Fatalf("SendBatch() error = %v", err)
+	}
 
 	select {
 	case req := <-requests:
@@ -943,7 +892,7 @@ func TestSendBatchPostsMultipleLagoEvents(t *testing.T) {
 	}
 }
 
-func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
+func TestRunLogPhaseCapturesRequestAndResponseVariables(t *testing.T) {
 	requests := make(chan lagoPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body lagoPayload
@@ -969,14 +918,17 @@ func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
 		BatchMaxSize: 1,
 	})
 
-	req := httptest.NewRequest(http.MethodPut, "/orders/1?debug=true", strings.NewReader("request"))
-	req.Header.Set("X-Request-ID", "req-1")
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("created"))
-	})).ServeHTTP(rr, req)
+	header := http.Header{}
+	header.Set("X-Request-ID", "req-1")
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPut, URI: "/orders/1?debug=true",
+			Header: header,
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-requests:
@@ -1001,7 +953,7 @@ func TestHandlerCapturesRequestAndResponseVariables(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesDynamicRequestAndResponseVariables(t *testing.T) {
+func TestRunLogPhaseResolvesDynamicRequestAndResponseVariables(t *testing.T) {
 	requests := make(chan lagoPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body lagoPayload
@@ -1028,15 +980,22 @@ func TestHandlerResolvesDynamicRequestAndResponseVariables(t *testing.T) {
 		BatchMaxSize: 1,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/orders?request_id=req-1&plan=pro", nil)
-	req.Header.Set("Cookie", "subscription=sub-1")
-	req.Header.Set("X-Request-ID", "header-req")
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Upstream-Plan", "enterprise")
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(rr, req)
+	header := http.Header{}
+	header.Set("X-Request-ID", "header-req")
+	header.Set("Cookie", "subscription=sub-1")
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders?request_id=req-1&plan=pro",
+			Header: header,
+			Query:  url.Values{"request_id": {"req-1"}, "plan": {"pro"}},
+		},
+		Response: apisixlog.ResponseLogSnapshot{
+			Header: http.Header{"X-Upstream-Plan": {"enterprise"}},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-requests:
@@ -1064,7 +1023,7 @@ func TestHandlerResolvesDynamicRequestAndResponseVariables(t *testing.T) {
 	}
 }
 
-func TestHandlerCapturesRequestAndResponseBodies(t *testing.T) {
+func TestRunLogPhaseCapturesRequestAndResponseBodies(t *testing.T) {
 	requests := make(chan lagoPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body lagoPayload
@@ -1094,28 +1053,17 @@ func TestHandlerCapturesRequestAndResponseBodies(t *testing.T) {
 		BatchMaxSize:     1,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(`{"order":1}`))
-	req.Header.Set("X-Request-ID", "req-1")
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read upstream request body: %v", err)
-		}
-		if string(body) != `{"order":1}` {
-			t.Fatalf("upstream body = %q, want original request body", body)
-		}
-
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("response status = %d, want %d", rr.Code, http.StatusCreated)
-	}
-	if body := rr.Body.String(); body != `{"ok":true}` {
-		t.Fatalf("response body = %q, want upstream response body", body)
+	header := http.Header{}
+	header.Set("X-Request-ID", "req-1")
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPost, URI: "/orders",
+			Header: header, Body: []byte(`{"order":1}`),
+		},
+		Response: apisixlog.ResponseLogSnapshot{Body: []byte(`{"ok":true}`)},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
 	}
 
 	select {
@@ -1135,7 +1083,7 @@ func TestHandlerCapturesRequestAndResponseBodies(t *testing.T) {
 	}
 }
 
-func TestHandlerUsesRequestStartTimeAsEventTimestamp(t *testing.T) {
+func TestRunLogPhaseUsesRequestStartTimeAsEventTimestamp(t *testing.T) {
 	requests := make(chan lagoPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body lagoPayload
@@ -1158,21 +1106,13 @@ func TestHandlerUsesRequestStartTimeAsEventTimestamp(t *testing.T) {
 	})
 	requestStart := time.Unix(1710000000, 250000000)
 	later := requestStart.Add(5 * time.Second)
-	calls := 0
-	p.now = func() time.Time {
-		calls++
-		if calls == 1 {
-			return requestStart
-		}
-		return later
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/orders"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+		Started: requestStart, Finished: later,
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
 	}
-
-	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(rr, req)
 
 	select {
 	case body := <-requests:

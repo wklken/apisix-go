@@ -18,8 +18,6 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
-	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
@@ -479,43 +477,6 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		var requestBody string
-		if p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		next.ServeHTTP(writer, r)
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
-		}
-
-		logFields := elasticsearchLogFields(r, p.LogFormat)
-		base.ApplyRequestMatchedRouteFields(logFields, r, p.RouteID)
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-		logFields[elasticsearchIndexField] = resolveIndexVars(p.config.Field.Index, r)
-		_ = p.EnqueueLog(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	fields := elasticsearchSnapshotLogFields(snapshot, p.LogFormat)
 	base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
@@ -571,12 +532,8 @@ func resolveIndexVarsSnapshot(index string, snapshot base.LogSnapshot) string {
 		}
 		variableName, fallback, hasFallback := strings.Cut(name, "??")
 		variableName = strings.TrimSpace(variableName)
-		expression := variableName
-		if !strings.HasPrefix(expression, "$") {
-			expression = "$" + expression
-		}
-		value := stringifyIndexValue(base.SnapshotValue(snapshot, expression))
-		if value == "" && hasFallback {
+		value, found := snapshotIndexVariableValue(variableName, snapshot)
+		if !found && hasFallback {
 			value = strings.TrimSpace(fallback)
 		}
 		out.WriteString(value)
@@ -585,26 +542,37 @@ func resolveIndexVarsSnapshot(index string, snapshot base.LogSnapshot) string {
 	return out.String()
 }
 
-func elasticsearchLogFields(r *http.Request, logFormat map[string]string) map[string]any {
-	fields := apisixlog.GetFields(r, logFormat)
-	for key, value := range logFormat {
-		switch value {
-		case "$host":
-			fields[key] = r.Host
-		case "$remote_addr":
-			host, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err == nil {
-				fields[key] = host
-			}
+func snapshotIndexVariableValue(name string, snapshot base.LogSnapshot) (string, bool) {
+	if argument, ok := strings.CutPrefix(name, "arg_"); ok {
+		values, found := snapshot.Request.Query[argument]
+		if !found || len(values) == 0 {
+			return "", false
 		}
+		return values[0], true
 	}
-	return fields
-}
 
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
+	key := "$" + name
+	if _, ok := variable.NginxVars[key]; ok {
+		return stringifyIndexValue(base.SnapshotValue(snapshot, key)), true
 	}
+	if _, ok := variable.ApisixVars[key]; ok {
+		if key == "$matched_uri" {
+			return stringifyIndexValue(base.SnapshotValue(snapshot, key)), true
+		}
+		value, found := snapshot.Request.APISIXVars[key]
+		if !found || value == nil {
+			return "", false
+		}
+		return stringifyIndexValue(value), true
+	}
+	if _, ok := variable.RequestVars[key]; ok {
+		value, found := snapshot.Request.RequestVars[key]
+		if !found || value == nil {
+			return "", false
+		}
+		return stringifyIndexValue(value), true
+	}
+	return "", false
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
@@ -1011,42 +979,6 @@ func elasticsearchDocument(log map[string]any) map[string]any {
 	return doc
 }
 
-func resolveIndexVars(index string, r *http.Request) string {
-	index = replaceIndexTimeVars(index)
-	index = resolveIndexVariableReferences(index, r)
-	return index
-}
-
-func resolveIndexVariableReferences(index string, r *http.Request) string {
-	var out strings.Builder
-	for i := 0; i < len(index); {
-		if index[i] == '\\' && i+1 < len(index) && index[i+1] == '$' {
-			out.WriteString(index[i : i+2])
-			i += 2
-			continue
-		}
-		if index[i] != '$' {
-			out.WriteByte(index[i])
-			i++
-			continue
-		}
-
-		name, end, ok := indexVariableReference(index, i)
-		if !ok {
-			out.WriteByte(index[i])
-			i++
-			continue
-		}
-		if value, found := indexVariableValue(strings.TrimSpace(name), r); found {
-			out.WriteString(value)
-		} else if _, fallback, hasFallback := strings.Cut(name, "??"); hasFallback {
-			out.WriteString(strings.TrimSpace(fallback))
-		}
-		i = end
-	}
-	return out.String()
-}
-
 func indexVariableReference(index string, start int) (name string, end int, ok bool) {
 	if start+1 >= len(index) {
 		return "", start, false
@@ -1074,47 +1006,6 @@ func indexVariableReference(index string, start int) (name string, end int, ok b
 		return "", start, false
 	}
 	return index[start+1 : end], end, true
-}
-
-func indexVariableValue(name string, r *http.Request) (string, bool) {
-	variableName, _, _ := strings.Cut(name, "??")
-	variableName = strings.TrimSpace(variableName)
-	if argument, ok := strings.CutPrefix(variableName, "arg_"); ok {
-		values, found := r.URL.Query()[argument]
-		if !found || len(values) == 0 {
-			return "", false
-		}
-		return values[0], true
-	}
-	key := "$" + variableName
-	if _, ok := variable.NginxVars[key]; ok {
-		return stringifyIndexValue(apisixlog.GetField(r, key)), true
-	}
-	if _, ok := variable.ApisixVars[key]; ok {
-		if key != "$matched_uri" {
-			value, found := apisixctx.GetApisixVars(r)[key]
-			if !found {
-				return "", false
-			}
-			return resolvedIndexVariableValue(value)
-		}
-		return resolvedIndexVariableValue(apisixlog.GetField(r, key))
-	}
-	if _, ok := variable.RequestVars[key]; ok {
-		value, found := apisixctx.GetRequestVars(r)[key]
-		if !found {
-			return "", false
-		}
-		return resolvedIndexVariableValue(value)
-	}
-	return "", false
-}
-
-func resolvedIndexVariableValue(value any) (string, bool) {
-	if value == nil {
-		return "", false
-	}
-	return stringifyIndexValue(value), true
 }
 
 func replaceIndexTimeVars(index string) string {

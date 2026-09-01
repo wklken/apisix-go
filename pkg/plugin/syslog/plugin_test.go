@@ -10,11 +10,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -326,7 +324,7 @@ func TestJoinRFC5424FramesPreservesBatchOrdering(t *testing.T) {
 	}
 }
 
-func TestSendWritesUDPMessage(t *testing.T) {
+func TestRunLogPhaseWritesUDPMessage(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -334,24 +332,29 @@ func TestSendWritesUDPMessage(t *testing.T) {
 	}
 
 	p := newTestPlugin(t, Config{
-		Host:       host,
-		Port:       mustAtoi(t, port),
-		SockType:   "udp",
-		Timeout:    3000,
-		FlushLimit: 1,
-		LogFormat:  map[string]any{"path": "$uri"},
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		SockType:     "udp",
+		Timeout:      3000,
+		FlushLimit:   1,
+		BatchMaxSize: 1,
+		LogFormat:    map[string]any{"path": "$uri"},
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/orders"},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
-		assertDirectRFC5424Frame(t, message, `{"path":"/orders"}`)
+		assertDirectRFC5424Frame(t, message, `{"path":"/orders","route_id":""}`)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog UDP message")
 	}
 }
 
-func TestSendWritesTCPMessage(t *testing.T) {
+func TestRunLogPhaseWritesTCPMessage(t *testing.T) {
 	addr, received := startTCPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -359,22 +362,28 @@ func TestSendWritesTCPMessage(t *testing.T) {
 	}
 
 	p := newTestPlugin(t, Config{
-		Host:       host,
-		Port:       mustAtoi(t, port),
-		Timeout:    3000,
-		FlushLimit: 1,
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		Timeout:      3000,
+		FlushLimit:   1,
+		BatchMaxSize: 1,
+		LogFormat:    map[string]any{"path": "$uri"},
 	})
-	p.Send(map[string]any{"path": "/orders"})
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/orders"},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
-		assertDirectRFC5424Frame(t, message, `{"path":"/orders"}`)
+		assertDirectRFC5424Frame(t, message, `{"path":"/orders","route_id":""}`)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog TCP message")
 	}
 }
 
-func TestSendWritesTLSMessage(t *testing.T) {
+func TestRunLogPhaseWritesTLSMessage(t *testing.T) {
 	addr, received, serverNames := startTLSServer(t)
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -383,22 +392,28 @@ func TestSendWritesTLSMessage(t *testing.T) {
 
 	var config Config
 	if err := util.Parse(map[string]any{
-		"host":        "localhost",
-		"port":        mustAtoi(t, port),
-		"timeout":     3000,
-		"flush_limit": 1,
-		"sock_type":   "tcp",
-		"tls":         true,
-		"ssl_verify":  false,
+		"host":           "localhost",
+		"port":           mustAtoi(t, port),
+		"timeout":        3000,
+		"flush_limit":    1,
+		"batch_max_size": 1,
+		"sock_type":      "tcp",
+		"tls":            true,
+		"ssl_verify":     false,
+		"log_format":     map[string]any{"path": "$uri"},
 	}, &config); err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
 	p := newTestPlugin(t, config)
-	p.Send(map[string]any{"path": "/secure"})
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/secure"},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
-		assertDirectRFC5424Frame(t, message, `{"path":"/secure"}`)
+		assertDirectRFC5424Frame(t, message, `{"path":"/secure","route_id":""}`)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for syslog TLS message")
 	}
@@ -421,12 +436,13 @@ func TestSendRejectsUntrustedTLSMessageByDefault(t *testing.T) {
 	}
 
 	p := newTestPlugin(t, Config{
-		Host:       host,
-		Port:       mustAtoi(t, port),
-		Timeout:    3000,
-		FlushLimit: 1,
-		SockType:   "tcp",
-		TLS:        true,
+		Host:         host,
+		Port:         mustAtoi(t, port),
+		Timeout:      3000,
+		FlushLimit:   1,
+		BatchMaxSize: 1,
+		SockType:     "tcp",
+		TLS:          true,
 	})
 	if err := p.sendBody(context.Background(), []byte("secure")); err == nil {
 		t.Fatal("sendBody() error = nil, want untrusted TLS peer rejection")
@@ -558,7 +574,7 @@ func TestPostInitPreservesExplicitZeroRetryDelay(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesSyslogMessages(t *testing.T) {
+func TestRunLogPhaseBatchesSyslogMessages(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -577,17 +593,13 @@ func TestHandlerBatchesSyslogMessages(t *testing.T) {
 		LogFormat:       map[string]any{"path": "$uri"},
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	handler.ServeHTTP(
-		httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodGet, "http://example.com/one", nil),
-	)
-	handler.ServeHTTP(
-		httptest.NewRecorder(),
-		httptest.NewRequest(http.MethodGet, "http://example.com/two", nil),
-	)
+	for _, path := range []string{"/one", "/two"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: path},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", path, err)
+		}
+	}
 
 	select {
 	case message := <-received:
@@ -609,7 +621,7 @@ func TestHandlerBatchesSyslogMessages(t *testing.T) {
 	}
 }
 
-func TestHandlerManualFlushDeliversBufferedFrame(t *testing.T) {
+func TestRunLogPhaseManualFlushDeliversBufferedFrame(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -627,9 +639,11 @@ func TestHandlerManualFlushDeliversBufferedFrame(t *testing.T) {
 		LogFormat:       map[string]any{"path": "$uri"},
 	})
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/manual", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/manual"},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 	p.Stop()
 
 	select {
@@ -647,7 +661,7 @@ func TestHandlerManualFlushDeliversBufferedFrame(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               [][]any
@@ -686,34 +700,19 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = (%d, %q), want (%d, %q)",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {
@@ -743,7 +742,7 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 	}
 }
 
-func TestHandlerDefaultLogContainsLatencyAndUpstream(t *testing.T) {
+func TestRunLogPhaseDefaultLogContainsLatencyAndUpstream(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -760,19 +759,21 @@ func TestHandlerDefaultLogContainsLatencyAndUpstream(t *testing.T) {
 	})
 	p.SetRouteContext("syslog-default", "127.0.0.1:9080")
 
-	req := httptest.NewRequest(http.MethodGet, "http://gateway.example/orders", nil)
-	req.Host = "gateway.example"
-	req.RemoteAddr = "192.0.2.20:54321"
-	req = apisixctx.WithApisixVars(req, map[string]string{})
-	req = apisixctx.WithRequestVars(req)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$balancer_ip", "198.51.100.30")
-		apisixctx.RegisterApisixVar(r, "$balancer_port", "1980")
-		apisixctx.RegisterRequestVar(r, "$upstream_latency", int64(1))
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("created"))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders", Host: "gateway.example",
+			RemoteAddr: "192.0.2.20:54321",
+			APISIXVars: map[string]any{
+				"$balancer_ip": "198.51.100.30", "$balancer_port": "1980",
+			},
+			RequestVars: map[string]any{"$upstream_latency": int64(1)},
+		},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 7},
+		Started:  time.Unix(100, 0),
+		Finished: time.Unix(101, 0),
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -796,7 +797,7 @@ func TestHandlerDefaultLogContainsLatencyAndUpstream(t *testing.T) {
 	}
 }
 
-func TestHandlerLogFormatExtraEnrichesDefaultWithoutClobbering(t *testing.T) {
+func TestRunLogPhaseLogFormatExtraEnrichesDefaultWithoutClobbering(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -813,9 +814,14 @@ func TestHandlerLogFormatExtraEnrichesDefaultWithoutClobbering(t *testing.T) {
 		LogFormatExtra: map[string]any{"marker": "extra", "route_id": "wrong"},
 	})
 	p.RouteID = "route-1"
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/extra", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request:  apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/extra"},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		Started:  time.Unix(100, 0),
+		Finished: time.Unix(101, 0),
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -834,7 +840,7 @@ func TestHandlerLogFormatExtraEnrichesDefaultWithoutClobbering(t *testing.T) {
 	}
 }
 
-func TestHandlerExplicitEmptyLogFormatUsesCustomMode(t *testing.T) {
+func TestRunLogPhaseExplicitEmptyLogFormatUsesCustomMode(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -852,9 +858,11 @@ func TestHandlerExplicitEmptyLogFormatUsesCustomMode(t *testing.T) {
 		logFormatSet: true,
 	})
 	p.RouteID = "route-empty-format"
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/empty", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/empty"},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -867,7 +875,7 @@ func TestHandlerExplicitEmptyLogFormatUsesCustomMode(t *testing.T) {
 	}
 }
 
-func TestHandlerRemovesStaleServiceIDWithoutRuntimeService(t *testing.T) {
+func TestRunLogPhaseRemovesStaleServiceIDWithoutRuntimeService(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -887,9 +895,11 @@ func TestHandlerRemovesStaleServiceIDWithoutRuntimeService(t *testing.T) {
 		},
 	})
 	p.RouteID = "route-no-service"
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/no-service", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/no-service"},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -908,7 +918,7 @@ func TestHandlerRemovesStaleServiceIDWithoutRuntimeService(t *testing.T) {
 	}
 }
 
-func TestHandlerCustomLogFormatIncludesRuntimeServiceID(t *testing.T) {
+func TestRunLogPhaseCustomLogFormatIncludesRuntimeServiceID(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -924,12 +934,14 @@ func TestHandlerCustomLogFormatIncludesRuntimeServiceID(t *testing.T) {
 		BatchMaxSize: 1,
 		LogFormat:    map[string]any{"marker": "custom"},
 	})
-	request := httptest.NewRequest(http.MethodGet, "http://example.com/with-service", nil)
-	request = apisixctx.WithApisixVars(request, map[string]string{})
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterApisixVar(r, "$service_id", "service-1")
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), request)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/with-service",
+			APISIXVars: map[string]any{"$service_id": "service-1"},
+		},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -942,7 +954,7 @@ func TestHandlerCustomLogFormatIncludesRuntimeServiceID(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesNestedFormatVariablesAndConstants(t *testing.T) {
+func TestRunLogPhaseResolvesNestedFormatVariablesAndConstants(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -967,9 +979,13 @@ func TestHandlerResolvesNestedFormatVariablesAndConstants(t *testing.T) {
 		},
 	})
 	p.RouteID = "route-nested-format"
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://nested.example/path", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/path", Host: "nested.example",
+		},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:
@@ -990,7 +1006,7 @@ func TestHandlerResolvesNestedFormatVariablesAndConstants(t *testing.T) {
 	}
 }
 
-func TestHandlerTruncatesLogFormatAtPinnedDepth(t *testing.T) {
+func TestRunLogPhaseTruncatesLogFormatAtPinnedDepth(t *testing.T) {
 	addr, received := startUDPServer(t)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -1019,9 +1035,13 @@ func TestHandlerTruncatesLogFormatAtPinnedDepth(t *testing.T) {
 		},
 	})
 	p.RouteID = "route-depth"
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://depth.example/path", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/path", Host: "depth.example",
+		},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case message := <-received:

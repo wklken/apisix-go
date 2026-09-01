@@ -1,7 +1,6 @@
 package lago
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -14,9 +13,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
@@ -192,39 +189,6 @@ type lagoEvent struct {
 	Code                   string            `json:"code"`
 	Timestamp              float64           `json:"timestamp"`
 	Properties             map[string]string `json:"properties,omitempty"`
-}
-
-type responseRecorder struct {
-	http.ResponseWriter
-	status int
-	body   bytes.Buffer
-	limit  int
-}
-
-func (w *responseRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
-
-func (w *responseRecorder) WriteHeader(status int) {
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *responseRecorder) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	w.capture(body)
-	return w.ResponseWriter.Write(body)
-}
-
-func (w *responseRecorder) capture(body []byte) {
-	if w.limit <= 0 || w.body.Len() >= w.limit {
-		return
-	}
-	remaining := w.limit - w.body.Len()
-	if len(body) > remaining {
-		body = body[:remaining]
-	}
-	_, _ = w.body.Write(body)
 }
 
 var templatePattern = regexp.MustCompile(`\$\{([^}]+)\}`)
@@ -410,43 +374,6 @@ func (p *Plugin) Stop() {
 	}
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		requestStart := p.now()
-
-		var requestBody string
-		if p.config.IncludeReqBody {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		responseLimit := 0
-		if p.config.IncludeRespBody {
-			responseLimit = p.config.MaxRespBodyBytes
-		}
-		recorder := &responseRecorder{
-			ResponseWriter: w,
-			limit:          responseLimit,
-		}
-		next.ServeHTTP(recorder, r)
-		if recorder.status == 0 {
-			recorder.status = http.StatusOK
-		}
-
-		var responseBody string
-		if p.config.IncludeRespBody && recorder.body.Len() > 0 {
-			responseBody = recorder.body.String()
-		}
-
-		_ = p.enqueueLagoLogIfRunning(
-			p.logFields(r, recorder.status, requestBody, responseBody, requestStart, recorder.Header()),
-		)
-	}
-	return http.HandlerFunc(fn)
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	return p.enqueueLagoLogIfRunning(p.lagoSnapshotFields(snapshot))
 }
@@ -500,12 +427,6 @@ func lagoSnapshotVariable(snapshot base.LogSnapshot, name string) any {
 		return snapshot.Response.Header.Get(strings.ReplaceAll(after, "_", "-"))
 	}
 	return base.SnapshotValue(snapshot, "$"+name)
-}
-
-func (p *Plugin) Send(fields map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{fields}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
@@ -626,35 +547,6 @@ func unixSeconds(value time.Time) float64 {
 	return float64(value.UnixNano()) / float64(time.Second)
 }
 
-func (p *Plugin) logFields(
-	r *http.Request,
-	status int,
-	requestBody string,
-	responseBody string,
-	requestStart time.Time,
-	responseHeader http.Header,
-) map[string]any {
-	fields := map[string]any{
-		"status":              status,
-		requestStartTimeField: requestStart,
-	}
-	if p.config.IncludeReqBody {
-		fields["request_body"] = requestBody
-	}
-	if p.config.IncludeRespBody {
-		fields["response_body"] = responseBody
-	}
-	for _, template := range p.templates() {
-		for _, name := range templateVariables(template) {
-			if _, ok := fields[name]; ok {
-				continue
-			}
-			fields[name] = requestVariable(r, name, status, responseHeader)
-		}
-	}
-	return fields
-}
-
 func (p *Plugin) templates() []string {
 	templates := []string{p.config.EventTransactionID, p.config.EventSubscriptionID}
 	for _, value := range p.config.EventProperties {
@@ -691,31 +583,4 @@ func templateVariables(template string) []string {
 		}
 	}
 	return variables
-}
-
-func requestVariable(r *http.Request, name string, status int, responseHeader http.Header) any {
-	if name == "status" {
-		return status
-	}
-	if after, ok := strings.CutPrefix(name, "arg_"); ok {
-		return r.URL.Query().Get(after)
-	}
-	if after, ok := strings.CutPrefix(name, "cookie_"); ok {
-		cookie, err := r.Cookie(after)
-		if err != nil {
-			return ""
-		}
-		return cookie.Value
-	}
-	if after, ok := strings.CutPrefix(name, "http_"); ok {
-		return r.Header.Get(strings.ReplaceAll(after, "_", "-"))
-	}
-	if after, ok := strings.CutPrefix(name, "sent_http_"); ok {
-		return responseHeader.Get(strings.ReplaceAll(after, "_", "-"))
-	}
-	if after, ok := strings.CutPrefix(name, "upstream_http_"); ok {
-		return responseHeader.Get(strings.ReplaceAll(after, "_", "-"))
-	}
-
-	return log.GetField(r, "$"+name)
 }

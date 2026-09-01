@@ -368,23 +368,10 @@ func TestMaterializeScopedSecretsOwnsHTTPAuthorization(t *testing.T) {
 	}
 }
 
-func TestStopPreventsHandlerAndLogPhaseFromEnqueueing(t *testing.T) {
+func TestStopPreventsLogPhaseFromEnqueueing(t *testing.T) {
 	p := newTestPlugin(t, Config{URI: "http://127.0.0.1/logs"})
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
 	p.Stop()
 
-	handlerDone := make(chan struct{})
-	go func() {
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/stopped", nil))
-		close(handlerDone)
-	}()
-	select {
-	case <-handlerDone:
-	case <-time.After(time.Second):
-		t.Fatal("handler blocked after Stop")
-	}
 	err := p.RunLogPhase(base.LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/stopped"},
 		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
@@ -395,19 +382,19 @@ func TestStopPreventsHandlerAndLogPhaseFromEnqueueing(t *testing.T) {
 	p.Stop()
 }
 
-func TestConcurrentHandlerAndLogPhaseStopWithoutQueueResurrection(t *testing.T) {
+func TestConcurrentLogPhaseStopWithoutQueueResurrection(t *testing.T) {
 	for iteration := range 20 {
 		p := newTestPlugin(t, Config{URI: "http://127.0.0.1/logs"})
-		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		}))
 		start := make(chan struct{})
 		var workers sync.WaitGroup
 		workers.Add(2)
 		go func() {
 			defer workers.Done()
 			<-start
-			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/race", nil))
+			_ = p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/race"},
+				Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+			})
 		}()
 		go func() {
 			defer workers.Done()
@@ -1092,7 +1079,7 @@ func TestSendBatchSetsTextContentTypeForNewLineConcat(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesJSONLogs(t *testing.T) {
+func TestRunLogPhaseBatchesJSONLogs(t *testing.T) {
 	received := make(chan []map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body []map[string]any
@@ -1111,11 +1098,16 @@ func TestHandlerBatchesJSONLogs(t *testing.T) {
 		BufferDuration:  60,
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+	for _, uri := range []string{"/one", "/two"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{
+				Method: http.MethodGet, URI: uri, URL: "http://example.com" + uri, Host: "example.com",
+			},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", uri, err)
+		}
+	}
 
 	select {
 	case body := <-received:
@@ -1127,7 +1119,7 @@ func TestHandlerBatchesJSONLogs(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesNewLineLogs(t *testing.T) {
+func TestRunLogPhaseBatchesNewLineLogs(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1147,11 +1139,16 @@ func TestHandlerBatchesNewLineLogs(t *testing.T) {
 		BufferDuration:  60,
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
+	for _, uri := range []string{"/one", "/two"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{
+				Method: http.MethodGet, URI: uri, URL: "http://example.com" + uri, Host: "example.com",
+			},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", uri, err)
+		}
+	}
 
 	select {
 	case body := <-received:
@@ -1170,7 +1167,7 @@ func TestHandlerBatchesNewLineLogs(t *testing.T) {
 	}
 }
 
-func TestHandlerDropsWhenMaxPendingEntriesExceeded(t *testing.T) {
+func TestRunLogPhaseDropsWhenMaxPendingEntriesExceeded(t *testing.T) {
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-release
@@ -1190,12 +1187,14 @@ func TestHandlerDropsWhenMaxPendingEntriesExceeded(t *testing.T) {
 		p.BatchProcessor.Stop()
 	})
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/one", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/two", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/three", nil))
+	for _, uri := range []string{"/one", "/two", "/three"} {
+		_ = p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{
+				Method: http.MethodGet, URI: uri, URL: "http://example.com" + uri, Host: "example.com",
+			},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		})
+	}
 
 	stats := p.BatchProcessor.Stats()
 	if stats.Dropped != 2 {
@@ -1214,11 +1213,12 @@ func TestBatchProcessorLifecycleStateMatchesStaleAndBufferedCases(t *testing.T) 
 
 		p := newTestPlugin(t, Config{URI: server.URL, BatchMaxSize: 1})
 		t.Cleanup(p.BatchProcessor.Stop)
-		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		}))
-
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/first"},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("first RunLogPhase() error = %v", err)
+		}
 		select {
 		case <-received:
 		case <-time.After(time.Second):
@@ -1236,7 +1236,12 @@ func TestBatchProcessorLifecycleStateMatchesStaleAndBufferedCases(t *testing.T) 
 			time.Sleep(10 * time.Millisecond)
 		}
 
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/second"},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("second RunLogPhase() error = %v", err)
+		}
 		select {
 		case <-received:
 		case <-time.After(time.Second):
@@ -1258,18 +1263,24 @@ func TestBatchProcessorLifecycleStateMatchesStaleAndBufferedCases(t *testing.T) 
 			InactiveTimeout: 5,
 		})
 		t.Cleanup(p.BatchProcessor.Stop)
-		handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		}))
-
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/first"},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("first RunLogPhase() error = %v", err)
+		}
 		time.Sleep(1500 * time.Millisecond)
 		stats := p.BatchProcessor.Stats()
 		if stats.Pending != 1 || stats.Buffered != 1 || stats.Processing != 0 {
 			t.Fatalf("buffered state = %+v, want one pending buffered entry and no delivery worker", stats)
 		}
 
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/second"},
+			Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+		}); err != nil {
+			t.Fatalf("second RunLogPhase() error = %v", err)
+		}
 		select {
 		case <-received:
 		case <-time.After(time.Second):
@@ -1278,7 +1289,7 @@ func TestBatchProcessorLifecycleStateMatchesStaleAndBufferedCases(t *testing.T) 
 	})
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name         string
 		requestBody  string
@@ -1321,36 +1332,20 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
-			upstreamBody := make(chan string, 1)
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				strings.NewReader(test.requestBody),
-			)
+			requestHeaders := make(http.Header)
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				requestHeaders.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("upstream read body: %v", err)
-				}
-				upstreamBody <- string(body)
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-
-			if rr.Body.String() != test.responseBody {
-				t.Fatalf("response body = %q, want %q", rr.Body.String(), test.responseBody)
+			snapshot := base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", URL: "http://example.com/orders",
+					Host: "example.com", Header: requestHeaders, Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
 			}
-			select {
-			case body := <-upstreamBody:
-				if body != test.requestBody {
-					t.Fatalf("upstream request body = %q, want %q", body, test.requestBody)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("timed out waiting for upstream request body")
+			if err := p.RunLogPhase(snapshot); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 			select {
 			case body := <-received:
@@ -1384,7 +1379,7 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesNestedLogFormatAndTruncatesAtDepthFive(t *testing.T) {
+func TestRunLogPhaseResolvesNestedLogFormatAndTruncatesAtDepthFive(t *testing.T) {
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -1414,9 +1409,14 @@ func TestHandlerResolvesNestedLogFormatAndTruncatesAtDepthFive(t *testing.T) {
 	})
 	t.Cleanup(p.BatchProcessor.Stop)
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "http://example.com/nested", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPost, URI: "/nested", URL: "http://example.com/nested", Host: "example.com",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-received:
@@ -1437,7 +1437,7 @@ func TestHandlerResolvesNestedLogFormatAndTruncatesAtDepthFive(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesFinalStatusWithoutCapturingResponseBody(t *testing.T) {
+func TestRunLogPhaseResolvesFinalStatus(t *testing.T) {
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -1460,13 +1460,14 @@ func TestHandlerResolvesFinalStatusWithoutCapturingResponseBody(t *testing.T) {
 	})
 	t.Cleanup(p.BatchProcessor.Stop)
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if _, capturingBody := w.(*base.ResponseRecorder); capturingBody {
-			t.Error("handler received a response-body recorder without a body logging requirement")
-		}
-		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, "created")
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/status", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/status", URL: "http://example.com/status", Host: "example.com",
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	select {
 	case body := <-received:
@@ -1479,7 +1480,7 @@ func TestHandlerResolvesFinalStatusWithoutCapturingResponseBody(t *testing.T) {
 	}
 }
 
-func TestHandlerDecodesCompressedResponseBodies(t *testing.T) {
+func TestRunLogPhaseDecodesCompressedResponseBodies(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		encoding string
@@ -1538,10 +1539,21 @@ func TestHandlerDecodesCompressedResponseBodies(t *testing.T) {
 				IncludeRespBody: true,
 			})
 			t.Cleanup(p.BatchProcessor.Stop)
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Encoding", test.encoding)
-				_, _ = io.WriteString(w, test.encode(t, "hello world"))
-			})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/compressed", nil))
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodGet,
+					URI:    "/compressed",
+					URL:    "http://example.com/compressed",
+					Host:   "example.com",
+				},
+				Response: apisixlog.ResponseLogSnapshot{
+					Header: http.Header{"Content-Encoding": []string{test.encoding}},
+					Body:   []byte(test.encode(t, "hello world")),
+				},
+				Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
+			}
 
 			select {
 			case body := <-received:

@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -397,22 +396,6 @@ func (p *Plugin) Stop() {
 	}
 }
 
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if p.config.IncludeReqBody || p.config.IncludeRespBody {
-		return p.bodyAwareHandler(next)
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-		if p.config.SampleRatio < 1 && p.sampleValue() >= p.config.SampleRatio {
-			return
-		}
-		fields := apisixlog.GetFields(r, p.LogFormat)
-		base.ApplyRequestMatchedRouteFields(fields, r, p.RouteID)
-		_ = p.enqueueLogIfRunning(fields)
-	})
-}
-
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if p.config.SampleRatio < 1 && p.sampleValue() >= p.config.SampleRatio {
 		return nil
@@ -448,52 +431,6 @@ func (p *Plugin) sampleValue() float64 {
 		return p.sample()
 	}
 	return rand.Float64()
-}
-
-func (p *Plugin) bodyAwareHandler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		sampled := p.config.SampleRatio >= 1 || p.sampleValue() < p.config.SampleRatio
-
-		var requestBody string
-		if sampled && p.config.IncludeReqBody && base.ExprMatched(r, p.config.IncludeReqBodyExpr, 0) {
-			body, err := base.ReadSharedRequestBody(r, p.config.MaxReqBodyBytes)
-			if err == nil && body != "" {
-				requestBody = body
-			}
-		}
-
-		writer := w
-		var recorder *base.SharedResponseRecorder
-		if sampled && p.config.IncludeRespBody {
-			recorder = base.GetOrCreateSharedResponseRecorderWithLimit(w, r, p.config.MaxRespBodyBytes)
-			writer = recorder
-		}
-
-		next.ServeHTTP(writer, r)
-		if !sampled {
-			return
-		}
-		status := 0
-		if recorder != nil {
-			status = recorder.StatusCode()
-		}
-
-		logFields := apisixlog.GetFields(r, p.LogFormat)
-		if requestBody != "" {
-			base.NestedLogMap(logFields, "request")["body"] = requestBody
-		}
-		if recorder != nil && recorder.HasBody() && base.ExprMatched(r, p.config.IncludeRespBodyExpr, status) {
-			base.NestedLogMap(logFields, "response")["body"] = recorder.BodyTruncated(p.config.MaxRespBodyBytes)
-		}
-		_ = p.enqueueLogIfRunning(logFields)
-	}
-	return http.HandlerFunc(fn)
-}
-
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
 }
 
 func (p *Plugin) SendBatch(

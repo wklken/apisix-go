@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
@@ -27,7 +26,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
-	"github.com/wklken/apisix-go/pkg/util"
 	"golang.org/x/oauth2"
 )
 
@@ -275,29 +273,6 @@ type tokenResponse struct {
 	ExpiresIn   int    `json:"expires_in"`
 }
 
-type responseRecorder struct {
-	http.ResponseWriter
-	status int
-	size   int64
-}
-
-func (w *responseRecorder) WriteHeader(status int) {
-	if w.status != 0 {
-		return
-	}
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *responseRecorder) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	n, err := w.ResponseWriter.Write(body)
-	w.size += int64(n)
-	return n, err
-}
-
 func (p *Plugin) Config() any {
 	return &p.config
 }
@@ -390,27 +365,6 @@ func validateGooglePrivateKey(privateKey string) error {
 
 func googlePrivateKeyUnavailable() error {
 	return fmt.Errorf("%s auth_config.private_key: %w", name, secret.ErrCredentialUnavailable)
-}
-
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	if len(p.LogFormat) > 0 {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r)
-			_ = p.enqueueLogIfRunning(apisixlog.GetFields(r, p.LogFormat))
-		})
-	}
-
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		recorder := &responseRecorder{ResponseWriter: w}
-		next.ServeHTTP(recorder, r)
-		if recorder.status == 0 {
-			recorder.status = http.StatusOK
-		}
-
-		_ = p.enqueueLogIfRunning(p.defaultLogFields(r, recorder, time.Since(start)))
-	}
-	return http.HandlerFunc(fn)
 }
 
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
@@ -694,12 +648,6 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 	return 0, nil
 }
 
-func (p *Plugin) authConfig() (*AuthConfig, error) {
-	p.lifecycleMu.RLock()
-	defer p.lifecycleMu.RUnlock()
-	return p.authConfigLocked()
-}
-
 func (p *Plugin) authConfigLocked() (*AuthConfig, error) {
 	if p.stopped.Load() {
 		return nil, secret.ErrCredentialUnavailable
@@ -834,18 +782,6 @@ func googleTokenSource(ctx context.Context, auth *AuthConfig, client *http.Clien
 	return source
 }
 
-func (p *Plugin) buildEntry(log map[string]any) googleLogEntry {
-	p.lifecycleMu.RLock()
-	defer p.lifecycleMu.RUnlock()
-	projectID := ""
-	if p.resolvedAuth != nil {
-		projectID = p.resolvedAuth.ProjectID
-	} else if p.config.AuthConfig != nil {
-		projectID = p.config.AuthConfig.ProjectID
-	}
-	return p.buildEntryForProject(log, projectID)
-}
-
 func (p *Plugin) buildEntryForProject(log map[string]any, projectID string) googleLogEntry {
 	entry := googleLogEntry{
 		JSONPayload: log,
@@ -883,44 +819,6 @@ func (p *Plugin) buildEntryForProject(log map[string]any, projectID string) goog
 
 func (p *Plugin) sslVerify() bool {
 	return p.config.SSLVerify == nil || *p.config.SSLVerify
-}
-
-func (p *Plugin) defaultLogFields(r *http.Request, recorder *responseRecorder, latency time.Duration) map[string]any {
-	fields := map[string]any{
-		defaultEntryMarker:        true,
-		defaultRequestMethodField: r.Method,
-		defaultRequestURLField:    requestURL(r),
-		defaultRequestSizeField:   util.RequestSize(r),
-		defaultStatusField:        recorder.status,
-		defaultResponseSizeField:  recorder.size,
-		defaultUserAgentField:     r.UserAgent(),
-		defaultRemoteIPField:      base.RemoteIP(r.RemoteAddr),
-		defaultServerIPField:      r.Host,
-		defaultLatencyField:       strconv.FormatFloat(latency.Seconds(), 'f', 3, 64) + "s",
-		defaultInsertIDField:      r.Header.Get("X-Request-ID"),
-	}
-	if routeID := stringFromAny(apisixlog.GetField(r, "$route_id")); routeID != "" {
-		fields["route_id"] = routeID
-	}
-	if serviceID := stringFromAny(apisixlog.GetField(r, "$service_id")); serviceID != "" {
-		fields["service_id"] = serviceID
-	}
-	return fields
-}
-
-func requestURL(r *http.Request) string {
-	scheme := "http"
-	host := r.Host
-	if r.URL.Scheme != "" {
-		scheme = r.URL.Scheme
-	}
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if r.URL.Host != "" {
-		host = r.URL.Host
-	}
-	return scheme + "://" + host + r.URL.RequestURI()
 }
 
 func isDefaultEntry(log map[string]any) bool {

@@ -10,13 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wklken/apisix-go/pkg/apisix/ctx"
-	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
-	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type Plugin struct {
@@ -229,6 +225,10 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+func (p *Plugin) Handler(next http.Handler) http.Handler {
+	return next
+}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -293,9 +293,8 @@ func (p *Plugin) LogCapturePolicy() base.LogCapturePolicy {
 	return base.LogCapturePolicy{}
 }
 
-// RunLogPhase emits the detached metric snapshot without consulting a live
-// request or response writer. The metric payload intentionally mirrors the
-// legacy Handler fields.
+// RunLogPhase emits the APISIX request metrics from the detached log snapshot
+// without consulting a live request or response writer.
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	latency := int64(0)
 	if !snapshot.Started.IsZero() && !snapshot.Finished.IsZero() {
@@ -367,51 +366,6 @@ func (p *Plugin) Stop() {
 		return
 	}
 	cleanup()
-}
-
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		started := time.Now()
-		requestLength, requestLengthKnown := apisixlog.EstimateHTTP1RequestLength(r)
-		wrapped, capture := base.CaptureResponseOutcomeController(w)
-		next.ServeHTTP(wrapped, r)
-		outcome := capture.Outcome()
-		responseLength, responseLengthKnown := capture.HTTPWireLength(r)
-		latency := time.Since(started).Milliseconds()
-		upstreamLatency, hasUpstreamLatency := requestInt64Var(r, "$upstream_latency")
-		if !requestLengthKnown {
-			requestLength = max(r.ContentLength, 0)
-		}
-		if !responseLengthKnown {
-			responseLength = outcome.Bytes
-		}
-		entry := metricEntry{
-			LatencyMS:          latency,
-			UpstreamLatency:    upstreamLatency,
-			HasUpstreamLatency: hasUpstreamLatency,
-			ApisixLatency:      apisixLatency(latency, upstreamLatency),
-			IngressSize:        requestLength,
-			EgressSize:         responseLength,
-			Status:             outcome.Status,
-			RouteID:            apisixStringVar(r, "$route_id"),
-			RouteName:          apisixStringVar(r, "$route_name"),
-			ServiceID:          apisixStringVar(r, "$service_id"),
-			ServiceName:        apisixStringVar(r, "$service_name"),
-			ConsumerName:       consumerName(r),
-			BalancerIP:         apisixStringVar(r, "$balancer_ip"),
-			Path:               matchedPath(r),
-			Method:             r.Method,
-			Scheme:             requestScheme(r),
-		}
-		p.BatchProcessor.Push(map[string]any{"entry": entry})
-	}
-	return http.HandlerFunc(fn)
-}
-
-func (p *Plugin) Send(entry metricEntry) {
-	if err := p.send(context.Background(), entry); err != nil {
-		logger.Errorf("failed to send DogStatsD metrics: %s", err)
-	}
 }
 
 func (p *Plugin) send(ctx context.Context, entry metricEntry) error {
@@ -576,45 +530,6 @@ func resourceTag(id string, name string, preferName bool) string {
 	return name
 }
 
-func apisixStringVar(r *http.Request, key string) string {
-	value := ctx.GetApisixVar(r, key)
-	if text, ok := value.(string); ok {
-		return text
-	}
-	return ""
-}
-
-func consumerName(r *http.Request) string {
-	if name := apisixStringVar(r, "$consumer_name"); name != "" {
-		return name
-	}
-	consumer, ok := ctx.GetApisixVar(r, "$consumer").(resource.Consumer)
-	if !ok {
-		return ""
-	}
-	return consumer.Username
-}
-
-func matchedPath(r *http.Request) string {
-	if path := apisixStringVar(r, "$matched_uri"); path != "" {
-		return path
-	}
-	return r.URL.Path
-}
-
-func requestInt64Var(r *http.Request, key string) (int64, bool) {
-	switch value := ctx.GetRequestVar(r, key).(type) {
-	case int64:
-		return value, true
-	case int:
-		return int64(value), true
-	case float64:
-		return int64(value), true
-	default:
-		return 0, false
-	}
-}
-
 func apisixLatency(total int64, upstream int64) int64 {
 	if upstream <= 0 {
 		return total
@@ -623,16 +538,6 @@ func apisixLatency(total int64, upstream int64) int64 {
 		return 0
 	}
 	return total - upstream
-}
-
-func requestScheme(r *http.Request) string {
-	if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
-		return scheme
-	}
-	if r.TLS != nil {
-		return "https"
-	}
-	return "http"
 }
 
 func (p *Plugin) loadMetadata() (Metadata, error) {

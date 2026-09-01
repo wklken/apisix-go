@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felixge/httpsnoop"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -84,7 +82,7 @@ func mustMetadataView(t *testing.T, metadata map[string]any) runtime.MetadataVie
 	return view
 }
 
-func TestHandlerWritesLogWhenMatchPasses(t *testing.T) {
+func TestRunLogPhaseWritesLogWhenMatchPasses(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path: path,
@@ -98,14 +96,13 @@ func TestHandlerWritesLogWhenMatchPasses(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/orders", nil)
-	req = apisixctx.WithRequestVars(req)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterRequestVar(r, "$status", 201)
-		w.WriteHeader(http.StatusCreated)
-	})).ServeHTTP(rr, req)
-	_ = p.logger.Sync()
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodPost, URI: "/orders"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	content := readLogFile(t, path)
 	if !strings.Contains(content, `"path":"/orders"`) {
@@ -153,20 +150,6 @@ func TestSnapshotDefaultLogFieldsBoundsHostnameResolution(t *testing.T) {
 }
 
 func TestDefaultFileLoggerFieldsRedactSensitiveHeaders(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil)
-	r.Host = "gateway.test:9443"
-	r.Header = testFileLoggerHeaders()
-	request := captureRequest(r)
-
-	live := defaultLogFields(
-		r,
-		request,
-		testFileLoggerHeaders(),
-		httpsnoop.Metrics{Code: http.StatusOK, Written: 1},
-		time.Unix(100, 0),
-	)
-	assertSafeFileLoggerHeaders(t, live)
-
 	detached := snapshotDefaultLogFields(base.LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{
 			Method: http.MethodGet,
@@ -182,19 +165,15 @@ func TestDefaultFileLoggerFieldsRedactSensitiveHeaders(t *testing.T) {
 }
 
 func TestCustomFileLoggerFormatRetainsSensitiveHeader(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
-	r.Header.Set("Authorization", "Bearer explicit")
-	r = apisixctx.WithRequestVars(r)
-	apisixctx.RegisterRequestVar(r, "$http_authorization", r.Header.Get("Authorization"))
 	p := &Plugin{logFormat: map[string]any{"authorization": "$http_authorization"}}
 
-	fields := p.buildLogFields(
-		r,
-		captureRequest(r),
-		nil,
-		httpsnoop.Metrics{Code: http.StatusOK},
-		time.Unix(100, 0),
-	)
+	fields := p.buildSnapshotFields(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders",
+			Header: http.Header{"Authorization": {"Bearer explicit"}},
+		},
+	})
 	if got := fields["authorization"]; got != "Bearer explicit" {
 		t.Fatalf("custom authorization = %#v, want explicit header value", got)
 	}
@@ -379,7 +358,7 @@ func TestFileSnapshotValueHonorsBodyExpressionAndDecodedLimit(t *testing.T) {
 	}
 }
 
-func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
+func TestRunLogPhaseWritesToCurrentPathAfterExternalRotation(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/access.log"
 	rotated := dir + "/2026-07-09_12-00-00__access.log"
@@ -389,7 +368,6 @@ func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
 	})
 
 	serveFileLoggerRequest(t, p, "/before")
-	_ = p.logger.Sync()
 
 	if err := os.Rename(path, rotated); err != nil {
 		t.Fatalf("rename log file: %v", err)
@@ -399,7 +377,6 @@ func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
 	}
 
 	serveFileLoggerRequest(t, p, "/after")
-	_ = p.logger.Sync()
 
 	currentContent := readLogFile(t, path)
 	if currentContent != "" {
@@ -424,7 +401,7 @@ func TestHandlerWritesToCurrentPathAfterExternalRotation(t *testing.T) {
 	}
 }
 
-func TestHandlerKeepsUnlinkedFileCachedUntilReopen(t *testing.T) {
+func TestRunLogPhaseKeepsUnlinkedFileCachedUntilReopen(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path:      path,
@@ -454,7 +431,7 @@ func TestHandlerKeepsUnlinkedFileCachedUntilReopen(t *testing.T) {
 	}
 }
 
-func TestHandlerResolvesNestedLogFormatAndTruncatesAfterDepthFive(t *testing.T) {
+func TestRunLogPhaseResolvesNestedLogFormatAndTruncatesAfterDepthFive(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path: path,
@@ -479,13 +456,17 @@ func TestHandlerResolvesNestedLogFormatAndTruncatesAfterDepthFive(t *testing.T) 
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/nested", nil)
-	req.Header.Set("User-Agent", "pinned-agent")
-	req = apisixctx.WithRequestVars(req)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/nested",
+			Header: http.Header{"User-Agent": {"pinned-agent"}},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	var logged map[string]any
 	line := strings.TrimSpace(readLogFile(t, path))
@@ -506,7 +487,13 @@ func TestHandlerResolvesNestedLogFormatAndTruncatesAfterDepthFive(t *testing.T) 
 	}
 }
 
-func TestHandlerUsesRichDefaultAndRouteLogFormatExtra(t *testing.T) {
+func TestRunLogPhaseUsesRichDefaultAndRouteLogFormatExtra(t *testing.T) {
+	original := fileLoggerLookupIP
+	fileLoggerLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	t.Cleanup(func() { fileLoggerLookupIP = original })
+
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path: path,
@@ -516,18 +503,19 @@ func TestHandlerUsesRichDefaultAndRouteLogFormatExtra(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/default?foo=bar", nil)
-	req = apisixctx.WithRequestVars(req)
-	req = apisixctx.WithApisixVars(req, map[string]string{
-		"$route_id":      "route-1",
-		"$balancer_ip":   "localhost",
-		"$balancer_port": "1982",
-	})
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("created"))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/default?foo=bar",
+			APISIXVars: map[string]any{
+				"$route_id": "route-1", "$balancer_ip": "localhost", "$balancer_port": "1982",
+			},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated, Bytes: 7},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	var logged map[string]any
 	line := strings.TrimSpace(readLogFile(t, path))
@@ -556,7 +544,7 @@ func TestHandlerUsesRichDefaultAndRouteLogFormatExtra(t *testing.T) {
 	}
 }
 
-func TestHandlerLogFormatReplacesDefaultAndIgnoresExtra(t *testing.T) {
+func TestRunLogPhaseLogFormatReplacesDefaultAndIgnoresExtra(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path:           path,
@@ -564,15 +552,16 @@ func TestHandlerLogFormatReplacesDefaultAndIgnoresExtra(t *testing.T) {
 		LogFormatExtra: map[string]string{"ignored": "extra"},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/precedence", nil)
-	req = apisixctx.WithRequestVars(req)
-	req = apisixctx.WithApisixVars(req, map[string]string{
-		"$route_id":   "route-1",
-		"$service_id": "service-1",
-	})
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/precedence",
+			APISIXVars: map[string]any{"$route_id": "route-1", "$service_id": "service-1"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	var logged map[string]any
 	line := strings.TrimSpace(readLogFile(t, path))
@@ -612,7 +601,7 @@ func TestPluginsWithSamePathShareWriterLease(t *testing.T) {
 		Path:      path,
 		LogFormat: map[string]any{"path": "$uri"},
 	})
-	if first.writer != second.writer {
+	if first.lease.writer != second.lease.writer {
 		t.Fatal("same-path plugins use different writers")
 	}
 
@@ -891,14 +880,11 @@ func TestFlushAndReopenFlushesBufferedBytesBeforeReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/access.log"
 	rotated := dir + "/access.log.old"
-	p := newTestPlugin(t, Config{Path: path})
-
-	if _, err := p.sendBatch(context.Background(), []map[string]any{{"path": "/before"}}, 1); err != nil {
-		t.Fatalf("sendBatch(before) error = %v", err)
-	}
-	if err := p.logger.Sync(); err != nil {
-		t.Fatalf("Sync(before) error = %v", err)
-	}
+	p := newTestPlugin(t, Config{
+		Path:      path,
+		LogFormat: map[string]any{"path": "$uri"},
+	})
+	serveFileLoggerRequest(t, p, "/before")
 	if err := os.Rename(path, rotated); err != nil {
 		t.Fatalf("rename current log: %v", err)
 	}
@@ -906,9 +892,7 @@ func TestFlushAndReopenFlushesBufferedBytesBeforeReopen(t *testing.T) {
 		t.Fatalf("recreate current log: %v", err)
 	}
 
-	if _, err := p.sendBatch(context.Background(), []map[string]any{{"path": "/buffered"}}, 1); err != nil {
-		t.Fatalf("sendBatch(buffered) error = %v", err)
-	}
+	queueFileLoggerRequest(t, p, "/buffered")
 	if err := FlushAndReopen(path); err != nil {
 		t.Fatalf("FlushAndReopen() error = %v", err)
 	}
@@ -922,12 +906,7 @@ func TestFlushAndReopenFlushesBufferedBytesBeforeReopen(t *testing.T) {
 		t.Fatalf("current log content after reopen = %q, want empty", content)
 	}
 
-	if _, err := p.sendBatch(context.Background(), []map[string]any{{"path": "/after"}}, 1); err != nil {
-		t.Fatalf("sendBatch(after) error = %v", err)
-	}
-	if err := p.logger.Sync(); err != nil {
-		t.Fatalf("Sync(after) error = %v", err)
-	}
+	serveFileLoggerRequest(t, p, "/after")
 	if content := readLogFile(t, path); !strings.Contains(content, `"path":"/after"`) {
 		t.Fatalf("current log content = %q, want post-reopen entry", content)
 	}
@@ -987,7 +966,7 @@ func TestFileLoggerRegistryCancellationBeforePluginStopRunsLateCleanupOnce(t *te
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	writer := p.writer
+	writer := p.lease.writer
 
 	stopFileLoggerTaskRegistryForTest(t, tasks)
 	if !sharedFileWriters.has(key) {
@@ -1060,7 +1039,7 @@ func TestFinalLeaseReleaseFlushesBufferedBytes(t *testing.T) {
 	}
 }
 
-func TestHandlerSkipsLogWhenMatchFails(t *testing.T) {
+func TestRunLogPhaseSkipsLogWhenMatchFails(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path:      path,
@@ -1068,22 +1047,23 @@ func TestHandlerSkipsLogWhenMatchFails(t *testing.T) {
 		Match:     []any{[]any{"http_x_tenant", "==", "gold"}},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
-	req = apisixctx.WithRequestVars(req)
-	req.Header.Set("X-Tenant", "silver")
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterRequestVar(r, "$status", 200)
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(rr, req)
-	_ = p.logger.Sync()
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet, URI: "/orders",
+			Header: http.Header{"X-Tenant": {"silver"}},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	if content := readLogFile(t, path); content != "" {
 		t.Fatalf("log content = %q, want no log line for non-matching request", content)
 	}
 }
 
-func TestHandlerAcceptsOfficialNestedMatchGroup(t *testing.T) {
+func TestRunLogPhaseAcceptsOfficialNestedMatchGroup(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path:      path,
@@ -1095,11 +1075,13 @@ func TestHandlerAcceptsOfficialNestedMatchGroup(t *testing.T) {
 		},
 	})
 
-	matched := httptest.NewRequest(http.MethodGet, "/orders?name=jack", nil)
-	matched = apisixctx.WithRequestVars(matched)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), matched)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/orders?name=jack"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	content := readLogFile(t, path)
 	if !strings.Contains(content, "name=jack") {
@@ -1107,7 +1089,7 @@ func TestHandlerAcceptsOfficialNestedMatchGroup(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
 		name, requestBody, responseBody, header string
 		requestExpr, responseExpr               []any
@@ -1141,34 +1123,21 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32,
 			})
-			req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(test.requestBody))
-			req = apisixctx.WithRequestVars(req)
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				apisixctx.RegisterRequestVar(r, "$status", http.StatusCreated)
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			_ = p.logger.Sync()
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = (%d, %q), want (%d, %q)",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			if err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header,
+					Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			}); err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
+			syncFileLogger(t, p)
 
 			var logged map[string]any
 			line := strings.TrimSpace(readLogFile(t, path))
@@ -1196,7 +1165,7 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 	}
 }
 
-func TestHandlerDoesNotExposeResponseBodyVariableWhenExpressionDoesNotMatch(t *testing.T) {
+func TestRunLogPhaseDoesNotExposeResponseBodyVariableWhenExpressionDoesNotMatch(t *testing.T) {
 	path := t.TempDir() + "/access.log"
 	p := newTestPlugin(t, Config{
 		Path:                path,
@@ -1206,22 +1175,22 @@ func TestHandlerDoesNotExposeResponseBodyVariableWhenExpressionDoesNotMatch(t *t
 		MaxRespBodyBytes:    32,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
-	req = apisixctx.WithRequestVars(req)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusOK)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`private-response`))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request:  apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/orders"},
+		Response: apisixlog.ResponseLogSnapshot{Body: []byte(`private-response`)},
+		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	var logged map[string]any
 	line := strings.TrimSpace(readLogFile(t, path))
 	if err := json.Unmarshal([]byte(line), &logged); err != nil {
 		t.Fatalf("decode log line %q: %v", line, err)
 	}
-	if logged["resp_body"] != nil {
-		t.Fatalf("resp_body = %#v, want null for non-matching expression", logged["resp_body"])
+	if logged["resp_body"] != "" {
+		t.Fatalf("resp_body = %#v, want empty value for non-matching expression", logged["resp_body"])
 	}
 	if strings.Contains(line, "private-response") {
 		t.Fatalf("log line = %q, want response body kept private", line)
@@ -1268,14 +1237,13 @@ func TestPostInitUsesMetadataPath(t *testing.T) {
 		"log_format": map[string]any{"path": "$uri"},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/metadata", nil)
-	req = apisixctx.WithRequestVars(req)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusOK)
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(rr, req)
-	_ = p.logger.Sync()
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/metadata"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
 
 	content := readLogFile(t, path)
 	if !strings.Contains(content, `"path":"/metadata"`) {
@@ -1328,12 +1296,10 @@ func TestMetadataDecodeFailsBeforeFileWriterAcquisition(t *testing.T) {
 	if err == nil {
 		t.Fatal("PostInit() error = nil for invalid metadata")
 	}
-	if p.lease != nil || p.writer != nil || p.logger != nil || p.processor != nil {
+	if p.lease != nil || p.processor != nil {
 		t.Fatalf(
-			"decode failure acquired file resources: lease=%v writer=%v logger=%v processor=%v",
+			"decode failure acquired file resources: lease=%v processor=%v",
 			p.lease,
-			p.writer,
-			p.logger,
 			p.processor,
 		)
 	}
@@ -1361,12 +1327,10 @@ func TestPostInitRollsBackWriterLeaseWhenTaskAdmissionFails(t *testing.T) {
 	if !errors.Is(err, runtime.ErrTaskRegistryStopped) {
 		t.Fatalf("PostInit() error = %v, want ErrTaskRegistryStopped", err)
 	}
-	if p.lease != nil || p.writer != nil || p.logger != nil || p.processor != nil {
+	if p.lease != nil || p.processor != nil {
 		t.Fatalf(
-			"failed task admission published resources: lease=%v writer=%v logger=%v processor=%v",
+			"failed task admission published resources: lease=%v processor=%v",
 			p.lease,
-			p.writer,
-			p.logger,
 			p.processor,
 		)
 	}
@@ -1413,11 +1377,45 @@ func readLogFile(t *testing.T, path string) string {
 func serveFileLoggerRequest(t *testing.T, p *Plugin, path string) {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	req = apisixctx.WithRequestVars(req)
-	rr := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apisixctx.RegisterRequestVar(r, "$status", http.StatusOK)
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: path},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	syncFileLogger(t, p)
+}
+
+func queueFileLoggerRequest(t *testing.T, p *Plugin, path string) {
+	t.Helper()
+	before := p.processor.stats()
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: path},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		stats := p.processor.stats()
+		if stats.Delivered > before.Delivered {
+			return
+		}
+		if stats.Failed > before.Failed {
+			t.Fatalf("queued file logger request failed: stats=%#v", stats)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("queued file logger request was not delivered: stats=%#v", p.processor.stats())
+}
+
+func syncFileLogger(t *testing.T, p *Plugin) {
+	t.Helper()
+	ack, err := p.processor.pushBarrier()
+	if err != nil {
+		t.Fatalf("pushBarrier() error = %v", err)
+	}
+	if err := <-ack; err != nil {
+		t.Fatalf("barrier error = %v", err)
+	}
 }

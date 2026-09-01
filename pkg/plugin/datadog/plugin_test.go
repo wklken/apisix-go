@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -17,7 +16,6 @@ import (
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
-	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -614,7 +612,9 @@ func TestSendWritesOneDatagramPerMetric(t *testing.T) {
 		Status:        200,
 	}
 
-	p.Send(entry)
+	if err := p.send(context.Background(), entry); err != nil {
+		t.Fatalf("send() error = %v", err)
+	}
 
 	if got := collectMessages(t, received, 5); !slices.Equal(got, p.metricLines(entry)) {
 		t.Fatalf("UDP datagrams = %v, want one datagram per metric %v", got, p.metricLines(entry))
@@ -654,7 +654,9 @@ func TestSendFallsBackToPerMetricDatagramsAboveDogStatsDLimit(t *testing.T) {
 		Status:        200,
 	}
 
-	p.Send(entry)
+	if err := p.send(context.Background(), entry); err != nil {
+		t.Fatalf("send() error = %v", err)
+	}
 
 	if got := collectMessages(t, received, 5); !slices.Equal(got, p.metricLines(entry)) {
 		t.Fatalf("UDP datagrams = %v, want one datagram per metric %v", got, p.metricLines(entry))
@@ -713,13 +715,15 @@ func TestSendWritesUDPMetrics(t *testing.T) {
 		ConstantTags: []string{"source:apisix"},
 	}
 
-	p.Send(metricEntry{
+	if err := p.send(context.Background(), metricEntry{
 		LatencyMS:     1,
 		ApisixLatency: 1,
 		IngressSize:   2,
 		EgressSize:    3,
 		Status:        200,
-	})
+	}); err != nil {
+		t.Fatalf("send() error = %v", err)
+	}
 
 	messages := collectMetricLines(t, received, 5, 5)
 	if !containsPrefix(messages, "apisix.request.counter:1|c|#") {
@@ -730,7 +734,7 @@ func TestSendWritesUDPMetrics(t *testing.T) {
 	}
 }
 
-func TestHandlerCapturesStatusAndSizes(t *testing.T) {
+func TestRunLogPhaseCapturesStatusAndSizes(t *testing.T) {
 	addr, received := startUDPServer(t, 5)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -745,15 +749,20 @@ func TestHandlerCapturesStatusAndSizes(t *testing.T) {
 		ConstantTags: []string{"source:apisix"},
 	}
 
-	req := httptest.NewRequest(http.MethodPut, "/orders/1", strings.NewReader("request"))
-	req.Header.Set("X-Forwarded-Proto", "https")
-	req.ContentLength = 7
-	rr := httptest.NewRecorder()
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("reply"))
-	})).ServeHTTP(rr, req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodPut,
+			URI:    "/orders/1",
+			Scheme: "https",
+			RequestVars: map[string]any{
+				"$request_length": int64(97),
+				"$bytes_sent":     int64(126),
+			},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusCreated},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	messages := collectMetricLines(t, received, 5, 5)
 	if !containsLinePart(messages, "response_status:201") {
@@ -770,7 +779,7 @@ func TestHandlerCapturesStatusAndSizes(t *testing.T) {
 	}
 }
 
-func TestHandlerCapturesUpstreamLatency(t *testing.T) {
+func TestRunLogPhaseCapturesUpstreamLatency(t *testing.T) {
 	addr, received := startUDPServer(t, 6)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -785,13 +794,16 @@ func TestHandlerCapturesUpstreamLatency(t *testing.T) {
 		ConstantTags: []string{"source:apisix"},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/1", nil)
-	req = apisixctx.WithRequestVars(req)
-	apisixctx.RegisterRequestVar(req, "$upstream_latency", int64(42))
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method:      http.MethodGet,
+			URI:         "/orders/1",
+			RequestVars: map[string]any{"$upstream_latency": int64(42)},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	messages := collectMetricLines(t, received, 6, 6)
 	if !containsPrefix(messages, "apisix.upstream.latency:42|h|#") {
@@ -799,7 +811,7 @@ func TestHandlerCapturesUpstreamLatency(t *testing.T) {
 	}
 }
 
-func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
+func TestRunLogPhaseUsesMatchedURIForPathTag(t *testing.T) {
 	addr, received := startUDPServer(t, 5)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -814,14 +826,16 @@ func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
 		ConstantTags: []string{"source:apisix"},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/123", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{
-		"$matched_uri": "/orders/:id",
-	})
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method:     http.MethodGet,
+			URI:        "/orders/123",
+			APISIXVars: map[string]any{"$matched_uri": "/orders/:id"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	messages := collectMetricLines(t, received, 5, 5)
 	if !containsLinePart(messages, "path:/orders/:id") {
@@ -832,7 +846,7 @@ func TestHandlerUsesMatchedURIForPathTag(t *testing.T) {
 	}
 }
 
-func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
+func TestRunLogPhaseCapturesAPISIXResourceTags(t *testing.T) {
 	addr, received := startUDPServer(t, 5)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -847,19 +861,21 @@ func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
 		ConstantTags: []string{"source:apisix"},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/1", nil)
-	req = apisixctx.WithApisixVars(req, map[string]string{
-		"$route_id":     "route-1",
-		"$route_name":   "orders-route",
-		"$service_id":   "service-1",
-		"$service_name": "orders-service",
-		"$balancer_ip":  "10.0.0.9",
-	})
-	apisixctx.AttachConsumer(req, resource.Consumer{Username: "alice"})
-
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), req)
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{
+			Method: http.MethodGet,
+			URI:    "/orders/1",
+			APISIXVars: map[string]any{
+				"$route_id": "route-1", "$route_name": "orders-route",
+				"$service_id": "service-1", "$service_name": "orders-service",
+				"$balancer_ip": "10.0.0.9",
+			},
+			Consumer: apisixlog.SafeConsumerLogIdentity{Username: "alice"},
+		},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusOK},
+	}); err != nil {
+		t.Fatalf("RunLogPhase() error = %v", err)
+	}
 
 	messages := collectMetricLines(t, received, 5, 5)
 	for _, tag := range []string{
@@ -874,7 +890,7 @@ func TestHandlerCapturesAPISIXResourceTags(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesMetricsUntilBatchMaxSize(t *testing.T) {
+func TestRunLogPhaseBatchesMetricsUntilBatchMaxSize(t *testing.T) {
 	addr, received := startUDPServer(t, 10)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -883,18 +899,24 @@ func TestHandlerBatchesMetricsUntilBatchMaxSize(t *testing.T) {
 
 	p := newTestPlugin(t, Config{BatchMaxSize: 2})
 	p.metadata = Metadata{Host: host, Port: mustAtoi(t, port), Namespace: "apisix"}
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/first", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/first"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase(/first) error = %v", err)
+	}
 	select {
 	case message := <-received:
 		t.Fatalf("received metric before batch filled: %q", message)
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/second", nil))
+	if err := p.RunLogPhase(base.LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: "/second"},
+		Outcome: apisixctx.ResponseOutcome{Status: http.StatusNoContent},
+	}); err != nil {
+		t.Fatalf("RunLogPhase(/second) error = %v", err)
+	}
 	messages := collectMetricLines(t, received, 10, 10)
 	if len(messages) != 10 {
 		t.Fatalf("messages = %d, want 10 for two five-metric entries", len(messages))

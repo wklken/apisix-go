@@ -46,15 +46,12 @@ type fileLogRecordKind uint8
 
 const (
 	fileLogSnapshotRecord fileLogRecordKind = iota + 1
-	fileLogFieldsRecord
 	fileLogBarrierRecord
-	fileLogFieldsBarrierRecord
 )
 
 type fileLogRecord struct {
 	kind          fileLogRecordKind
 	snapshot      base.LogSnapshot
-	fields        map[string]any
 	retainedBytes int64
 	ack           chan error
 }
@@ -135,24 +132,9 @@ func (p *fileLoggerProcessor) pushSnapshot(snapshot base.LogSnapshot) error {
 	})
 }
 
-func (p *fileLoggerProcessor) pushFields(fields map[string]any) error {
-	return p.admit(fileLogRecord{
-		kind:   fileLogFieldsRecord,
-		fields: fields,
-	})
-}
-
 func (p *fileLoggerProcessor) pushBarrier() (<-chan error, error) {
 	ack := make(chan error, 1)
 	if err := p.admit(fileLogRecord{kind: fileLogBarrierRecord, ack: ack}); err != nil {
-		return nil, err
-	}
-	return ack, nil
-}
-
-func (p *fileLoggerProcessor) pushFieldsAndBarrier(fields map[string]any) (<-chan error, error) {
-	ack := make(chan error, 1)
-	if err := p.admit(fileLogRecord{kind: fileLogFieldsBarrierRecord, fields: fields, ack: ack}); err != nil {
 		return nil, err
 	}
 	return ack, nil
@@ -166,7 +148,7 @@ func (p *fileLoggerProcessor) admit(record fileLogRecord) error {
 		p.observer.AddEvent(metrics.LoggerBatchOutcomeStoppedDropped)
 		return base.ErrLogQueueUnavailable
 	}
-	if record.kind != fileLogBarrierRecord {
+	if record.kind == fileLogSnapshotRecord {
 		record.retainedBytes = fileLogRecordPayloadBytes(record)
 		if !p.reservePending(record.retainedBytes) {
 			p.observer.AddEvent(metrics.LoggerBatchOutcomeCapacityDropped)
@@ -177,7 +159,7 @@ func (p *fileLoggerProcessor) admit(record fileLogRecord) error {
 	case p.records <- record:
 		return nil
 	default:
-		if record.kind != fileLogBarrierRecord {
+		if record.kind == fileLogSnapshotRecord {
 			p.releasePending(1, record.retainedBytes)
 		}
 		p.observer.AddEvent(metrics.LoggerBatchOutcomeCapacityDropped)
@@ -286,15 +268,6 @@ func (p *fileLoggerProcessor) run(ctx context.Context) error {
 			rememberError(p.appendFields(
 				encoder, fields, &batch, &entries, &batchPayloadBytes, record.retainedBytes, armTimer, flush,
 			))
-		case fileLogFieldsRecord:
-			rememberError(p.appendFields(
-				encoder, record.fields, &batch, &entries, &batchPayloadBytes, record.retainedBytes, armTimer, flush,
-			))
-		case fileLogFieldsBarrierRecord:
-			rememberError(p.appendFields(
-				encoder, record.fields, &batch, &entries, &batchPayloadBytes, record.retainedBytes, armTimer, flush,
-			))
-			acknowledgeBarrier(record.ack)
 		}
 	}
 
@@ -393,12 +366,6 @@ func (p *fileLoggerProcessor) reservePending(payloadBytes int64) bool {
 	return true
 }
 
-func (p *fileLoggerProcessor) pendingCount() int {
-	p.pendingMu.Lock()
-	defer p.pendingMu.Unlock()
-	return p.pending
-}
-
 func (p *fileLoggerProcessor) releasePending(entries int, payloadBytes int64) {
 	if entries <= 0 {
 		return
@@ -463,8 +430,6 @@ func fileLogRecordPayloadBytes(record fileLogRecord) int64 {
 	switch record.kind {
 	case fileLogSnapshotRecord:
 		return fileLogSnapshotPayloadBytes(record.snapshot)
-	case fileLogFieldsRecord, fileLogFieldsBarrierRecord:
-		return fileLogValuePayloadBytes(record.fields, 0)
 	default:
 		return 0
 	}

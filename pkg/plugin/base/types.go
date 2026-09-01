@@ -54,10 +54,6 @@ func (p *BasePlugin) StaticConfig() *config.EffectiveConfig {
 	return p.dependencies.Config
 }
 
-func (p *BasePlugin) ScopedSecrets() secret.GenerationSecrets {
-	return p.dependencies.Secrets
-}
-
 func (p *BasePlugin) MetadataView() runtime.MetadataView {
 	return p.dependencies.Metadata
 }

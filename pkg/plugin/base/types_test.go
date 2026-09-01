@@ -127,7 +127,7 @@ func TestBasePluginScopedDependenciesRemainInstanceScoped(t *testing.T) {
 		Tasks:     rightOwner,
 	})
 
-	if left.ScopedSecrets().Generation() == right.ScopedSecrets().Generation() {
+	if left.dependencies.Secrets.Generation() == right.dependencies.Secrets.Generation() {
 		t.Fatal("secret capabilities were not isolated")
 	}
 	if consumer, ok := left.ConsumerLookup().ConsumerByID("left"); !ok || consumer.Username != "left" {

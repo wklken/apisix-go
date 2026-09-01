@@ -155,11 +155,10 @@ type PluginAttr map[string]any
 
 type Deployment struct {
 	// TODO: add validation here
-	Role             string                `mapstructure:"role"`
-	RoleTraditional  RoleTraditionalConfig `mapstructure:"role_traditional"`
-	RoleDataPlane    RoleConfig            `mapstructure:"role_data_plane"`
-	RoleControlPlane RoleConfig            `mapstructure:"role_control_plane"`
-	Etcd             Etcd                  `mapstructure:"etcd"`
+	Role            string                `mapstructure:"role"`
+	RoleTraditional RoleTraditionalConfig `mapstructure:"role_traditional"`
+	RoleDataPlane   RoleConfig            `mapstructure:"role_data_plane"`
+	Etcd            Etcd                  `mapstructure:"etcd"`
 }
 
 type RoleConfig struct {

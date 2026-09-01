@@ -158,7 +158,7 @@ func EffectiveConfigProvider(cfg *Config) (string, error) {
 	case "data_plane":
 		provider = cfg.Deployment.RoleDataPlane.ConfigProvider
 	case "control_plane":
-		provider = cfg.Deployment.RoleControlPlane.ConfigProvider
+		return "", fmt.Errorf("deployment.role=control_plane is unsupported by the Go data plane")
 	case "traditional":
 		provider = cfg.Deployment.RoleTraditional.ConfigProvider
 	default:

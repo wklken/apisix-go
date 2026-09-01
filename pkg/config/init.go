@@ -67,7 +67,7 @@ func CapabilitySummary(cfg *Config) map[string]any {
 	streamListeners := len(cfg.Apisix.StreamProxy.Tcp) + len(cfg.Apisix.StreamProxy.Udp)
 	return map[string]any{
 		"debug":                 cfg.Debug,
-		"role":                  boundedSummaryValue(cfg.Deployment.Role, "traditional", "data_plane", "control_plane"),
+		"role":                  boundedSummaryValue(cfg.Deployment.Role, "traditional", "data_plane"),
 		"config_provider":       boundedSummaryValue(provider, "etcd", "yaml", "json"),
 		"http_listener_count":   len(cfg.Apisix.NodeListen),
 		"https_listener_count":  len(cfg.Apisix.Ssl.Listen),

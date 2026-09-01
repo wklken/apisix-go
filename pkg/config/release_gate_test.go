@@ -62,6 +62,12 @@ func TestAPISIX317ListenerTypesOmitPerListenerProxyProtocol(t *testing.T) {
 	}
 }
 
+func TestDataPlaneDeploymentTypeOmitsControlPlaneConfig(t *testing.T) {
+	if _, ok := reflect.TypeFor[Deployment]().FieldByName("RoleControlPlane"); ok {
+		t.Fatal("data-plane deployment exposes control-plane configuration")
+	}
+}
+
 func TestLoadEffectiveMergesNestedOverrideAndReplacesLists(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `
@@ -220,7 +226,7 @@ func TestEffectiveConfigProviderRejectsUnsupportedRolePairs(t *testing.T) {
 		{name: "data plane missing", role: "data_plane"},
 		{name: "data plane xds", role: "data_plane", provider: "xds"},
 		{name: "traditional yaml", role: "traditional", provider: "yaml"},
-		{name: "control plane json", role: "control_plane", provider: "json"},
+		{name: "control plane", role: "control_plane", provider: "etcd"},
 		{name: "unknown role", role: "sidecar", provider: "etcd"},
 	}
 	for _, test := range tests {
@@ -229,15 +235,29 @@ func TestEffectiveConfigProviderRejectsUnsupportedRolePairs(t *testing.T) {
 			switch test.role {
 			case "data_plane":
 				cfg.Deployment.RoleDataPlane.ConfigProvider = test.provider
-			case "control_plane":
-				cfg.Deployment.RoleControlPlane.ConfigProvider = test.provider
-			default:
+			case "traditional":
 				cfg.Deployment.RoleTraditional.ConfigProvider = test.provider
 			}
 			if _, err := EffectiveConfigProvider(cfg); err == nil {
 				t.Fatalf("EffectiveConfigProvider(%q, %q) error = nil", test.role, test.provider)
 			}
 		})
+	}
+}
+
+func TestLoadEffectiveRejectsControlPlaneRole(t *testing.T) {
+	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
+	override := writeConfigFile(t, "override.yaml", `
+deployment:
+  role: control_plane
+  role_control_plane:
+    config_provider: etcd
+`)
+
+	_, err := loadEffectiveTestFiles(t, base, override)
+	if err == nil ||
+		!strings.Contains(err.Error(), "deployment.role=control_plane is unsupported by the Go data plane") {
+		t.Fatalf("LoadEffective() error = %v, want explicit control-plane rejection", err)
 	}
 }
 
@@ -326,6 +346,16 @@ func TestCapabilitySummaryContainsOnlyBoundedSafeFacts(t *testing.T) {
 		if got := summary[key]; got != want {
 			t.Fatalf("summary[%q] = %#v, want %#v", key, got, want)
 		}
+	}
+}
+
+func TestCapabilitySummaryDoesNotAdvertiseControlPlane(t *testing.T) {
+	summary := CapabilitySummary(&Config{Deployment: Deployment{Role: "control_plane"}})
+	if got := summary["role"]; got != "unknown" {
+		t.Fatalf("summary role = %#v, want unknown", got)
+	}
+	if got := summary["config_provider"]; got != "unknown" {
+		t.Fatalf("summary config provider = %#v, want unknown", got)
 	}
 }
 

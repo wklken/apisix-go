@@ -1329,20 +1329,14 @@ func TestManifestRejectsInvalidEnvironment(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		environment string
+		want        string
 	}{
-		{name: "invalid-name", environment: "1INVALID: value"},
-		{name: "non-string-value", environment: "VALID: 1"},
+		{name: "invalid-name", environment: "1INVALID: value", want: "must be a nonempty POSIX-style name"},
+		{name: "non-string-value", environment: "VALID: 1", want: `environment variable "VALID" value must be a string`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			data := []byte("source:\n" +
-				"  repository: https://github.com/apache/apisix\n" +
-				"  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7\n" +
-				"  file: t/plugin/example.t\n" +
-				"  tests: 1\n" +
-				"cases:\n" +
+			data := []byte("cases:\n" +
 				"  - name: invalid-environment\n" +
-				"    source:\n" +
-				"      tests: [1]\n" +
 				"    environment:\n" +
 				"      " + test.environment + "\n" +
 				"    config:\n" +
@@ -1351,8 +1345,9 @@ func TestManifestRejectsInvalidEnvironment(t *testing.T) {
 				"      logs:\n" +
 				"        matches: ready\n")
 
-			if _, err := loadManifest("invalid-environment.yaml", data); err == nil {
-				t.Fatal("loadManifest() error = nil, want environment validation failure")
+			_, err := loadManifest("invalid-environment.yaml", data)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("loadManifest() error = %v, want %q", err, test.want)
 			}
 		})
 	}
@@ -1458,21 +1453,15 @@ func TestManifestRejectsInvalidHTTPFixtureResponseDelay(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		delay string
+		want  string
 	}{
-		{name: "negative", delay: "-1s"},
-		{name: "too-long", delay: "6s"},
-		{name: "not-a-duration", delay: "not-a-duration"},
+		{name: "negative", delay: "-1s", want: "delay must not be negative"},
+		{name: "too-long", delay: "6s", want: "delay must not exceed 5s"},
+		{name: "not-a-duration", delay: "not-a-duration", want: "cannot unmarshal"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			data := []byte("source:\n" +
-				"  repository: https://github.com/apache/apisix\n" +
-				"  commit: c3d7d5ec69774121f53d2e20d29d09c816795dd7\n" +
-				"  file: t/plugin/example.t\n" +
-				"  tests: 1\n" +
-				"cases:\n" +
+			data := []byte("cases:\n" +
 				"  - name: invalid-delay\n" +
-				"    source:\n" +
-				"      tests: [1]\n" +
 				"    config:\n" +
 				"      routes: []\n" +
 				"    fixtures:\n" +
@@ -1488,8 +1477,9 @@ func TestManifestRejectsInvalidHTTPFixtureResponseDelay(t *testing.T) {
 				"        output:\n" +
 				"          status: 200\n")
 
-			if _, err := loadManifest("invalid-delay.yaml", data); err == nil {
-				t.Fatal("loadManifest() error = nil, want fixture response delay rejection")
+			_, err := loadManifest("invalid-delay.yaml", data)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("loadManifest() error = %v, want %q", err, test.want)
 			}
 		})
 	}

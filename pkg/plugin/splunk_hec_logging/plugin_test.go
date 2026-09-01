@@ -1042,9 +1042,18 @@ func captureHandlerEntry(
 ) map[string]any {
 	t.Helper()
 
+	delivered := make(chan map[string]any, 1)
+	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
+		BatchMaxSize: 1, MaxPendingEntries: 1, BufferDuration: time.Hour,
+		InactiveTimeout: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	t.Cleanup(p.BatchProcessor.Stop)
 	p.Handler(next).ServeHTTP(httptest.NewRecorder(), req)
 	select {
-	case entry := <-p.FireChan:
+	case entry := <-delivered:
 		return entry
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for Splunk handler entry")

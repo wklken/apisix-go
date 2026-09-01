@@ -85,8 +85,8 @@ func TestInitPluginsPassesRouteIDToLoggerBatchMetrics(t *testing.T) {
 	}
 	t.Cleanup(httpLogger.BatchProcessor.Stop)
 
-	if err := httpLogger.Fire(map[string]any{"path": "/orders"}); err != nil {
-		t.Fatalf("Fire() error = %v", err)
+	if err := httpLogger.EnqueueLog(map[string]any{"path": "/orders"}); err != nil {
+		t.Fatalf("EnqueueLog() error = %v", err)
 	}
 
 	if got := routeGaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 1 {
@@ -126,8 +126,8 @@ func TestInitPluginsPassesServerAddrToLoggerBatchMetrics(t *testing.T) {
 	}
 	t.Cleanup(httpLogger.BatchProcessor.Stop)
 
-	if err := httpLogger.Fire(map[string]any{"path": "/orders"}); err != nil {
-		t.Fatalf("Fire() error = %v", err)
+	if err := httpLogger.EnqueueLog(map[string]any{"path": "/orders"}); err != nil {
+		t.Fatalf("EnqueueLog() error = %v", err)
 	}
 
 	if got := routeGaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 1 {
@@ -171,8 +171,8 @@ func TestInitGlobalPluginsPassesRouteContextToLoggerBatchMetrics(t *testing.T) {
 	}
 	t.Cleanup(httpLogger.BatchProcessor.Stop)
 
-	if err := httpLogger.Fire(map[string]any{"path": "/orders"}); err != nil {
-		t.Fatalf("Fire() error = %v", err)
+	if err := httpLogger.EnqueueLog(map[string]any{"path": "/orders"}); err != nil {
+		t.Fatalf("EnqueueLog() error = %v", err)
 	}
 
 	if got := routeGaugeValue(t, gauge, "http logger", "route-a", "127.0.0.1:9080"); got != 1 {

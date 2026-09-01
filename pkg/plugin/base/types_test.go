@@ -168,8 +168,8 @@ func TestBaseLoggerRunLogPhaseUsesBoundedBatchQueue(t *testing.T) {
 	if err := plugin.RunLogPhase(snapshot); err != nil {
 		t.Fatalf("first RunLogPhase() error = %v", err)
 	}
-	if err := plugin.RunLogPhase(snapshot); !errors.Is(err, ErrLogQueueFull) {
-		t.Fatalf("second RunLogPhase() error = %v, want ErrLogQueueFull", err)
+	if err := plugin.Fire(map[string]any{"method": http.MethodPost}); !errors.Is(err, ErrLogQueueFull) {
+		t.Fatalf("Fire() error = %v, want ErrLogQueueFull", err)
 	}
 }
 
@@ -420,9 +420,20 @@ func TestSnapshotExpressionMatchesRebuildsDetachedRequest(t *testing.T) {
 }
 
 func TestBaseLoggerConfigurationDefaultsAndCompatibilityHandler(t *testing.T) {
+	delivered := make(chan map[string]any, 1)
+	processor := newBaseBatchProcessorForTest(t, logger_batch.Config{
+		Name: "compatibility-handler", BatchMaxSize: 1, MaxPendingEntries: 1,
+		BufferDuration: time.Hour, InactiveTimeout: time.Hour, ShutdownTimeout: time.Second,
+	}, func(_ context.Context, entries []map[string]any, _ int) (int, error) {
+		delivered <- entries[0]
+		return 0, nil
+	})
+	defer processor.Stop()
+
 	plugin := &BaseLoggerPlugin{}
 	plugin.SetRouteContext("route-1", "127.0.0.1:9080")
 	plugin.InitLogger(func(map[string]any) {})
+	plugin.BatchProcessor = processor
 	if plugin.RouteID != "route-1" || plugin.ServerAddr != "127.0.0.1:9080" ||
 		plugin.FireChan == nil || !plugin.AsyncBlock || plugin.SendFunc == nil {
 		t.Fatalf("logger initialization = %#v", plugin)
@@ -435,14 +446,9 @@ func TestBaseLoggerConfigurationDefaultsAndCompatibilityHandler(t *testing.T) {
 		t.Fatal("compatibility Handler did not call downstream")
 	}
 	select {
-	case <-plugin.FireChan:
-	default:
-		t.Fatal("compatibility Handler did not enqueue a log entry")
-	}
-	dropper := &BaseLoggerPlugin{FireChan: make(chan map[string]any, 1)}
-	dropper.FireChan <- map[string]any{"first": true}
-	if err := dropper.Fire(map[string]any{"dropped": true}); err != nil {
-		t.Fatalf("non-blocking compatibility Fire() error = %v", err)
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("compatibility Handler did not deliver a log entry")
 	}
 
 	defaults := BatchDefaults{MaxConcurrentDeliveries: 100}
@@ -464,5 +470,8 @@ func TestBaseLoggerConfigurationDefaultsAndCompatibilityHandler(t *testing.T) {
 
 	if err := EnqueueLog(nil, map[string]any{}); !errors.Is(err, ErrLogQueueUnavailable) {
 		t.Fatalf("EnqueueLog(nil) error = %v", err)
+	}
+	if err := (&BaseLoggerPlugin{}).Fire(map[string]any{}); !errors.Is(err, ErrLogQueueUnavailable) {
+		t.Fatalf("Fire() without processor error = %v, want ErrLogQueueUnavailable", err)
 	}
 }

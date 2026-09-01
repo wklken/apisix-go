@@ -345,7 +345,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				logFields[internalSkyWalkingTraceContext] = trace
 			}
 		}
-		_ = p.Fire(logFields)
+		_ = p.EnqueueLog(logFields)
 	}
 	return http.HandlerFunc(fn)
 }

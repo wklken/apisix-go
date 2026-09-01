@@ -428,7 +428,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 		frame := encodeRFC5424(time.Now(), requestHostname(r), os.Getpid(), message)
-		_ = p.Fire(map[string]any{syslogFrameKey: frame})
+		_ = p.EnqueueLog(map[string]any{syslogFrameKey: frame})
 	}
 	return http.HandlerFunc(fn)
 }

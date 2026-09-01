@@ -492,7 +492,7 @@ func (p *Plugin) enqueueLogglyIfRunning(fields map[string]any) error {
 		return base.ErrLogQueueUnavailable
 	}
 	if p.BatchProcessor == nil {
-		return p.Fire(fields)
+		return p.EnqueueLog(fields)
 	}
 	return p.EnqueueLog(fields)
 }

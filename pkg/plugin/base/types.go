@@ -492,11 +492,7 @@ func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
 		// FIXME: if not LogFormat, will get full log,
 		// reference: https://github.com/apache/apisix/blob/master/apisix/utils/log-util.lua#L136
 
-		_ = p.Fire(logFields)
+		_ = p.EnqueueLog(logFields)
 	}
 	return http.HandlerFunc(fn)
-}
-
-func (p *BaseLoggerPlugin) Fire(entry map[string]any) error {
-	return p.EnqueueLog(entry)
 }

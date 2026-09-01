@@ -392,7 +392,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 		labels := p.resolveRequestLabels(r, status)
 
-		_ = p.Fire(wrapLokiEntry(logFields, requestStart, labels))
+		_ = p.EnqueueLog(wrapLokiEntry(logFields, requestStart, labels))
 	}
 	return http.HandlerFunc(fn)
 }

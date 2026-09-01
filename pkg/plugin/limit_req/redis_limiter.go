@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ func (p *Plugin) newRedisLimiter() reqLimiter {
 		return nil
 	}
 	p.clientRelease = release
-	return &redisReqLimiter{client: value.(redis.UniversalClient), now: p.now}
+	return &redisReqLimiter{client: value.(redis.UniversalClient), now: time.Now}
 }
 
 func (p *Plugin) redisConnConfig() base.RedisConnConfig {
@@ -95,7 +96,7 @@ func (p *Plugin) newRedisClusterLimiter() reqLimiter {
 		return nil
 	}
 	p.clientRelease = release
-	return &redisReqLimiter{client: value.(redis.UniversalClient), now: p.now}
+	return &redisReqLimiter{client: value.(redis.UniversalClient), now: time.Now}
 }
 
 func (p *Plugin) redisClusterConnConfig() base.RedisClusterConnConfig {
@@ -111,7 +112,7 @@ func (p *Plugin) redisClusterConnConfig() base.RedisClusterConnConfig {
 }
 
 func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (time.Duration, bool, error) {
-	ttl := max(time.Duration(math.Ceil((burst+1)/rate))*time.Second, time.Second)
+	ttl := redisLimitReqTTL(rate, burst)
 	now := l.now
 	if now == nil {
 		now = time.Now
@@ -120,11 +121,11 @@ func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (tim
 	result, err := l.client.Eval(
 		context.Background(),
 		redisLimitReqScript,
-		[]string{"plugin-limit-req:" + key},
+		[]string{redisStateKey(key)},
+		rate*1000,
+		burst*1000,
 		now().UnixMilli(),
-		rate,
-		burst,
-		ttl.Milliseconds(),
+		int64(ttl/time.Second),
 	).Result()
 	logRedisConnectionReuse(l.client)
 	if err != nil {
@@ -139,10 +140,31 @@ func (l *redisReqLimiter) incoming(key string, rate float64, burst float64) (tim
 	if !ok {
 		return 0, false, fmt.Errorf("unexpected redis limit-req allowed value: %v", values[0])
 	}
-	delayMs, ok := limitbase.RedisInt(values[1])
+	excess, ok := redisFloat(values[1])
 	if !ok {
-		return 0, false, fmt.Errorf("unexpected redis limit-req delay value: %v", values[1])
+		return 0, false, fmt.Errorf("unexpected redis limit-req excess value: %v", values[1])
 	}
+	return time.Duration(excess / (rate * 1000) * float64(time.Second)), allowed == 1, nil
+}
 
-	return time.Duration(delayMs) * time.Millisecond, allowed == 1, nil
+func redisLimitReqTTL(rate float64, burst float64) time.Duration {
+	return time.Duration(math.Ceil(burst/rate)+1) * time.Second
+}
+
+func redisStateKey(key string) string {
+	return "limit_req:" + key
+}
+
+func redisFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case string:
+		result, err := strconv.ParseFloat(typed, 64)
+		return result, err == nil
+	case []byte:
+		result, err := strconv.ParseFloat(string(typed), 64)
+		return result, err == nil
+	default:
+		integer, ok := limitbase.RedisInt(value)
+		return float64(integer), ok
+	}
 }

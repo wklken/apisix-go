@@ -2939,7 +2939,6 @@ func prepareFrontendTLS(
 	standaloneConfig map[string]any,
 	sni string,
 	port int,
-	enableHTTP2 bool,
 ) (map[string]any, map[string]any, error) {
 	runtimeConfig, err := cloneConfigMap(runtimeConfig)
 	if err != nil {
@@ -2958,9 +2957,8 @@ func prepareFrontendTLS(
 	sslConfig := ensureMap(apisix, "ssl")
 	sslConfig["enable"] = true
 	sslConfig["listen"] = []any{map[string]any{
-		"ip":           "127.0.0.1",
-		"port":         port,
-		"enable_http2": enableHTTP2,
+		"ip":   "127.0.0.1",
+		"port": port,
 	}}
 
 	ssls, _ := standaloneConfig["ssls"].([]any)
@@ -3299,11 +3297,10 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 			t.Fatalf("reserve APISIX TLS port: %v", err)
 		}
 		runtimeOverrides, standaloneResources, err = prepareFrontendTLS(
-			spec.Runtime,
+			runtimeOverrides,
 			spec.Config,
 			spec.TLS.SNI,
 			tlsPort,
-			enableHTTP2,
 		)
 		if err != nil {
 			t.Fatalf("prepare frontend TLS: %v", err)

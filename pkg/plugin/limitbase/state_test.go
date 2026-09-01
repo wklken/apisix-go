@@ -100,3 +100,44 @@ func TestSharedStateFixedWindowsAreBoundedAndExpired(t *testing.T) {
 		t.Fatalf("fixed window count after expiry = %d, want 0", got)
 	}
 }
+
+func TestSharedStateLeakyBucketMatchesAPISIXFirstRequestAndRejectSemantics(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	state := newState(func() time.Time { return now })
+
+	first := state.LeakyBucket("client", 2, 0)
+	if !first.Allowed || first.Delay != 0 {
+		t.Fatalf("first admission = %#v, want immediate allow", first)
+	}
+	rejected := state.LeakyBucket("client", 2, 0)
+	if rejected.Allowed {
+		t.Fatalf("immediate second admission = %#v, want rejection", rejected)
+	}
+
+	now = now.Add(500 * time.Millisecond)
+	recovered := state.LeakyBucket("client", 2, 0)
+	if !recovered.Allowed || recovered.Delay != 0 {
+		t.Fatalf("recovered admission = %#v, want immediate allow", recovered)
+	}
+}
+
+func TestSharedStateLeakyBucketSurvivesCallersAndRefreshesExpiry(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	state := newState(func() time.Time { return now })
+
+	if result := state.LeakyBucket("client", 1, 1); !result.Allowed {
+		t.Fatalf("first admission = %#v", result)
+	}
+	second := state.LeakyBucket("client", 1, 1)
+	if !second.Allowed || second.Delay != time.Second {
+		t.Fatalf("second admission = %#v, want one-second delay", second)
+	}
+	if result := state.LeakyBucket("client", 1, 1); result.Allowed {
+		t.Fatalf("third admission = %#v, want rejection", result)
+	}
+
+	now = now.Add(2 * time.Second)
+	if result := state.LeakyBucket("client", 1, 1); !result.Allowed || result.Delay != 0 {
+		t.Fatalf("expired bucket admission = %#v, want fresh state", result)
+	}
+}

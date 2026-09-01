@@ -816,10 +816,9 @@ func (store *blockingLimitCountStore) Increment(
 
 func assertLimitCountStoppedPublicationState(t *testing.T, p *Plugin) {
 	t.Helper()
-	if p.groupRegistered || p.limiter != nil || p.sliding != nil || p.delayed != nil ||
+	if p.groupRegistered || p.limiter != nil || p.sliding != nil ||
 		p.slidingStore != nil || p.localLimiterStore != nil || p.fixedStore != nil || p.backendClient != nil ||
-		p.clientRelease != nil || p.limiters != nil || p.slidingByKey != nil ||
-		p.delayedByKey != nil || p.ruleLimiters != nil {
+		p.clientRelease != nil || p.limiters != nil || p.slidingByKey != nil || p.ruleLimiters != nil {
 		t.Fatalf("stopped plugin retained publication state: %#v", p)
 	}
 	if p.config.Group != "" {

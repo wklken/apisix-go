@@ -23,6 +23,22 @@ func TestAPISIX317SchemaOmitsConfigurableCost(t *testing.T) {
 	}
 }
 
+func TestAPISIX317SchemaOmitsSyncInterval(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	if _, ok := document.Properties["sync_interval"]; ok {
+		t.Fatal("schema exposes non-APISIX sync_interval")
+	}
+}
+
 func TestAPISIX317SchemaRejectionMatrix(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

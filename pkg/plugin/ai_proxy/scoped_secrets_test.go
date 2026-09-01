@@ -195,6 +195,25 @@ func TestMaterializeScopedSecretsOwnsAIProxyCredentials(t *testing.T) {
 	}
 }
 
+func TestMaterializeScopedSecretsRejectsInvalidGCPServiceAccountJSON(t *testing.T) {
+	const raw = "$secret://ai/invalid-gcp"
+	secrets, scope, _, closeAttempt := newAIProxyScopedSecretHarness(
+		t, name, map[string]string{raw: `{"type":`},
+	)
+	defer closeAttempt()
+	p := &Plugin{config: Config{Auth: Auth{GCP: &ai_auth.GCPConfig{
+		ServiceAccountJSON: raw,
+	}}}}
+	if err := p.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.MaterializeScopedPluginSecrets(
+		context.Background(), scope, secrets, p,
+	); err == nil {
+		t.Fatal("MaterializeScopedPluginSecrets() error = nil")
+	}
+}
+
 func TestAIProxyStopDrainsCredentialUseAndClosesIdleConnections(t *testing.T) {
 	const raw = "$ENV://AI_PROXY_STOP_HEADER"
 	secrets, scope, _, closeAttempt := newAIProxyScopedSecretHarness(

@@ -50,3 +50,48 @@ cases:
           headers: {Content-Type: application/json, X-Role: admin}
           body: '{"payload":"bad","payload":"good"}'
         output: {status: 200, body: {equals: ok}}
+  - name: missing-and-invalid-bodies-keep-distinct-responses
+    config:
+      routes:
+        - id: request-validation-body-decode
+          uri: /request-validation-body-decode
+          plugins:
+            request-validation:
+              body_schema:
+                type: object
+                required: [payload]
+                properties:
+                  payload: {type: string}
+              rejected_code: 422
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect_requests: 0
+        respond:
+          - {status: 200, body: unexpected}
+    steps:
+      - name: missing-body-is-rejected-with-empty-body
+        input:
+          method: POST
+          path: /request-validation-body-decode
+          headers: {Content-Type: application/json}
+        output: {status: 422, body: {equals: ""}}
+      - name: whitespace-body-returns-json-decode-error
+        input:
+          method: POST
+          path: /request-validation-body-decode
+          headers: {Content-Type: application/json}
+          body: "   "
+        output:
+          status: 422
+          body: {equals: Expected value but found T_END at character 4}
+      - name: malformed-json-returns-json-decode-error
+        input:
+          method: POST
+          path: /request-validation-body-decode
+          headers: {Content-Type: application/json}
+          body: x
+        output:
+          status: 422
+          body: {equals: Expected value but found invalid token at character 1}

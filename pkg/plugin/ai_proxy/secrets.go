@@ -112,6 +112,9 @@ func (p *Plugin) MaterializeScopedSecrets(
 		if err != nil {
 			return secret.ErrCredentialUnavailable
 		}
+		if err := staged.gcp.Use(validateGCPServiceAccountJSON); err != nil {
+			return err
+		}
 		staged.gcpDescriptor, err = aiProxyDescriptor(staged.gcp)
 		if err != nil {
 			return secret.ErrCredentialUnavailable

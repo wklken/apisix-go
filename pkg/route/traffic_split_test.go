@@ -101,9 +101,11 @@ func TestApplyTrafficSplitOverrideDefaultsToPassHost(t *testing.T) {
 	}
 }
 
-func TestTrafficSplitRouteUsesSelectedUpstreamMTLS(t *testing.T) {
+func TestTrafficSplitRouteDoesNotProjectInlineUpstreamMTLS(t *testing.T) {
 	serverCertificate, clientCertificate, clientKey, clientCAs := routeMTLSCertificates(t)
+	var upstreamCalls atomic.Int32
 	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	upstream.TLS = &tls.Config{
@@ -161,17 +163,20 @@ func TestTrafficSplitRouteUsesSelectedUpstreamMTLS(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://gateway.test/split", nil))
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusBadGateway {
 		t.Fatalf(
 			"traffic-split mTLS status = %d, want %d; body=%q",
 			response.Code,
-			http.StatusNoContent,
+			http.StatusBadGateway,
 			response.Body.String(),
 		)
 	}
+	if calls := upstreamCalls.Load(); calls != 0 {
+		t.Fatalf("upstream application calls = %d, want 0 without projected client certificate", calls)
+	}
 }
 
-func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
+func TestTrafficSplitRouteDoesNotProjectInlineActiveChecks(t *testing.T) {
 	requestSeen := make(chan struct{}, 1)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS != nil && r.URL.Path == "/healthz" {
@@ -224,8 +229,8 @@ func TestTrafficSplitRouteStartsHTTPSActiveProbeForHTTPTarget(t *testing.T) {
 
 	select {
 	case <-requestSeen:
-	case <-time.After(3 * time.Second):
-		t.Fatal("traffic-split HTTPS active probe did not reach TLS upstream")
+		t.Fatal("traffic-split projected inline active health checks")
+	case <-time.After(2 * time.Second):
 	}
 }
 

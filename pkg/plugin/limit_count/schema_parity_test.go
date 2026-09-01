@@ -55,6 +55,45 @@ func TestAPISIX317SchemaOmitsWindowType(t *testing.T) {
 	}
 }
 
+func TestAPISIX317SchemaAcceptsEmptyStringLimitsAndRules(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{
+			name: "root string limits",
+			config: map[string]any{
+				"count": "", "time_window": "",
+			},
+		},
+		{
+			name: "rule string limits",
+			config: map[string]any{
+				"rules": []any{map[string]any{
+					"count": "", "time_window": "", "key": "$http_x_user",
+				}},
+			},
+		},
+		{
+			name:   "empty rules",
+			config: map[string]any{"rules": []any{}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := util.Validate(test.config, p.GetSchema()); err != nil {
+				t.Fatalf("schema rejected APISIX-valid config %#v: %v", test.config, err)
+			}
+		})
+	}
+}
+
 func TestAPISIX317SchemaRejectionMatrix(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {

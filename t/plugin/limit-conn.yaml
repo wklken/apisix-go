@@ -159,6 +159,11 @@ cases:
       path: "/limit_conn"
     output:
       status: 500
+      body:
+        equals: ""
+      headers:
+        Content-Type:
+          absent: true
       logs:
         matches: 'failed to limit conn: .*WRONGPASS invalid username-password pair
           or user is disabled'
@@ -538,3 +543,58 @@ cases:
       status_counts:
         200: 1
         503: 1
+- name: explicit-empty-rules-use-request-time-failure-and-degradation
+  runtime:
+    plugins:
+    - limit-conn
+  config:
+    routes:
+    - id: limit-conn-empty-rules-fail-closed
+      uri: "/limit-conn-empty-rules-fail-closed"
+      plugins:
+        limit-conn:
+          default_conn_delay: 0.1
+          rules: []
+      upstream:
+        type: roundrobin
+        nodes:
+          "{{FIXTURE.origin.ADDR}}": 1
+    - id: limit-conn-empty-rules-degradation
+      uri: "/limit-conn-empty-rules-degradation"
+      plugins:
+        limit-conn:
+          allow_degradation: true
+          default_conn_delay: 0.1
+          rules: []
+      upstream:
+        type: roundrobin
+        nodes:
+          "{{FIXTURE.origin.ADDR}}": 1
+  fixtures:
+  - name: origin
+    kind: http
+    expect:
+    - method: GET
+      path:
+        equals: "/limit-conn-empty-rules-degradation"
+    count:
+      at_least: 1
+      at_most: 1
+    respond:
+    - status: 200
+      body: degraded
+  steps:
+  - name: explicit-empty-rules-fail-closed-at-request-time
+    input:
+      method: GET
+      path: "/limit-conn-empty-rules-fail-closed"
+    output:
+      status: 500
+  - name: explicit-empty-rules-honor-degradation
+    input:
+      method: GET
+      path: "/limit-conn-empty-rules-degradation"
+    output:
+      status: 200
+      body:
+        equals: degraded

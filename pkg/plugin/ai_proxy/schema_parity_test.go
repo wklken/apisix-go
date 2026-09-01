@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wklken/apisix-go/pkg/plugin/ai_auth"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -40,6 +41,105 @@ func TestSchemaMatchesAPISIX317BaseProviderContracts(t *testing.T) {
 	}
 	if err := util.Validate(unsupportedProvider, p.GetSchema()); err == nil {
 		t.Fatal("unsupported provider was accepted")
+	}
+}
+
+func TestSchemaMatchesAPISIX317GCPAuthContract(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		gcp     map[string]any
+		wantErr bool
+	}{
+		{name: "empty uses environment credentials", gcp: map[string]any{}},
+		{
+			name: "explicit service account and ttl",
+			gcp: map[string]any{
+				"service_account_json": `{"type":"service_account"}`,
+				"max_ttl":              3600,
+				"expire_early_secs":    60,
+			},
+		},
+		{name: "max ttl must be positive", gcp: map[string]any{"max_ttl": 0}, wantErr: true},
+		{name: "max ttl must be integer", gcp: map[string]any{"max_ttl": 1.5}, wantErr: true},
+		{name: "expire early must be non-negative", gcp: map[string]any{"expire_early_secs": -1}, wantErr: true},
+		{name: "service account must be string", gcp: map[string]any{"service_account_json": 42}, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{
+				"provider": "vertex-ai",
+				"provider_conf": map[string]any{
+					"project_id": "project",
+					"region":     "us-central1",
+				},
+				"auth": map[string]any{"gcp": test.gcp},
+			}
+			err := util.Validate(config, p.GetSchema())
+			if test.wantErr && err == nil {
+				t.Fatalf("schema accepted invalid GCP auth %#v", test.gcp)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("schema rejected valid GCP auth %#v: %v", test.gcp, err)
+			}
+		})
+	}
+}
+
+func TestSchemaKeepsAPISIX317VertexEndpointAlternatives(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	for _, config := range []map[string]any{
+		{
+			"provider":      "vertex-ai",
+			"provider_conf": map[string]any{"project_id": "project", "region": "us-central1"},
+			"auth":          map[string]any{},
+		},
+		{
+			"provider": "vertex-ai",
+			"override": map[string]any{"endpoint": "https://vertex.example.test"},
+			"auth":     map[string]any{},
+		},
+	} {
+		if err := util.Validate(config, p.GetSchema()); err != nil {
+			t.Fatalf("schema rejected valid Vertex endpoint alternative %#v: %v", config, err)
+		}
+	}
+}
+
+func TestAPISIX317GCPServiceAccountJSONIsValidatedBeforeMaterialization(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "valid literal", value: `{"type":"service_account"}`},
+		{name: "invalid literal", value: `{"type":`, wantErr: true},
+		{name: "secret reference is deferred", value: "$secret://ai/gcp"},
+		{name: "environment reference is deferred", value: "$ENV://GCP_SERVICE_ACCOUNT"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Plugin{config: Config{Auth: Auth{GCP: &ai_auth.GCPConfig{
+				ServiceAccountJSON: test.value,
+			}}}}
+			err := p.ValidatePreMaterialization()
+			if test.wantErr && err == nil {
+				t.Fatal("ValidatePreMaterialization() error = nil")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("ValidatePreMaterialization() error = %v", err)
+			}
+		})
 	}
 }
 

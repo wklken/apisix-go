@@ -45,8 +45,7 @@ const schema = `
           "exclusiveMinimum": 0
         },
         {
-          "type": "string",
-          "minLength": 1
+          "type": "string"
         }
       ]
     },
@@ -57,8 +56,7 @@ const schema = `
           "minimum": 0
         },
         {
-          "type": "string",
-          "minLength": 1
+          "type": "string"
         }
       ]
     },
@@ -68,7 +66,6 @@ const schema = `
     },
     "rules": {
       "type": "array",
-      "minItems": 1,
       "items": {
         "type": "object",
         "properties": {
@@ -79,8 +76,7 @@ const schema = `
                 "exclusiveMinimum": 0
               },
               {
-                "type": "string",
-                "minLength": 1
+                "type": "string"
               }
             ]
           },
@@ -91,8 +87,7 @@ const schema = `
                 "minimum": 0
               },
               {
-                "type": "string",
-                "minLength": 1
+                "type": "string"
               }
             ]
           },
@@ -104,8 +99,7 @@ const schema = `
       }
     },
     "key": {
-      "type": "string",
-      "minLength": 1
+      "type": "string"
     },
     "key_type": {
       "type": "string",
@@ -411,7 +405,7 @@ func (p *Plugin) PostInit() error {
 		p.rateLimitState = limitbase.NewState()
 	}
 
-	if len(p.config.Rules) > 0 {
+	if p.config.Rules != nil {
 		if err := validateRules(p.config.Rules); err != nil {
 			return err
 		}
@@ -500,14 +494,14 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 }
 
 func (p *Plugin) admit(w http.ResponseWriter, r *http.Request) (base.RequestPhaseResult, *admissionRelease) {
-	if len(p.config.Rules) > 0 {
+	if p.config.Rules != nil {
 		admissions, delay, allowed, err := p.increaseRules(r)
 		if err != nil {
 			if *p.config.AllowDegradation {
 				return base.ContinueRequest(r), nil
 			}
 			logger.Errorf("failed to limit conn: %v", err)
-			http.Error(w, "failed to limit conn", http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return base.StopRequest(r), nil
 		}
 		if !allowed {
@@ -555,7 +549,7 @@ func (p *Plugin) admit(w http.ResponseWriter, r *http.Request) (base.RequestPhas
 			return base.ContinueRequest(r), nil
 		}
 		logger.Errorf("failed to limit conn: %v", err)
-		http.Error(w, "failed to limit conn", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
 		return base.StopRequest(r), nil
 	}
 	if !allowed {
@@ -622,7 +616,7 @@ func staticLimitValue(value any, name string, allowZero bool) (int, bool, error)
 	}
 
 	if expr, ok := value.(string); ok {
-		if strings.Contains(expr, "$") {
+		if expr == "" || strings.Contains(expr, "$") {
 			return 0, false, nil
 		}
 		parsed, err := parseLimitInt(expr, name, allowZero)

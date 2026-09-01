@@ -115,7 +115,21 @@ const schema = `
           "$ref": "#/$defs/auth_items"
         },
         "gcp": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "service_account_json": {
+              "type": "string"
+            },
+            "max_ttl": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "expire_early_secs": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 60
+            }
+          }
         },
         "aws": {
           "type": "object",
@@ -319,6 +333,26 @@ func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
 	p.Schema = schema
+	return nil
+}
+
+func (p *Plugin) ValidatePreMaterialization() error {
+	if p.config.Auth.GCP == nil || p.config.Auth.GCP.ServiceAccountJSON == "" {
+		return nil
+	}
+	value := p.config.Auth.GCP.ServiceAccountJSON
+	if strings.HasPrefix(value, "$secret://") ||
+		strings.HasPrefix(strings.ToUpper(value), "$ENV://") {
+		return nil
+	}
+	return validateGCPServiceAccountJSON(value)
+}
+
+func validateGCPServiceAccountJSON(value string) error {
+	var document any
+	if err := json.Unmarshal([]byte(value), &document); err != nil {
+		return fmt.Errorf("invalid gcp service_account_json: %w", err)
+	}
 	return nil
 }
 

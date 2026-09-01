@@ -706,6 +706,370 @@ cases:
             status: 200
           wait: 0s
     - config:
+        routes:
+            - id: otel-service-scope-head-exports-route-service-and-string-numeric-attributes
+              name: service-scope-head-route
+              service_id: otel-service-scope-head-service
+              uri: /service-scope-head
+        services:
+            - id: otel-service-scope-head-service
+              name: service-scope-head-service
+              plugins:
+                opentelemetry:
+                    additional_attributes:
+                        - request_time
+                        - bytes_sent
+                    sampler:
+                        name: always_on
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+      fixtures:
+        - expect:
+            - method: HEAD
+              path:
+                equals: /service-scope-head
+          expect_requests: 1
+          kind: http
+          name: primary
+          respond:
+            - body: body-must-not-be-returned-for-head
+              status: 200
+        - expect:
+            - headers:
+                Content-Type:
+                    matches: ^application/x-protobuf
+              method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - attributes:
+                        apisix.route_id:
+                            equals: otel-service-scope-head-exports-route-service-and-string-numeric-attributes
+                            type: string
+                        apisix.route_name:
+                            equals: service-scope-head-route
+                            type: string
+                        apisix.service_id:
+                            equals: otel-service-scope-head-service
+                            type: string
+                        apisix.service_name:
+                            equals: service-scope-head-service
+                            type: string
+                        bytes_sent:
+                            matches: ^[0-9]+$
+                            type: string
+                        http.method:
+                            equals: HEAD
+                            type: string
+                        http.request.method:
+                            equals: HEAD
+                            type: string
+                        http.route:
+                            equals: /service-scope-head
+                            type: string
+                        http.scheme:
+                            equals: http
+                            type: string
+                        http.status_code:
+                            equals: "200"
+                            type: int
+                        http.target:
+                            equals: /service-scope-head
+                            type: string
+                        request_time:
+                            matches: ^[0-9]+(?:\.[0-9]+)?$
+                            type: string
+                        url.path:
+                            equals: /service-scope-head
+                            type: string
+                        url.scheme:
+                            equals: http
+                            type: string
+                      kind: server
+                      name:
+                        equals: HEAD /service-scope-head
+                      resource_attributes:
+                        service.name:
+                            equals: APISIX
+                            type: string
+                      scope:
+                        matches: opentelemetry
+              path:
+                equals: /v1/traces
+          expect_requests: 1
+          kind: http
+          name: collector
+          respond:
+            - headers:
+                Content-Type: application/x-protobuf
+              status: 200
+      name: service-scope-head-exports-route-service-and-string-numeric-attributes
+      runtime:
+        plugin_attr:
+            opentelemetry:
+                batch_span_processor:
+                    max_export_batch_size: 1
+                collector:
+                    address: '{{FIXTURE.collector.URL}}/v1/traces'
+                    request_timeout: 3
+                trace_id_source: random
+        plugins:
+            - opentelemetry
+      steps:
+        - input:
+            method: HEAD
+            path: /service-scope-head
+          name: head-response-has-no-body-and-exports-complete-service-span
+          output:
+            body:
+                equals: ""
+            status: 200
+          wait: 100ms
+    - config:
+        global_rules:
+            - id: otel-global-rule-matched-route-attributes
+              plugins:
+                opentelemetry:
+                    sampler:
+                        name: always_on
+        routes:
+            - id: otel-global-rule-route
+              name: global-rule-route
+              uri: /global-rule-trace/*
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+      fixtures:
+        - expect:
+            - method: GET
+              path:
+                equals: /global-rule-trace/orders
+          expect_requests: 1
+          kind: http
+          name: primary
+          respond:
+            - body: global-rule-route-ok
+              status: 200
+        - expect:
+            - method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - attributes:
+                        apisix.route_id:
+                            equals: otel-global-rule-route
+                            type: string
+                        apisix.route_name:
+                            equals: global-rule-route
+                            type: string
+                        http.route:
+                            equals: /global-rule-trace/*
+                            type: string
+                        http.status_code:
+                            equals: "200"
+                            type: int
+                      kind: server
+                      name:
+                        equals: GET /global-rule-trace/*
+                      scope:
+                        matches: opentelemetry
+              path:
+                equals: /v1/traces
+          expect_requests: 1
+          kind: http
+          name: collector
+          respond:
+            - headers:
+                Content-Type: application/x-protobuf
+              status: 200
+      name: global-rule-exports-matched-route-attributes
+      runtime:
+        plugin_attr:
+            opentelemetry:
+                batch_span_processor:
+                    max_export_batch_size: 1
+                collector:
+                    address: '{{FIXTURE.collector.URL}}/v1/traces'
+                    request_timeout: 3
+                trace_id_source: random
+        plugins:
+            - opentelemetry
+      steps:
+        - input:
+            method: GET
+            path: /global-rule-trace/orders
+          name: global-rule-span-keeps-route-identity
+          output:
+            body:
+                equals: global-rule-route-ok
+            status: 200
+          wait: 100ms
+    - config:
+        routes:
+            - id: otel-finalizer-captures-later-plugin-header-prefix
+              name: finalizer-captures-later-plugin-header-prefix
+              plugins:
+                opentelemetry:
+                    additional_header_prefix_attributes:
+                        - x-injected-*
+                    sampler:
+                        name: always_on
+                serverless-pre-function:
+                    functions:
+                        - return function(conf, ctx) ngx.req.set_header('X-Injected-By-Plugin', 'test-value') end
+                    phase: rewrite
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /finalizer-captures-later-plugin-header-prefix
+      fixtures:
+        - expect:
+            - headers:
+                X-Injected-By-Plugin:
+                    equals: test-value
+              method: GET
+              path:
+                equals: /finalizer-captures-later-plugin-header-prefix
+          expect_requests: 1
+          kind: http
+          name: primary
+          respond:
+            - body: later-plugin-header-ok
+              status: 200
+        - expect:
+            - method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - attributes:
+                        apisix.route_id:
+                            equals: otel-finalizer-captures-later-plugin-header-prefix
+                            type: string
+                        http.status_code:
+                            equals: "200"
+                            type: int
+                        x-injected-by-plugin:
+                            equals: test-value
+                            type: string
+                      kind: server
+                      name:
+                        equals: GET /finalizer-captures-later-plugin-header-prefix
+                      scope:
+                        matches: opentelemetry
+              path:
+                equals: /v1/traces
+          expect_requests: 1
+          kind: http
+          name: collector
+          respond:
+            - headers:
+                Content-Type: application/x-protobuf
+              status: 200
+      name: finalizer-captures-later-plugin-header-prefix
+      runtime:
+        plugin_attr:
+            opentelemetry:
+                batch_span_processor:
+                    max_export_batch_size: 1
+                collector:
+                    address: '{{FIXTURE.collector.URL}}/v1/traces'
+                    request_timeout: 3
+                trace_id_source: random
+        plugins:
+            - opentelemetry
+            - serverless-pre-function
+      steps:
+        - input:
+            method: GET
+            path: /finalizer-captures-later-plugin-header-prefix
+          name: later-rewrite-header-is-exported-by-finalizer
+          output:
+            body:
+                equals: later-plugin-header-ok
+            status: 200
+          wait: 100ms
+    - config:
+        routes:
+            - id: otel-collector-500-does-not-change-upstream-response
+              name: collector-500-does-not-change-upstream-response
+              plugins:
+                opentelemetry:
+                    sampler:
+                        name: always_on
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /collector-500-does-not-change-upstream-response
+      fixtures:
+        - expect:
+            - method: GET
+              path:
+                equals: /collector-500-does-not-change-upstream-response
+          expect_requests: 1
+          kind: http
+          name: primary
+          respond:
+            - body: upstream-remains-successful
+              headers:
+                X-Upstream-Result: success
+              status: 200
+        - expect:
+            - headers:
+                Content-Type:
+                    matches: ^application/x-protobuf
+              method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - attributes:
+                        apisix.route_id:
+                            equals: otel-collector-500-does-not-change-upstream-response
+                            type: string
+                        http.status_code:
+                            equals: "200"
+                            type: int
+                      kind: server
+                      name:
+                        equals: GET /collector-500-does-not-change-upstream-response
+              path:
+                equals: /v1/traces
+          expect_requests: 1
+          kind: http
+          name: collector
+          respond:
+            - body: collector-failed
+              status: 500
+      name: collector-500-does-not-change-upstream-response
+      runtime:
+        plugin_attr:
+            opentelemetry:
+                batch_span_processor:
+                    max_export_batch_size: 1
+                collector:
+                    address: '{{FIXTURE.collector.URL}}/v1/traces'
+                    request_timeout: 3
+                trace_id_source: random
+        plugins:
+            - opentelemetry
+      steps:
+        - input:
+            method: GET
+            path: /collector-500-does-not-change-upstream-response
+          name: collector-failure-is-off-response-path
+          output:
+            body:
+                equals: upstream-remains-successful
+            headers:
+                X-Upstream-Result:
+                    equals: success
+            status: 200
+          wait: 100ms
+    - config:
         plugin_metadata:
             - &otel-variable-log-format
               id: http-logger

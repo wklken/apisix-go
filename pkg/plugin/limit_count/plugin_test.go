@@ -1179,6 +1179,86 @@ func TestHandlerLogsInvalidResolvedRuleCount(t *testing.T) {
 	}
 }
 
+func TestHandlerSkipsInvalidRuleBeforeApplyingLaterValidRule(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		RejectedCode: http.StatusTooManyRequests,
+		Rules: []Rule{
+			{
+				Count:      "$http_x_bad_count",
+				TimeWindow: 60,
+				Key:        "$http_x_bad_user",
+			},
+			{
+				Count:        1,
+				TimeWindow:   60,
+				Key:          "$http_x_user",
+				HeaderPrefix: "User",
+			},
+		},
+	})
+	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Bad-Count", "not-a-number")
+	request.Header.Set("X-Bad-User", "invalid-rule-key")
+	request.Header.Set("X-User", "alice")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want later valid rule to reach upstream", response.Code)
+	}
+	if got := response.Header().Get("X-User-RateLimit-Limit"); got != "1" {
+		t.Fatalf("later valid rule limit header = %q, want 1", got)
+	}
+}
+
+func TestPostInitDefersEmptyStringLimitsToRequest(t *testing.T) {
+	p := newTestPlugin(t, Config{Count: "", TimeWindow: ""})
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("empty string limits reached upstream")
+	})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want request-time 500", response.Code)
+	}
+}
+
+func TestHandlerTreatsExplicitEmptyRulesAsConfigured(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		allowDegradation bool
+		wantStatus       int
+	}{
+		{name: "fails closed", wantStatus: http.StatusInternalServerError},
+		{name: "degrades", allowDegradation: true, wantStatus: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			allowDegradation := test.allowDegradation
+			var config Config
+			if err := util.Parse(map[string]any{"rules": []any{}}, &config); err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if config.Rules == nil {
+				t.Fatal("explicit rules presence was lost during parsing")
+			}
+			config.AllowDegradation = &allowDegradation
+			p := newTestPlugin(t, config)
+			response := httptest.NewRecorder()
+			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("response code = %d, want %d", response.Code, test.wantStatus)
+			}
+		})
+	}
+}
+
 func TestHandlerLogsLimiterStoreFailure(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:      1,
@@ -1207,6 +1287,12 @@ func TestHandlerLogsLimiterStoreFailure(t *testing.T) {
 
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("response code = %d, want 500", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	if got := response.Body.String(); got != `{"error_msg":"failed to limit count"}` {
+		t.Fatalf("response body = %q, want APISIX backend error JSON", got)
 	}
 	select {
 	case entry := <-logged:

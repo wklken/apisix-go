@@ -10,7 +10,50 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
+	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestAPISIX317SchemaAcceptsEmptyStringLimitsKeyAndRules(t *testing.T) {
+	plugin := &Plugin{}
+	if err := plugin.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{
+			name: "root string limits and key",
+			config: map[string]any{
+				"conn": "", "burst": "", "default_conn_delay": 0.1, "key": "",
+			},
+		},
+		{
+			name: "rule string limits",
+			config: map[string]any{
+				"default_conn_delay": 0.1,
+				"rules": []any{map[string]any{
+					"conn": "", "burst": "", "key": "$http_x_user",
+				}},
+			},
+		},
+		{
+			name: "empty rules",
+			config: map[string]any{
+				"default_conn_delay": 0.1, "rules": []any{},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := util.Validate(test.config, plugin.GetSchema()); err != nil {
+				t.Fatalf("schema rejected APISIX-valid config %#v: %v", test.config, err)
+			}
+		})
+	}
+}
 
 func TestAPISIX317LimitConnUsesConfigAndConsumerIdentity(t *testing.T) {
 	plugin := newTestPlugin(t, Config{

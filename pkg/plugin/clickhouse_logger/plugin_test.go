@@ -1,7 +1,6 @@
 package clickhouse_logger
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -11,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -636,7 +637,7 @@ func TestRunLogPhaseAddsAPISIX317MatchedRouteToCustomFormat(t *testing.T) {
 	}
 }
 
-func TestHandlerBatchesClickHouseRows(t *testing.T) {
+func TestRunLogPhaseBatchesClickHouseRows(t *testing.T) {
 	bodies := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -659,12 +660,15 @@ func TestHandlerBatchesClickHouseRows(t *testing.T) {
 		SSLVerify:     &sslVerify,
 		BatchMaxSize:  2,
 	})
+	t.Cleanup(p.Stop)
 
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/first", nil))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://example.com/second", nil))
+	for _, path := range []string{"/first", "/second"} {
+		if err := p.RunLogPhase(base.LogSnapshot{
+			Request: apisixlog.RequestLogSnapshot{Method: http.MethodGet, URI: path},
+		}); err != nil {
+			t.Fatalf("RunLogPhase(%q) error = %v", path, err)
+		}
+	}
 
 	select {
 	case body := <-bodies:
@@ -687,21 +691,26 @@ func TestHandlerBatchesClickHouseRows(t *testing.T) {
 	}
 }
 
-func TestHandlerBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 	tests := []struct {
-		name         string
-		requestBody  string
-		responseBody string
-		header       string
-		requestExpr  [][]any
-		responseExpr [][]any
-		wantBodies   bool
+		name             string
+		requestBody      string
+		responseBody     string
+		header           string
+		requestExpr      [][]any
+		responseExpr     [][]any
+		wantRequestBody  string
+		wantResponseBody string
 	}{
-		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`, wantBodies: true},
+		{
+			name: "unconditional and bounded", requestBody: `{"order":1}`, responseBody: `{"ok":true}`,
+			wantRequestBody: `{"order"`, wantResponseBody: `{"ok":`,
+		},
 		{
 			name: "expressions match", requestBody: `{"order":2}`, responseBody: `{"created":true}`,
 			header: "yes", requestExpr: [][]any{{"http_x_log_body", "==", "yes"}},
-			responseExpr: [][]any{{"status", "==", "201"}}, wantBodies: true,
+			responseExpr:    [][]any{{"status", "==", "201"}},
+			wantRequestBody: `{"order"`, wantResponseBody: `{"crea`,
 		},
 		{
 			name: "expressions miss", requestBody: `{"order":3}`, responseBody: `{"created":false}`,
@@ -730,36 +739,23 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				Database: "analytics", LogTable: "apisix_logs", Timeout: 1, SSLVerify: &sslVerify,
 				IncludeReqBody: true, IncludeReqBodyExpr: test.requestExpr,
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
-				MaxReqBodyBytes: 32, MaxRespBodyBytes: 32, BatchMaxSize: 1,
+				MaxReqBodyBytes: 8, MaxRespBodyBytes: 6, BatchMaxSize: 1,
 			})
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"http://example.com/orders",
-				bytes.NewBufferString(test.requestBody),
-			)
+			t.Cleanup(p.Stop)
+
+			header := http.Header{}
 			if test.header != "" {
-				req.Header.Set("X-Log-Body", test.header)
+				header.Set("X-Log-Body", test.header)
 			}
-			rr := httptest.NewRecorder()
-			p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Fatalf("read upstream request body: %v", err)
-				}
-				if string(body) != test.requestBody {
-					t.Fatalf("upstream body = %q, want %q", body, test.requestBody)
-				}
-				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(test.responseBody))
-			})).ServeHTTP(rr, req)
-			if rr.Code != http.StatusCreated || rr.Body.String() != test.responseBody {
-				t.Fatalf(
-					"response = %d/%q, want %d/%q",
-					rr.Code,
-					rr.Body.String(),
-					http.StatusCreated,
-					test.responseBody,
-				)
+			err := p.RunLogPhase(base.LogSnapshot{
+				Request: apisixlog.RequestLogSnapshot{
+					Method: http.MethodPost, URI: "/orders", Header: header, Body: []byte(test.requestBody),
+				},
+				Response: apisixlog.ResponseLogSnapshot{Body: []byte(test.responseBody)},
+				Outcome:  apisixctx.ResponseOutcome{Status: http.StatusCreated},
+			})
+			if err != nil {
+				t.Fatalf("RunLogPhase() error = %v", err)
 			}
 
 			select {
@@ -769,17 +765,17 @@ func TestHandlerBodyCaptureMatrix(t *testing.T) {
 				if err := json.Unmarshal([]byte(payload), &logEntry); err != nil {
 					t.Fatalf("unmarshal clickhouse payload %q: %v", payload, err)
 				}
-				if test.wantBodies {
+				if test.wantRequestBody != "" || test.wantResponseBody != "" {
 					request, requestOK := logEntry["request"].(map[string]any)
 					response, responseOK := logEntry["response"].(map[string]any)
-					if !requestOK || !responseOK || request["body"] != test.requestBody ||
-						response["body"] != test.responseBody {
+					if !requestOK || !responseOK || request["body"] != test.wantRequestBody ||
+						response["body"] != test.wantResponseBody {
 						t.Fatalf(
 							"logged bodies = %#v/%#v, want %q/%q",
 							logEntry["request"],
 							logEntry["response"],
-							test.requestBody,
-							test.responseBody,
+							test.wantRequestBody,
+							test.wantResponseBody,
 						)
 					}
 				} else if _, requestOK := logEntry["request"]; requestOK {

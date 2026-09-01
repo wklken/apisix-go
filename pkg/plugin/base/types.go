@@ -370,7 +370,7 @@ func (p *BaseLoggerPlugin) SetRouteContext(routeID string, serverAddr string) {
 }
 
 // SetLogCapturePolicy wires a logger's bounded body policy into the detached
-// callback implementation while leaving its legacy Handler untouched.
+// callback implementation.
 func (p *BaseLoggerPlugin) SetLogCapturePolicy(
 	includeRequest, includeResponse bool,
 	requestBytes, responseBytes int,
@@ -484,15 +484,5 @@ func (p *BaseLoggerPlugin) StopWithCleanup(cleanup func()) {
 }
 
 func (p *BaseLoggerPlugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-
-		logFields := log.GetFields(r, p.LogFormat)
-
-		// FIXME: if not LogFormat, will get full log,
-		// reference: https://github.com/apache/apisix/blob/master/apisix/utils/log-util.lua#L136
-
-		_ = p.EnqueueLog(logFields)
-	}
-	return http.HandlerFunc(fn)
+	return next
 }

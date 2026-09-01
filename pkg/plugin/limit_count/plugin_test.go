@@ -981,34 +981,6 @@ func TestHandlerUsesRejectedMessage(t *testing.T) {
 	}
 }
 
-func TestHandlerConfiguredCostConsumesMultipleQuota(t *testing.T) {
-	cost := 2
-	p := newTestPlugin(t, Config{
-		Count:        3,
-		TimeWindow:   60,
-		Cost:         &cost,
-		RejectedCode: http.StatusTooManyRequests,
-	})
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/", nil))
-	if first.Code != http.StatusNoContent {
-		t.Fatalf("first response code = %d, want %d", first.Code, http.StatusNoContent)
-	}
-	if got := first.Header().Get("X-RateLimit-Remaining"); got != "1" {
-		t.Fatalf("first remaining quota = %q, want 1 after cost 2", got)
-	}
-
-	second := httptest.NewRecorder()
-	handler.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/", nil))
-	if second.Code != http.StatusTooManyRequests {
-		t.Fatalf("second response code = %d, want %d", second.Code, http.StatusTooManyRequests)
-	}
-}
-
 func TestHandlerResetHeaderReportsSecondsRemaining(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:        1,
@@ -1046,30 +1018,6 @@ func TestFixedWindowResetSeconds(t *testing.T) {
 				t.Fatalf("fixedWindowResetSeconds(%d, %s) = %d, want %d", test.expiration, now, got, test.want)
 			}
 		})
-	}
-}
-
-func TestHandlerZeroCostPeeksWithoutConsumingQuota(t *testing.T) {
-	cost := 0
-	p := newTestPlugin(t, Config{
-		Count:        2,
-		TimeWindow:   60,
-		Cost:         &cost,
-		RejectedCode: http.StatusTooManyRequests,
-	})
-	handler := p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	for i := range 3 {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-		if response.Code != http.StatusNoContent {
-			t.Fatalf("peek %d response code = %d, want %d", i+1, response.Code, http.StatusNoContent)
-		}
-		if got := response.Header().Get("X-RateLimit-Remaining"); got != "2" {
-			t.Fatalf("peek %d remaining quota = %q, want 2", i+1, got)
-		}
 	}
 }
 

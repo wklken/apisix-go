@@ -1,10 +1,27 @@
 package limit_count
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+func TestAPISIX317SchemaOmitsConfigurableCost(t *testing.T) {
+	p := &Plugin{}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var document struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(p.GetSchema()), &document); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	if _, ok := document.Properties["cost"]; ok {
+		t.Fatal("schema exposes non-APISIX configurable cost")
+	}
+}
 
 func TestAPISIX317SchemaRejectionMatrix(t *testing.T) {
 	p := &Plugin{}

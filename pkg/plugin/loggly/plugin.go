@@ -248,8 +248,6 @@ func (p *Plugin) Init() error {
 	p.Schema = schema
 	p.MetadataSchema = metadataSchema
 
-	p.InitLogger(p.Send)
-
 	return nil
 }
 

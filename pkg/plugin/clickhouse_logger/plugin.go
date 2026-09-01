@@ -371,12 +371,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func (p *Plugin) Send(log map[string]any) {
-	if _, err := p.SendBatch(context.Background(), []map[string]any{log}, 1); err != nil {
-		logger.Errorf("%s", err)
-	}
-}
-
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, batchMaxSize int) (int, error) {
 	endpoint := p.endpointURL()
 	if endpoint == "" {

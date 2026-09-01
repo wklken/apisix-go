@@ -12,7 +12,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -309,7 +308,6 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 		t.Fatal(err)
 	}
 	staticConfig := &config.EffectiveConfig{}
-	dataEncryption := data_encryption.NewResolver(false, nil)
 	lookup := compositeConsumerLookup{}
 	tasks := runtime.NewTaskRegistry(context.Background(), nil)
 	taskOwner, err := runtime.NewTaskOwner(tasks, "plugin/test/composite", runtime.TaskPlugin)
@@ -319,7 +317,6 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 	outerChildren := compositeNeverPreparer{}
 	deps := base.Dependencies{
 		Config:            staticConfig,
-		DataEncryption:    dataEncryption,
 		Secrets:           harness.capability,
 		Metadata:          metadata,
 		Consumers:         lookup,
@@ -350,8 +347,8 @@ func TestCompositeChildPreparerPreservesOuterAuthorityAndDependencies(t *testing
 		binding.InstanceKey.Generation != harness.attempt {
 		t.Fatalf("binding identity = %+v, want effective route/service and outer attempt", binding)
 	}
-	if child.StaticConfig() != staticConfig || !child.DataEncryption().Configured() ||
-		child.TaskOwner() != taskOwner || child.ConsumerLookup() != lookup {
+	if child.StaticConfig() != staticConfig || child.TaskOwner() != taskOwner ||
+		child.ConsumerLookup() != lookup {
 		t.Fatal("child did not receive the immutable outer dependency bundle")
 	}
 	if child.CompositeChildPreparer() != nil {

@@ -341,8 +341,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
@@ -412,8 +411,7 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 	}}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
@@ -447,9 +445,8 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		Metadata:       metadata,
+		Tasks:    newLoggerTestTaskOwner(t),
+		Metadata: metadata,
 	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
@@ -541,8 +538,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		LogFormat: map[string]string{"request_id": "$request_id"},
 	}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	p.now = func() time.Time { return time.Unix(1710000000, 0) }
 	if err := p.Init(); err != nil {
@@ -1182,8 +1178,7 @@ func TestMetadataDecodeFailsBeforeCLSClientAndProcessorAcquisition(t *testing.T)
 		LogFormat: map[string]string{"generation": "route"},
 	}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",
 		}),

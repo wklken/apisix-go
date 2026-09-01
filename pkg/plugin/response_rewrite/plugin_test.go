@@ -648,7 +648,6 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1210,7 +1209,6 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &Plugin{config: Config{Vars: tt.vars}}
-			p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 			if err := p.Init(); err != nil {
 				t.Fatalf("Init() error = %v", err)
 			}
@@ -1223,7 +1221,6 @@ func TestPostInitRejectsInvalidVarsExpression(t *testing.T) {
 
 func TestConfigAcceptsNumericHeaderValues(t *testing.T) {
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1283,7 +1280,6 @@ func TestPostInitRejectsBodyAndFiltersTogether(t *testing.T) {
 			Filters: []Filter{{Regex: "old", Replace: "new"}},
 		},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1357,7 +1353,6 @@ func TestPostInitRejectsUnknownFilterOptionsFlag(t *testing.T) {
 			Filters: []Filter{{Regex: "hello", Replace: "HELLO", Options: "h"}},
 		},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1380,7 +1375,6 @@ func TestHandlerRemoveWinsOverAddForSameHeader(t *testing.T) {
 			},
 		},
 	}
-	p.SetDependencies(base.Dependencies{DataEncryption: testutil.DataEncryptionService(false, nil).Resolver()})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

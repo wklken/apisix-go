@@ -521,8 +521,7 @@ func TestSendBatchScrubsRetainedAuthorizationAndBodyState(t *testing.T) {
 	p := &Plugin{config: Config{URI: server.URL, AuthHeader: &authorization, ConcatMethod: "json"}}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {
@@ -852,9 +851,8 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata runtime.Metada
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		Metadata:       metadata,
+		Tasks:    newLoggerTestTaskOwner(t),
+		Metadata: metadata,
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)

@@ -126,8 +126,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {
@@ -842,8 +841,7 @@ func newObserverTestPlugin(t *testing.T, sender kafkaSender) *Plugin {
 	}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {

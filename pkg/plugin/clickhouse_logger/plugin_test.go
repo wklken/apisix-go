@@ -14,7 +14,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/runtime"
-	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -114,8 +113,7 @@ func newTestPluginWithSecrets(t *testing.T, cfg Config, values map[string]string
 	p := &Plugin{config: cfg}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {
@@ -183,8 +181,7 @@ func TestEffectiveLogFormatRejectsEmptyBeforeSideEffects(t *testing.T) {
 	}}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {
@@ -209,9 +206,8 @@ func newRawTestPlugin(t *testing.T, cfg Config, metadata runtime.MetadataView) *
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		Metadata:       metadata,
+		Tasks:    newLoggerTestTaskOwner(t),
+		Metadata: metadata,
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -303,8 +299,7 @@ func TestMetadataDecodeFailsBeforeClickHouseClientAndProcessorAcquisition(t *tes
 		LogFormat:     map[string]string{"request_id": "$request_id"},
 	}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",
 		}),

@@ -15,7 +15,6 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
-	"github.com/wklken/apisix-go/pkg/testutil"
 	"github.com/wklken/apisix-go/pkg/util"
 )
 
@@ -198,8 +197,7 @@ func checkedResponseBinding(
 func initializedCSRFResponsePlugin(t *testing.T) Plugin {
 	t.Helper()
 	instance := New("csrf", base.Dependencies{
-		Config:         &config.EffectiveConfig{},
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Config: &config.EffectiveConfig{},
 	})
 	if instance == nil {
 		t.Fatal("csrf plugin is not registered")

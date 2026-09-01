@@ -657,9 +657,8 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		Metadata:       mustMetadataView(t, metadata),
+		Tasks:    newLoggerTestTaskOwner(t),
+		Metadata: mustMetadataView(t, metadata),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -729,8 +728,7 @@ func TestPostInitResolvesRotatedEncryptedCustomerToken(t *testing.T) {
 	newKey := "qeddd145sfvddff3"
 	p := &Plugin{config: Config{CustomerToken: encryptLogglyTestValue(t, oldKey, "loggly-token")}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1329,8 +1327,7 @@ func TestPreparedGenerationsRetainMetadataEndpointAndFormat(t *testing.T) {
 func TestMetadataDecodeFailsBeforeLogglyClientAndProcessorAcquisition(t *testing.T) {
 	p := &Plugin{config: Config{CustomerToken: "token"}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string]any{
 			"timeout": "invalid",
 		}),

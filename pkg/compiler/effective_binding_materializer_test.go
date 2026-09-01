@@ -419,9 +419,8 @@ func TestEffectiveBindingMaterializerInjectsExactDependenciesBeforeOuterConstruc
 			!reflect.DeepEqual(dependencies.Metadata, prepared.metadata.ForFactory(factory)) ||
 			dependencies.Consumers == nil ||
 			dependencies.Tasks == nil ||
-			dependencies.CompositeChildren == nil ||
-			dependencies.DataEncryption.Configured() {
-			t.Fatalf("outer dependencies are incomplete or expose legacy decryption: %#v", dependencies)
+			dependencies.CompositeChildren == nil {
+			t.Fatalf("outer dependencies are incomplete: %#v", dependencies)
 		}
 		return defaultNew(factory, dependencies)
 	}

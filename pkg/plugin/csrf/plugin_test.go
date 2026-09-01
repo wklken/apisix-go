@@ -38,9 +38,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
 
 	p := &Plugin{config: cfg}
-	p.SetDependencies(base.Dependencies{
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-	})
+	p.SetDependencies(base.Dependencies{})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

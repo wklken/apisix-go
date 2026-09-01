@@ -564,7 +564,8 @@ func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.Re
 	if apisixctx.GetRequestVars(r) == nil {
 		r = apisixctx.WithRequestVars(r)
 	}
-	spanContext := otelapi.GetTextMapPropagator().Extract(
+	propagator := otelapi.GetTextMapPropagator()
+	spanContext := propagator.Extract(
 		r.Context(),
 		propagation.HeaderCarrier(r.Header),
 	)
@@ -584,6 +585,7 @@ func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.Re
 	)
 	state := &spanState{span: span, started: started}
 	r = r.WithContext(context.WithValue(spanContext, spanStateContextKey{}, state))
+	propagator.Inject(r.Context(), propagation.HeaderCarrier(r.Header))
 	attrs := append(p.requestSpanAttributes(r), captureHTTPSpanAttributes(r)...)
 	if len(attrs) > 0 {
 		span.SetAttributes(attrs...)

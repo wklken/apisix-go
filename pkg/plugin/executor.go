@@ -289,6 +289,7 @@ func chainPostResolutionHooks(first, second PostResolutionHook) PostResolutionHo
 func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
 	bindings := make([]Binding, 0)
 	corsBindings := make([]Binding, 0)
+	preAuthentication := make([]Binding, 0)
 	globalRewrite := make([]Binding, 0)
 	systemRewrite := make([]Binding, 0)
 	for _, binding := range p.bindings {
@@ -303,6 +304,10 @@ func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
 				bindings = append(bindings, binding)
 				continue
 			}
+			if binding.Descriptor.preAuthentication {
+				preAuthentication = append(preAuthentication, binding)
+				continue
+			}
 			if binding.Descriptor.requestStage == RequestStageRewrite {
 				switch binding.Scope {
 				case ScopeGlobal:
@@ -314,9 +319,33 @@ func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
 		}
 	}
 	next = wrapAuthenticationWithStaticCORS(next, bindings, corsBindings)
+	next = wrapRequestStageBindings(next, preAuthentication)
 	next = wrapRequestStageBindings(next, globalRewrite)
 	next = wrapRequestStageBindings(next, systemRewrite)
 	return next
+}
+
+func isStaticPreAuthenticationBinding(binding Binding) bool {
+	if binding.Plugin == nil || !binding.Descriptor.preAuthentication {
+		return false
+	}
+	return binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.Scope == ScopeRoute
+}
+
+func (p RequestPipeline) postAuthenticationBindings(bindings []Binding) []Binding {
+	preAuthenticationFactories := make(map[string]struct{})
+	for _, binding := range p.bindings {
+		if isStaticPreAuthenticationBinding(binding) {
+			preAuthenticationFactories[binding.Descriptor.Factory] = struct{}{}
+		}
+	}
+	return slices.DeleteFunc(bindings, func(binding Binding) bool {
+		if !binding.Descriptor.preAuthentication {
+			return false
+		}
+		_, alreadyRan := preAuthenticationFactories[binding.Descriptor.Factory]
+		return alreadyRan
+	})
 }
 
 // wrapAuthenticationWithStaticCORS keeps static CORS in front of
@@ -585,7 +614,7 @@ func (p RequestPipeline) buildPostResolutionHandler(
 	terminal http.Handler,
 	execution *responseExecution,
 ) http.Handler {
-	bindings := effective.all()
+	bindings := p.postAuthenticationBindings(effective.all())
 	boundary := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p.streamingExecutor != nil {
 			// A post-resolution request stage may replace the request without

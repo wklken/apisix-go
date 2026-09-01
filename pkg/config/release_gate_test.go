@@ -49,6 +49,19 @@ func TestAPISIX317ListenerTypesOmitPortLevelHTTP2(t *testing.T) {
 	}
 }
 
+func TestAPISIX317ListenerTypesOmitPerListenerProxyProtocol(t *testing.T) {
+	for name, listenerType := range map[string]reflect.Type{
+		"HTTP": reflect.TypeFor[NodeListen](),
+		"TCP":  reflect.TypeFor[TcpListen](),
+	} {
+		for _, field := range []string{"ProxyProtocol", "ProxyProtocolToUpstream"} {
+			if _, ok := listenerType.FieldByName(field); ok {
+				t.Fatalf("%s listener exposes non-APISIX %s field", name, field)
+			}
+		}
+	}
+}
+
 func TestLoadEffectiveMergesNestedOverrideAndReplacesLists(t *testing.T) {
 	base := writeConfigFile(t, "base.yaml", validRuntimeConfig)
 	override := writeConfigFile(t, "override.yaml", `

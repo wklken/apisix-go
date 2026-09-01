@@ -1002,7 +1002,7 @@ func TestManifestRejectsInvalidRedisTTLRange(t *testing.T) {
 }
 
 func TestManifestAcceptsRedisValueKeyMatcher(t *testing.T) {
-	for _, kind := range []string{"redis", "redis-cluster", "redis-sentinel"} {
+	for _, kind := range []string{"redis", "redis-cluster"} {
 		t.Run(kind, func(t *testing.T) {
 			manifest := validManifest()
 			manifest.Cases[0].Input = HTTPInput{}
@@ -1025,6 +1025,29 @@ func TestManifestAcceptsRedisValueKeyMatcher(t *testing.T) {
 				t.Fatalf("validate() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestManifestRejectsRedisSentinelFixtureKind(t *testing.T) {
+	manifest := validManifest()
+	manifest.Cases[0].Input = HTTPInput{}
+	manifest.Cases[0].Output = HTTPOutput{}
+	manifest.Cases[0].Fixtures = []FixtureSpec{{
+		Name: "redis",
+		Kind: "redis-sentinel",
+		Redis: &RedisFixtureAssertion{
+			AllowUnassertedCommands: true,
+		},
+	}}
+	manifest.Cases[0].Steps = []CaseStep{{
+		Name:   "request",
+		Input:  HTTPInput{Path: "/hello"},
+		Output: HTTPOutput{Status: 200},
+	}}
+
+	err := manifest.validate()
+	if err == nil || !strings.Contains(err.Error(), `kind "redis-sentinel" is not supported`) {
+		t.Fatalf("validate() error = %v, want unsupported redis-sentinel fixture", err)
 	}
 }
 

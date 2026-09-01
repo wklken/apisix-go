@@ -391,8 +391,6 @@ func (f *redisFixture) writeResponse(writer io.Writer, command []string) error {
 		return f.writeEvalResponse(writer, command)
 	case "CLUSTER":
 		return f.writeClusterResponse(writer, command)
-	case "SENTINEL":
-		return f.writeSentinelResponse(writer, command)
 	default:
 		return writeRESPError(writer, "unsupported command "+command[0])
 	}
@@ -932,13 +930,6 @@ func (f *redisFixture) writeClusterResponse(writer io.Writer, command []string) 
 			writer,
 			"*1\r\n*3\r\n:0\r\n:16383\r\n*3\r\n$9\r\n127.0.0.1\r\n:"+f.port()+"\r\n$7\r\nfixture\r\n",
 		)
-	}
-	return writeSimpleRESP(writer, "OK")
-}
-
-func (f *redisFixture) writeSentinelResponse(writer io.Writer, command []string) error {
-	if len(command) > 1 && strings.EqualFold(command[1], "GET-MASTER-ADDR-BY-NAME") {
-		return writeRESPArray(writer, []string{"127.0.0.1", f.port()})
 	}
 	return writeSimpleRESP(writer, "OK")
 }

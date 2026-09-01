@@ -351,7 +351,7 @@ func startNetworkFixture(spec FixtureSpec) (namedFixture, error) {
 		fixture.server = httptest.NewUnstartedServer(http.HandlerFunc(fixture.serveGRPCRequest))
 		fixture.server.EnableHTTP2 = true
 		fixture.server.StartTLS()
-	case "redis", "redis-cluster", "redis-sentinel":
+	case "redis", "redis-cluster":
 		return startRedisFixture(spec)
 	case "kafka":
 		return startKafkaFixture(spec)

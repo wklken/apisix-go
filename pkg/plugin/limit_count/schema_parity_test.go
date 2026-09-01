@@ -79,6 +79,14 @@ func TestAPISIX317SchemaRejectionMatrix(t *testing.T) {
 			},
 		},
 		{
+			name: "redis sentinel policy is not supported",
+			config: map[string]any{
+				"count": 2, "time_window": 60, "policy": "redis-sentinel",
+				"redis_sentinels":   []any{map[string]any{"host": "127.0.0.1", "port": 26379}},
+				"redis_master_name": "mymaster",
+			},
+		},
+		{
 			name: "rules and root quota are mutually exclusive",
 			config: func() map[string]any {
 				config := validBase()

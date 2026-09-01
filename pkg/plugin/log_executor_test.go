@@ -187,7 +187,7 @@ func (p *logExecutorTestPlugin) RunSnapshotFinalizer(base.LogSnapshot) error {
 func newLogExecutorTestPlugin(name string, priority int, order *[]string) *logExecutorTestPlugin {
 	plugin := &logExecutorTestPlugin{order: order}
 	plugin.Name = name
-	plugin.SetPriority(priority)
+	plugin.Priority = priority
 	return plugin
 }
 
@@ -686,7 +686,7 @@ func TestLogSnapshotSanitizerRunsBeforeLoggerAndFinalizer(t *testing.T) {
 	order := []string{}
 	sanitizer := &logSanitizerTestPlugin{order: &order}
 	sanitizer.Name = "sanitizer"
-	sanitizer.SetPriority(100)
+	sanitizer.Priority = 100
 	loggerPlugin := newLogExecutorTestPlugin("logger", 10, &order)
 	executor, err := NewLogExecutor([]LogBinding{
 		{Plugin: loggerPlugin, Scope: ScopeRoute, Policy: base.LogCapturePolicy{RequestBodyBytes: 11}},
@@ -782,7 +782,7 @@ func TestLogSnapshotSanitizerSelectorsSharePreSanitizedState(t *testing.T) {
 		selectorSeen:           &seen,
 	}
 	first.Name = "first"
-	first.SetPriority(20)
+	first.Priority = 20
 	first.selectSnapshot = func(snapshot base.LogSnapshot) bool {
 		return true
 	}
@@ -791,7 +791,7 @@ func TestLogSnapshotSanitizerSelectorsSharePreSanitizedState(t *testing.T) {
 		selectorSeen:           &seen,
 	}
 	second.Name = "second"
-	second.SetPriority(10)
+	second.Priority = 10
 	second.selectSnapshot = func(snapshot base.LogSnapshot) bool {
 		return string(snapshot.Request.Body) == "secret-body"
 	}

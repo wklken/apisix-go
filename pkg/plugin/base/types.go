@@ -88,10 +88,6 @@ func (p *BasePlugin) GetPriority() int {
 	return p.Priority
 }
 
-func (p *BasePlugin) SetPriority(priority int) {
-	p.Priority = priority
-}
-
 func (p *BasePlugin) GetSchema() string {
 	return p.Schema
 }

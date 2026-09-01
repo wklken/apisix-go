@@ -298,8 +298,7 @@ func TestSnapshotResponseBodyStopsDecodingAtBindingLimit(t *testing.T) {
 }
 
 func TestBasePluginExposesStablePluginContract(t *testing.T) {
-	plugin := &BasePlugin{Name: "logger", Priority: 10, Schema: "schema", MetadataSchema: "metadata"}
-	plugin.SetPriority(20)
+	plugin := &BasePlugin{Name: "logger", Priority: 20, Schema: "schema", MetadataSchema: "metadata"}
 	if plugin.GetName() != "logger" || plugin.GetPriority() != 20 || plugin.GetSchema() != "schema" ||
 		plugin.GetMetadataSchema() != "metadata" {
 		t.Fatalf("base plugin contract = %#v", plugin)

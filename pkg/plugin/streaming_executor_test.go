@@ -1635,7 +1635,7 @@ func (p *plan16ProtocolPlugin) RunExclusiveProtocol(
 func TestBuildResponsePlanSeparatesStreamingAndConditionalOwnership(t *testing.T) {
 	stream := &plan16StreamingPlugin{}
 	stream.Name = "stream"
-	stream.SetPriority(10)
+	stream.Priority = 10
 	plan, err := BuildResponsePlan(ResponsePlanInput{StaticBindings: []Binding{
 		resolvedPlan16Binding(t, "proxy-buffering", stream, "stream-route"),
 	}})

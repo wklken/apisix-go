@@ -48,7 +48,7 @@ type dualModeResponseTestPlugin struct {
 func newDualModeResponseTestPlugin(mode base.RequestResponseMode) *dualModeResponseTestPlugin {
 	p := &dualModeResponseTestPlugin{mode: mode}
 	p.Name = "dual-mode-response"
-	p.SetPriority(1)
+	p.Priority = 1
 	return p
 }
 
@@ -124,7 +124,7 @@ type responseTestPlugin struct {
 func newResponseTestPlugin(name string, priority int, config any) *responseTestPlugin {
 	plugin := &responseTestPlugin{config: config}
 	plugin.Name = name
-	plugin.SetPriority(priority)
+	plugin.Priority = priority
 	return plugin
 }
 

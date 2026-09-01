@@ -59,7 +59,7 @@ func newExecutorPlugin(
 ) *executorPlugin {
 	plugin := &executorPlugin{handler: handler}
 	plugin.Name = name
-	plugin.SetPriority(priority)
+	plugin.Priority = priority
 	return plugin
 }
 
@@ -70,14 +70,11 @@ func newExecutorRequestPlugin(
 ) *executorRequestPlugin {
 	plugin := &executorRequestPlugin{phase: phase}
 	plugin.Name = name
-	plugin.SetPriority(priority)
+	plugin.Priority = priority
 	return plugin
 }
 
 func pipelineBinding(name string, p Plugin, scope Scope, priority int) Binding {
-	if setter, ok := p.(interface{ SetPriority(int) }); ok {
-		setter.SetPriority(priority)
-	}
 	binding := bindPluginForTest(name, p, scope, ResourceProvenance{Kind: ResourceRoute, ID: name})
 	if !binding.Descriptor.resolved {
 		if descriptor, err := DescriptorForFactory(name); err == nil {

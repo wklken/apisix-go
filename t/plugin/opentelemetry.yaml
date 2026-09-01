@@ -623,3 +623,152 @@ cases:
                 equals: "{\"message\":\"Missing API key in request\"}\n"
             status: 401
           wait: 100ms
+    - config:
+        plugin_metadata:
+            - &otel-variable-log-format
+              id: http-logger
+              log_format:
+                context_traceparent: $opentelemetry_context_traceparent
+                span_id: $opentelemetry_span_id
+                trace_id: $opentelemetry_trace_id
+            - id: opentelemetry
+              set_ngx_var: true
+              batch_span_processor:
+                max_export_batch_size: 1
+              collector:
+                address: '{{FIXTURE.collector.URL}}/v1/traces'
+                request_timeout: 3
+        routes:
+            - &otel-variable-route
+              id: otel-set-ngx-var-metadata-update
+              plugins:
+                http-logger:
+                    batch_max_size: 1
+                    uri: '{{FIXTURE.sink.URL}}/logs'
+                opentelemetry:
+                    sampler:
+                        name: always_on
+              upstream:
+                nodes:
+                    '{{FIXTURE.primary.ADDR}}': 1
+                type: roundrobin
+              uri: /set-ngx-var-metadata-update
+      fixtures:
+        - expect:
+            - method: GET
+              path:
+                equals: /set-ngx-var-metadata-update
+            - method: GET
+              path:
+                equals: /set-ngx-var-metadata-update-ready
+            - method: GET
+              path:
+                equals: /set-ngx-var-metadata-update
+          expect_requests: 3
+          kind: http
+          name: primary
+          respond:
+            - body: ok
+              status: 200
+        - expect:
+            - body:
+                matches: '^\{"context_traceparent":"00-[0-9a-f]{32}-[0-9a-f]{16}-01","route_id":"otel-set-ngx-var-metadata-update","span_id":"[0-9a-f]{16}","trace_id":"[0-9a-f]{32}"\}$'
+              method: POST
+              path:
+                equals: /logs
+            - body:
+                json_equals: '{"context_traceparent":"","route_id":"otel-set-ngx-var-metadata-update","span_id":"","trace_id":""}'
+              method: POST
+              path:
+                equals: /logs
+          expect_requests: 2
+          kind: http
+          name: sink
+          respond:
+            - status: 200
+        - expect:
+            - method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - kind: server
+                      name:
+                        equals: GET /set-ngx-var-metadata-update
+                      span_id:
+                        matches: ^[0-9a-f]{16}$
+                      trace_id:
+                        matches: ^[0-9a-f]{32}$
+                unique_trace_ids: false
+              path:
+                equals: /v1/traces
+            - method: POST
+              otlp_traces:
+                span_count: 1
+                spans:
+                    - kind: server
+                      name:
+                        equals: GET /set-ngx-var-metadata-update
+                      span_id:
+                        matches: ^[0-9a-f]{16}$
+                      trace_id:
+                        matches: ^[0-9a-f]{32}$
+                unique_trace_ids: false
+              path:
+                equals: /v1/traces
+          expect_requests: 2
+          kind: http
+          name: collector
+          respond:
+            - headers:
+                Content-Type: application/x-protobuf
+              status: 200
+      name: set-ngx-var-follows-live-metadata
+      runtime:
+        plugins:
+            - opentelemetry
+            - http-logger
+      steps:
+        - input:
+            method: GET
+            path: /set-ngx-var-metadata-update
+          name: metadata-enabled-exports-trace-variables
+          output:
+            body:
+                equals: ok
+            status: 200
+          wait: 100ms
+        - config:
+            plugin_metadata:
+                - *otel-variable-log-format
+                - id: opentelemetry
+                  set_ngx_var: false
+                  batch_span_processor:
+                    max_export_batch_size: 1
+                  collector:
+                    address: '{{FIXTURE.collector.URL}}/v1/traces'
+                    request_timeout: 3
+            routes:
+                - *otel-variable-route
+                - id: otel-set-ngx-var-metadata-update-ready
+                  upstream:
+                    nodes:
+                        '{{FIXTURE.primary.ADDR}}': 1
+                    type: roundrobin
+                  uri: /set-ngx-var-metadata-update-ready
+          config_probe:
+            input:
+                method: GET
+                path: /set-ngx-var-metadata-update-ready
+            output:
+                body:
+                    equals: ok
+                status: 200
+          input:
+            method: GET
+            path: /set-ngx-var-metadata-update
+          name: metadata-disabled-clears-trace-variables
+          output:
+            body:
+                equals: ok
+            status: 200
+          wait: 100ms

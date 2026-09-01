@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/config"
@@ -847,23 +849,21 @@ func mustOpenTelemetryMetadataView(t *testing.T, documents map[string]string) ru
 	return view
 }
 
-func TestNewTracerProviderRejectsSetNgxVarBeforeAllocation(t *testing.T) {
+func TestNewTracerProviderAcceptsSetNgxVar(t *testing.T) {
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(collector.Close)
 	metadata := Metadata{
 		SetNgxVar: true,
-		Collector: CollectorConfig{Address: "://invalid"},
+		Collector: CollectorConfig{Address: collector.URL},
 	}
 
 	provider, err := newTracerProvider(SamplerConfig{Name: "always_on"}, metadata, true)
-	if err == nil {
-		t.Fatal("newTracerProvider() error = nil, want unsupported set_ngx_var rejection")
+	if err != nil {
+		t.Fatalf("newTracerProvider() rejected APISIX 3.17 set_ngx_var: %v", err)
 	}
-	const want = "opentelemetry set_ngx_var is unsupported by the Go data plane"
-	if err.Error() != want {
-		t.Fatalf("newTracerProvider() error = %q, want %q", err, want)
-	}
-	if provider != nil {
-		t.Fatal("newTracerProvider() returned a provider after rejecting set_ngx_var")
-	}
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 }
 
 func TestNewTracerProviderAcceptsAPISIX317PositiveInactiveTimeout(t *testing.T) {
@@ -996,51 +996,88 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsUnsupportedMetadataBeforeFallbackProviderAllocation(t *testing.T) {
-	for _, tt := range []struct {
-		name     string
-		metadata map[string]any
-		want     string
-	}{
-		{
-			name: "set_ngx_var",
-			metadata: map[string]any{
-				"set_ngx_var": true,
-			},
-			want: "opentelemetry set_ngx_var is unsupported by the Go data plane",
-		},
-		{
-			name: "inactive_timeout",
-			metadata: map[string]any{
-				"batch_span_processor": map[string]any{
-					"inactive_timeout": -1.0,
-				},
-			},
-			want: "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			effective := &config.EffectiveConfig{Config: config.Config{
-				PluginAttr: map[string]map[string]any{name: tt.metadata},
-			}}
+func TestPostInitRejectsNegativeInactiveTimeoutBeforeFallbackProviderAllocation(t *testing.T) {
+	effective := &config.EffectiveConfig{Config: config.Config{
+		PluginAttr: map[string]map[string]any{name: {
+			"batch_span_processor": map[string]any{"inactive_timeout": -1.0},
+		}},
+	}}
 
-			p := &Plugin{}
-			p.SetDependencies(base.Dependencies{Config: effective})
-			if err := p.Init(); err != nil {
-				t.Fatalf("Init() error = %v", err)
+	p := &Plugin{}
+	p.SetDependencies(base.Dependencies{Config: effective})
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	err := p.PostInit()
+	if err == nil {
+		t.Fatal("PostInit() error = nil, want unsupported metadata rejection")
+	}
+	if !errors.Is(err, errUnsupportedMetadata) {
+		t.Fatalf("PostInit() error = %v, want unsupported metadata sentinel", err)
+	}
+	const want = "opentelemetry batch_span_processor.inactive_timeout is unsupported by the Go data plane"
+	if err.Error() != want {
+		t.Fatalf("PostInit() error = %q, want %q", err, want)
+	}
+	if p.tracerProvider != nil {
+		t.Fatal("PostInit() allocated fallback tracer provider after rejecting unsupported metadata")
+	}
+}
+
+func TestTraceRequestPhaseSetsAPISIX317VariablesWhenEnabled(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	for _, enabled := range []bool{true, false} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			p := &Plugin{
+				metadata:       Metadata{SetNgxVar: enabled},
+				tracerProvider: provider,
 			}
-			err := p.PostInit()
-			if err == nil {
-				t.Fatal("PostInit() error = nil, want unsupported metadata rejection")
+			request, lifecycle := apisixctx.EnsureRequestLifecycle(
+				httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil),
+				time.Now(),
+			)
+			result := p.RunRequestPhase(httptest.NewRecorder(), request)
+			spanContext := trace.SpanFromContext(result.Request.Context()).SpanContext()
+			variables := map[string]any{
+				"$opentelemetry_context_traceparent": apisixctx.GetRequestVar(
+					result.Request,
+					"$opentelemetry_context_traceparent",
+				),
+				"$opentelemetry_trace_id": apisixctx.GetRequestVar(result.Request, "$opentelemetry_trace_id"),
+				"$opentelemetry_span_id":  apisixctx.GetRequestVar(result.Request, "$opentelemetry_span_id"),
 			}
-			if !errors.Is(err, errUnsupportedMetadata) {
-				t.Fatalf("PostInit() error = %v, want unsupported metadata sentinel", err)
+			if enabled {
+				wantTraceparent := fmt.Sprintf(
+					"00-%s-%s-%02x",
+					spanContext.TraceID(),
+					spanContext.SpanID(),
+					byte(spanContext.TraceFlags()),
+				)
+				if variables["$opentelemetry_context_traceparent"] != wantTraceparent ||
+					variables["$opentelemetry_trace_id"] != spanContext.TraceID().String() ||
+					variables["$opentelemetry_span_id"] != spanContext.SpanID().String() {
+					t.Fatalf("OpenTelemetry variables = %#v, want traceparent=%q trace=%s span=%s", variables,
+						wantTraceparent, spanContext.TraceID(), spanContext.SpanID())
+				}
+			} else {
+				for name, value := range variables {
+					if value != nil {
+						t.Fatalf("%s = %#v, want unset", name, value)
+					}
+				}
 			}
-			if err.Error() != tt.want {
-				t.Fatalf("PostInit() error = %q, want %q", err, tt.want)
-			}
-			if p.tracerProvider != nil {
-				t.Fatal("PostInit() allocated fallback tracer provider after rejecting unsupported metadata")
+			lifecycle.Complete(
+				apisixctx.ResponseOutcome{Kind: apisixctx.RequestOutcomeCompleted, Status: http.StatusOK},
+				time.Now(),
+			)
+			if failures := lifecycle.Finalize(); len(failures) != 0 {
+				t.Fatalf("lifecycle failures = %#v", failures)
 			}
 		})
 	}

@@ -16,7 +16,6 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -32,7 +31,6 @@ type ConsumerLookup interface {
 
 type Dependencies struct {
 	Config            *config.EffectiveConfig
-	DataEncryption    data_encryption.Resolver
 	Secrets           secret.GenerationSecrets
 	Metadata          runtime.MetadataView
 	Consumers         ConsumerLookup
@@ -54,10 +52,6 @@ func (p *BasePlugin) SetDependencies(deps Dependencies) {
 
 func (p *BasePlugin) StaticConfig() *config.EffectiveConfig {
 	return p.dependencies.Config
-}
-
-func (p *BasePlugin) DataEncryption() data_encryption.Resolver {
-	return p.dependencies.DataEncryption
 }
 
 func (p *BasePlugin) ScopedSecrets() secret.GenerationSecrets {

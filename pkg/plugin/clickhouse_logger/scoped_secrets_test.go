@@ -198,8 +198,7 @@ func TestScopedSecretsResolveManagedClickHouseUser(t *testing.T) {
 	}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.PostInit(); err != nil {
@@ -275,12 +274,11 @@ func TestScopedSecretsClickHousePasswordFailureIsAtomic(t *testing.T) {
 	}
 }
 
-func TestPostInitNeverCallsClickHouseDataEncryption(t *testing.T) {
+func TestPostInitUsesMaterializedClickHouseSecrets(t *testing.T) {
 	p := &Plugin{config: clickHouseScopedConfig("default", "secret")}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {
@@ -293,7 +291,7 @@ func TestPostInitNeverCallsClickHouseDataEncryption(t *testing.T) {
 	}
 	p.SetDependencies(base.Dependencies{Tasks: newLoggerTestTaskOwner(t)})
 	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v, want no data-encryption lookup", err)
+		t.Fatalf("PostInit() error = %v, want materialized scoped secrets", err)
 	}
 	t.Cleanup(p.Stop)
 }
@@ -353,8 +351,7 @@ func newScopedClickHousePlugin(
 	}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.PostInit(); err != nil {

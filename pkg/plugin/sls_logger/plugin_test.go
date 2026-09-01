@@ -447,10 +447,9 @@ func newTestPluginWithMetadataAndStaticConfig(
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Config:         effective,
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		Metadata:       mustMetadataView(t, metadata),
+		Config:   effective,
+		Tasks:    newLoggerTestTaskOwner(t),
+		Metadata: mustMetadataView(t, metadata),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)

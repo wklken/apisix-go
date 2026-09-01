@@ -583,8 +583,7 @@ func newOwnedShutdownRocketMQPluginForTest(
 	t.Helper()
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("owned-shutdown-private", false))
 	p.SetDependencies(base.Dependencies{
-		Tasks:          owner,
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: owner,
 	})
 	p.sender = sender
 	if err := materializeRocketMQForTest(t, p, 1, "owned-shutdown", p.config.SecretKey); err != nil {
@@ -913,8 +912,7 @@ func TestRocketMQRegistryCancellationBeforePublicationRollsBackRuntime(t *testin
 	}
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("pre-publication-private", false))
 	p.SetDependencies(base.Dependencies{
-		Tasks:          owner,
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: owner,
 	})
 	if err := materializeRocketMQForTest(t, p, 1, "pre-publication-cancel", p.config.SecretKey); err != nil {
 		t.Fatal(err)
@@ -1038,8 +1036,7 @@ func newBlockingRocketMQPlugin(
 	tasks, owner := newRocketMQTaskRegistryForTest(t, "plugin/test/rocketmq_logger/blocking")
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("active-private", false))
 	p.SetDependencies(base.Dependencies{
-		Tasks:          owner,
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: owner,
 	})
 	p.sender = sender
 	if err := materializeRocketMQForTest(t, p, 1, "blocking", p.config.SecretKey); err != nil {
@@ -1090,8 +1087,7 @@ func TestRocketMQQuiesceFlushesPendingBatchBeforeSenderShutdown(t *testing.T) {
 func TestRocketMQRejectsLogEnqueueBeforePostInit(t *testing.T) {
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("pre-init-private", false))
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	queued := len(p.FireChan)
 	if err := p.RunLogPhase(base.LogSnapshot{}); !errors.Is(err, base.ErrLogQueueUnavailable) {
@@ -1136,8 +1132,7 @@ func TestRocketMQPostInitIsIdempotent(t *testing.T) {
 func TestRocketMQConcurrentPostInitAndStopCannotPublishSender(t *testing.T) {
 	p := newRawRocketMQPlugin(t, rocketMQRawConfig("post-init-private", false))
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	if err := materializeRocketMQForTest(t, p, 1, "concurrent-post-init", p.config.SecretKey); err != nil {
 		t.Fatal(err)
@@ -1362,9 +1357,8 @@ func newTestPluginWithMetadata(
 
 	p := &Plugin{config: cfg, sender: sender}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		Metadata:       mustMetadataView(t, metadata),
+		Tasks:    newLoggerTestTaskOwner(t),
+		Metadata: mustMetadataView(t, metadata),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1530,8 +1524,7 @@ func TestPostInitPublishesTLSEnabledRuntime(t *testing.T) {
 	}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {
@@ -1583,8 +1576,7 @@ func TestPostInitRejectsInvalidBodyExpressions(t *testing.T) {
 			p := &Plugin{config: test.config, sender: &captureSender{}}
 			p.SetDependencies(
 				base.Dependencies{
-					Tasks:          newLoggerTestTaskOwner(t),
-					DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+					Tasks: newLoggerTestTaskOwner(t),
 				},
 			)
 			if err := p.Init(); err != nil {
@@ -1624,8 +1616,7 @@ func TestPostInitAcceptsOfficialNestedBodyExpressions(t *testing.T) {
 	}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {
@@ -1653,8 +1644,7 @@ func TestPostInitResolvesRotatedEncryptedSecretKey(t *testing.T) {
 		sender: &captureSender{},
 	}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -1811,8 +1801,7 @@ func TestMetadataDecodeFailsBeforeRocketMQSenderAndProcessorAcquisition(t *testi
 		return &captureSender{}, nil
 	}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",
 		}),

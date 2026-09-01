@@ -10,7 +10,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin"
@@ -47,10 +46,7 @@ func testPluginInitializationError(
 	if len(zones) > 0 {
 		effective.Config.Apisix.ProxyCache.Zones = slices.Clone(zones[0])
 	}
-	instance := plugin.New(name, base.Dependencies{
-		Config:         effective,
-		DataEncryption: testDataEncryptionResolver(),
-	})
+	instance := plugin.New(name, base.Dependencies{Config: effective})
 	if instance == nil {
 		return fmt.Errorf("plugin %q is not supported", name)
 	}
@@ -494,8 +490,4 @@ func testEffectiveConfig() *appconfig.EffectiveConfig {
 	return &appconfig.EffectiveConfig{
 		Config: static,
 	}
-}
-
-func testDataEncryptionResolver() data_encryption.Resolver {
-	return data_encryption.NewResolver(false, nil)
 }

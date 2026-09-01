@@ -278,8 +278,7 @@ func TestSendBatchUsesPrivateTokenAndScrubsRetainedRequestState(t *testing.T) {
 	config := lagoTestConfig(server.URL, "retained-private")
 	p := &Plugin{config: config}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -675,8 +674,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	p := &Plugin{config: cfg}
 	p.SetDependencies(
 		base.Dependencies{
-			Tasks:          newLoggerTestTaskOwner(t),
-			DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+			Tasks: newLoggerTestTaskOwner(t),
 		},
 	)
 	if err := p.Init(); err != nil {

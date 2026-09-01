@@ -14,7 +14,6 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/config"
-	"github.com/wklken/apisix-go/pkg/data_encryption"
 	generationpkg "github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -64,26 +63,14 @@ func newBaseBatchProcessorForTest(
 func TestBasePluginDependenciesRemainInstanceScoped(t *testing.T) {
 	leftConfig := &config.EffectiveConfig{}
 	rightConfig := &config.EffectiveConfig{}
-	leftResolver := data_encryption.NewResolver(true, []string{"qeddd145sfvddff3"})
-	rightResolver := data_encryption.NewResolver(true, []string{"1234567890abcdef"})
 
 	left := &BasePlugin{}
-	left.SetDependencies(Dependencies{Config: leftConfig, DataEncryption: leftResolver})
+	left.SetDependencies(Dependencies{Config: leftConfig})
 	right := &BasePlugin{}
-	right.SetDependencies(Dependencies{Config: rightConfig, DataEncryption: rightResolver})
+	right.SetDependencies(Dependencies{Config: rightConfig})
 
 	if left.StaticConfig() != leftConfig || right.StaticConfig() != rightConfig {
 		t.Fatal("static configuration dependency was not retained by plugin instance")
-	}
-	ciphertext, err := data_encryption.Encrypt("secret", "qeddd145sfvddff3")
-	if err != nil {
-		t.Fatalf("Encrypt() error = %v", err)
-	}
-	if plaintext, err := left.DataEncryption().Resolve(ciphertext); err != nil || plaintext != "secret" {
-		t.Fatalf("left resolver Resolve() = (%q, %v), want secret", plaintext, err)
-	}
-	if _, err := right.DataEncryption().Resolve(ciphertext); err == nil {
-		t.Fatal("right resolver decrypted ciphertext owned by the left plugin instance")
 	}
 }
 

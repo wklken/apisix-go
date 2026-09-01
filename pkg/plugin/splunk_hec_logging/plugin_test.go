@@ -436,8 +436,7 @@ func TestSplunkSendBatchScrubsRetainedRequestState(t *testing.T) {
 func TestSplunkRejectsPrePostInitLogEnqueue(t *testing.T) {
 	p := &Plugin{config: Config{Endpoint: Endpoint{URI: "http://127.0.0.1:8088", Token: "unready"}}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
@@ -692,9 +691,8 @@ func newTestPluginWithMetadata(t *testing.T, cfg Config, metadata map[string]any
 
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
-		Metadata:       mustMetadataView(t, metadata),
+		Tasks:    newLoggerTestTaskOwner(t),
+		Metadata: mustMetadataView(t, metadata),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -757,8 +755,7 @@ func TestPostInitResolvesRotatedEncryptedToken(t *testing.T) {
 	newKey := "qeddd145sfvddff3"
 	p := &Plugin{config: Config{Endpoint: Endpoint{Token: encryptSplunkTestValue(t, oldKey, "splunk-token")}}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(true, []string{newKey, oldKey}).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -880,8 +877,7 @@ func TestMetadataDecodeFailsBeforeSplunkClientAndProcessorAcquisition(t *testing
 		Token: "token",
 	}}}
 	p.SetDependencies(base.Dependencies{
-		Tasks:          newLoggerTestTaskOwner(t),
-		DataEncryption: testutil.DataEncryptionService(false, nil).Resolver(),
+		Tasks: newLoggerTestTaskOwner(t),
 		Metadata: mustMetadataView(t, map[string]any{
 			"max_pending_entries": "invalid",
 		}),

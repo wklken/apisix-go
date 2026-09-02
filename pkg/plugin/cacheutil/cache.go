@@ -1,6 +1,7 @@
 package cacheutil
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"strings"
 )
 
+type requiredVaryKey struct{}
+
 // CloneHeader returns a deep copy of header and its value slices.
 func CloneHeader(header http.Header) http.Header {
 	cloned := make(http.Header, len(header))
@@ -16,6 +19,37 @@ func CloneHeader(header http.Header) http.Header {
 		cloned[field] = append([]string(nil), values...)
 	}
 	return cloned
+}
+
+// WithRequiredVary marks a response Vary field required for this request.
+// The marker lets cache lookup reject entries written before that requirement
+// existed without changing cache keys for unrelated routes.
+func WithRequiredVary(r *http.Request, field string) *http.Request {
+	if r == nil {
+		return nil
+	}
+	field = strings.ToLower(strings.TrimSpace(field))
+	if field == "" {
+		return r
+	}
+	required, _ := r.Context().Value(requiredVaryKey{}).(map[string]struct{})
+	cloned := make(map[string]struct{}, len(required)+1)
+	for name := range required {
+		cloned[name] = struct{}{}
+	}
+	cloned[field] = struct{}{}
+	return r.WithContext(context.WithValue(r.Context(), requiredVaryKey{}, cloned))
+}
+
+// RequiredVary reports whether field is mandatory for cache-safe handling of
+// this request.
+func RequiredVary(r *http.Request, field string) bool {
+	if r == nil {
+		return false
+	}
+	required, _ := r.Context().Value(requiredVaryKey{}).(map[string]struct{})
+	_, ok := required[strings.ToLower(strings.TrimSpace(field))]
+	return ok
 }
 
 // ParseVaryHeader returns normalized Vary field names and whether the response

@@ -19,6 +19,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/compression"
 )
 
@@ -814,7 +815,7 @@ func (f *streamingFinish) wrapNegotiatedCompression(
 			return selected
 		}
 		var err error
-		selected, err = f.applyCompression(w, r, status)
+		selected, err = f.applyCompression(w, r, status, w.Header())
 		if err != nil {
 			panic(streamingSetupError{err: err})
 		}
@@ -913,12 +914,13 @@ func (f *streamingFinish) applyCompression(
 	w http.ResponseWriter,
 	r *http.Request,
 	status int,
+	header http.Header,
 ) (http.ResponseWriter, error) {
 	if f == nil || f.compression == nil || f.compression.state == nil {
 		return w, nil
 	}
 	decision := f.compression.state.Decide(compression.ResponseMeta{
-		Method: r.Method, Status: status, Header: w.Header().Clone(),
+		Method: r.Method, Status: status, Header: header.Clone(),
 	})
 	if decision.Vary {
 		base.AppendVaryToken(w.Header(), "Accept-Encoding")
@@ -1028,12 +1030,15 @@ func (e *StreamingResponseExecutor) CommitResponse(
 	}
 	state.Status = streamingState.Status
 	state.Header = streamingState.Header
+	if cacheutil.RequiredVary(r, "Accept-Encoding") {
+		base.AppendVaryToken(state.Header, "Accept-Encoding")
+	}
 	request, negotiation, err := e.registerCompressionOffers(r)
 	if err != nil {
 		return err
 	}
 	finish := &streamingFinish{compression: negotiation}
-	inner, err := finish.applyCompression(w, request, state.Status)
+	inner, err := finish.applyCompression(w, request, state.Status, state.Header)
 	if err != nil {
 		result := finish.finish(err)
 		if panicErr := streamingPanicError(err); panicErr != nil {

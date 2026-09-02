@@ -16,6 +16,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -138,7 +139,6 @@ func (e *BufferedResponseExecutor) PostResolutionHook(
 		return r, errors.New("post-resolution hook called more than once")
 	}
 	execution.hookCalled = true
-	execution.request = r
 	cloned := effective.clone()
 	plan, err := materializeResponseBindings(cloned, hasConditionalTerminalEffective(cloned))
 	if err != nil {
@@ -154,6 +154,10 @@ func (e *BufferedResponseExecutor) PostResolutionHook(
 		return r, errors.New("bounded response plan selected after transparent response started")
 	}
 	execution.plan = append([]ResponseBinding(nil), plan...)
+	if needsCacheSafeCompressionVary(effective) {
+		r = cacheutil.WithRequiredVary(r, "Accept-Encoding")
+	}
+	execution.request = r
 	if len(plan) > 0 {
 		execution.mode = responseModeBounded
 	} else {
@@ -582,8 +586,24 @@ func (s *responseExecution) complete() {
 		s.fail(http.StatusBadGateway, "Bad Gateway")
 		return
 	}
+	if cacheutil.RequiredVary(s.request, "Accept-Encoding") {
+		base.AppendVaryToken(state.Header, "Accept-Encoding")
+	}
 	s.runStores(state, source)
 	s.commitState(state)
+}
+
+func needsCacheSafeCompressionVary(effective EffectiveBindingSet) bool {
+	hasProxyCache := false
+	hasCompression := false
+	for _, binding := range effective.all() {
+		hasProxyCache = hasProxyCache || binding.Descriptor.Factory == "proxy-cache"
+		capability, err := responseCapabilityForBinding(binding)
+		if err == nil && capability.CompressionOffer {
+			hasCompression = true
+		}
+	}
+	return hasProxyCache && hasCompression
 }
 
 func (s *responseExecution) runTransforms(

@@ -957,7 +957,7 @@ func TestCompressionWrapperPanicIsAttributed(t *testing.T) {
 		t.Fatalf("registerCompressionOffers() error = %v", err)
 	}
 	_, err = (&streamingFinish{compression: negotiation}).applyCompression(
-		&task10MinimalWriter{}, request, http.StatusOK,
+		&task10MinimalWriter{}, request, http.StatusOK, make(http.Header),
 	)
 	var panicErr *PanicError
 	if !errors.As(err, &panicErr) || panicErr.Factory != "gzip" || panicErr.Phase != PhaseBodyFilter ||

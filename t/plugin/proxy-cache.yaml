@@ -924,7 +924,8 @@ cases:
         input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: deflate}}
         output:
           status: 200
-          headers: {Content-Encoding: {equals: deflate}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
       - name: identity-hit-after-deflate
         input: {method: GET, path: /representation-variants}
         output:
@@ -935,7 +936,8 @@ cases:
         input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: deflate}}
         output:
           status: 200
-          headers: {Content-Encoding: {equals: deflate}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: HIT}}
       - name: br-miss
         input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: br}}
         output:
@@ -971,7 +973,8 @@ cases:
         input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: deflate}}
         output:
           status: 200
-          headers: {Content-Encoding: {equals: deflate}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
+          body: {equals: representation-body-0123456789}
+          headers: {Content-Encoding: {absent: true}, Vary: {matches: '(?i)^Accept-Encoding$'}, Apisix-Cache-Status: {equals: MISS}}
       - name: br-miss-after-purge
         input: {method: GET, path: /representation-variants, headers: {Accept-Encoding: br}}
         output:

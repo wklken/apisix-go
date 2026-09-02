@@ -20,6 +20,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type responseCommitRecorder struct {
@@ -736,6 +737,75 @@ func TestBufferedResponseCacheHitConsumesOnceAndSkipsTransformsStores(t *testing
 	}
 	if callbackCalls != 0 {
 		t.Fatalf("cache hit store calls = %d, want 0", callbackCalls)
+	}
+}
+
+func TestResponsePlanMakesCompressionCacheSafe(t *testing.T) {
+	cache := newResponseTestPlugin("proxy-cache", 1, nil)
+	storedVary := ""
+	cache.store = func(_ *http.Request, state base.ResponseState) error {
+		storedVary = state.Header.Get("Vary")
+		return nil
+	}
+	cacheBinding := checkedResponseBinding(t, "proxy-cache", cache, ScopeRoute, "cache-route")
+
+	gzipPlugin := New("gzip", base.Dependencies{})
+	if gzipPlugin == nil {
+		t.Fatal("gzip plugin is not registered")
+	}
+	if err := gzipPlugin.Init(); err != nil {
+		t.Fatalf("gzip Init() error = %v", err)
+	}
+	if err := util.Parse(
+		map[string]any{"types": []string{"text/plain"}, "min_length": 1},
+		gzipPlugin.Config(),
+	); err != nil {
+		t.Fatalf("parse gzip config: %v", err)
+	}
+	if err := gzipPlugin.PostInit(); err != nil {
+		t.Fatalf("gzip PostInit() error = %v", err)
+	}
+	gzipBinding := resolvedPlan16Binding(t, "gzip", gzipPlugin, "gzip-route")
+	rewrite := newResponseTestPlugin(
+		"response-rewrite",
+		2,
+		responseTestConfig{stage: "none", streamingHeader: true},
+	)
+	rewrite.streamingHeader = func(_ *http.Request, state *base.StreamingResponseState) error {
+		state.Header.Del("Vary")
+		return nil
+	}
+	rewriteBinding := checkedResponseBinding(t, "response-rewrite", rewrite, ScopeRoute, "rewrite-route")
+	bindings := []Binding{cacheBinding, gzipBinding, rewriteBinding}
+	plan, err := BuildResponsePlan(ResponsePlanInput{
+		StaticBindings: bindings,
+		BufferedConfig: base.BufferedResponseConfig{MaxBytes: base.DefaultBufferedResponseMaxBytes},
+	})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+
+	request, lifecycle := executorRequest(t)
+	request.Header.Set("Accept-Encoding", "gzip")
+	response := httptest.NewRecorder()
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("cached"))
+	})
+	plan.Install(NewRequestPipeline(bindings, nil), terminal).
+		ServeHTTP(response, request)
+	if lifecycle.ResponseSource() != apisixctx.ResponseSourceUpstream {
+		t.Fatalf("response source = %q, want upstream", lifecycle.ResponseSource())
+	}
+	if storedVary != "Accept-Encoding" {
+		t.Fatalf("stored Vary = %q, want Accept-Encoding", storedVary)
+	}
+	if got := response.Header().Get("Vary"); got != "Accept-Encoding" {
+		t.Fatalf("response Vary = %q, want Accept-Encoding", got)
+	}
+	if got := response.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("response Content-Encoding = %q, want gzip", got)
 	}
 }
 

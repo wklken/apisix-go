@@ -9,7 +9,9 @@
 **apisix-go 是一个开源的、原生使用 Go 实现的 [Apache APISIX](https://github.com/apache/apisix) 数据面。** 它面向 APISIX 3.17 兼容性，旨在为 API 和边缘网关部署提供简单的分发、运行和扩展方式。
 
 > [!WARNING]
-> apisix-go 正在积极开发中，尚未达到生产可用状态。
+> **RC 范围：** apisix-go 仅在本文档声明的 Apache APISIX 3.17 HTTP
+> 数据面范围内作为候选发布版本；不包含 APISIX stream 子系统（TCP/UDP）。
+> 生产部署仍需完成目标环境验收。
 
 ## 为什么选择 apisix-go？
 

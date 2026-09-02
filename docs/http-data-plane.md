@@ -26,7 +26,9 @@ APISIX-Go-specific migration selector is required.
 
 ## Excluded scope
 
-- UDP, stream TLS/mTLS, PROXY protocol, and general stream-plugin chaining.
+- The APISIX stream subsystem. Existing raw TCP and `mqtt-proxy` support is not
+  qualified by this release candidate; UDP, stream TLS/mTLS, PROXY protocol, and
+  general stream-plugin chaining remain unimplemented.
 - OpenResty/Lua internals beyond explicitly bounded implementations.
 - External plugin runners, WASM, XRPC, QUIC, HTTP/3, and unsupported discovery.
 - Operator-specific external services, ingress, capacity, observability, and
@@ -38,10 +40,13 @@ Plugin behavior is tested by plugin unit tests and standalone real-process
 cases. Runtime stability is qualified separately by the
 [HTTP candidate qualification](runbooks/http-candidate-qualification.md).
 
-A green release-candidate run supports only this bounded claim:
+A green release-candidate run promotes the recorded revision to release-candidate
+status only for the documented Apache APISIX 3.17 HTTP data-plane scope. All
+APISIX stream-subsystem behavior is excluded from this qualification.
 
-> The documented HTTP data plane is functionally and runtime-stability verified
-> for the recorded source revision, candidate identity, tested plugin behavior, and
-> dependency boundaries.
+> The recorded source revision is a release candidate for the documented Apache
+> APISIX 3.17 HTTP data-plane scope. The APISIX stream subsystem is excluded, and
+> production deployment still requires environment-specific validation.
 
-It is not a repository-wide or environment-specific production-readiness claim.
+This qualification does not cover the APISIX stream subsystem, excluded
+features, or any specific production environment.

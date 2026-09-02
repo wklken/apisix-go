@@ -132,7 +132,7 @@ func newRootCommand() *cobra.Command {
 	options := &rootOptions{configPath: config.DefaultConfigFile}
 	root := &cobra.Command{
 		Use:           "apisix",
-		Short:         "an golang version of apisix, not production ready",
+		Short:         "APISIX 3.17 HTTP data plane release candidate; stream subsystem excluded",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

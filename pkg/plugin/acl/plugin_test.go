@@ -187,6 +187,46 @@ func TestHandlerUsesFirstRecursiveJSONPathMatch(t *testing.T) {
 	}
 }
 
+func TestHandlerSortsRecursiveJSONPathMatchesLikeAPISIX317(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ExternalUserLabelField:          "$.orgs..team",
+		ExternalUserLabelFieldKey:       "team",
+		ExternalUserLabelFieldParser:    "segmented_text",
+		ExternalUserLabelFieldSeparator: `\|`,
+		AllowLabels:                     map[string][]string{"team": {"cloud", "infra"}},
+	})
+	externalUser := map[string]any{
+		"orgs": map[string]any{
+			"api7":   map[string]any{"team": "cloud|infra"},
+			"apache": map[string]any{"team": []any{"devops", "qa"}},
+		},
+	}
+
+	for range 100 {
+		res := performExternalUserRequest(p, externalUser)
+		if res.Code != http.StatusForbidden {
+			t.Fatalf(
+				"response code = %d, want 403 because APISIX 3.17 sorts apache.team before api7.team; body=%s",
+				res.Code,
+				res.Body.String(),
+			)
+		}
+	}
+}
+
+func TestHandlerUsesRootJSONPathMatch(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ExternalUserLabelField:       "$",
+		ExternalUserLabelFieldKey:    "groups",
+		ExternalUserLabelFieldParser: "table",
+		DenyLabels:                   map[string][]string{"groups": {"blocked"}},
+	})
+	res := performExternalUserRequest(p, []any{"blocked"})
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("response code = %d, want 403 for a blocked root JSONPath value", res.Code)
+	}
+}
+
 func TestJSONPathLibraryCoversAPISIX317ACLPaths(t *testing.T) {
 	paths := []string{
 		"groups",

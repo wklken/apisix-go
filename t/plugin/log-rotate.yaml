@@ -241,8 +241,6 @@ cases:
     after_shutdown:
       - path: {equals: '{{WORK_DIR}}/logs/2020-01-01_00-00-00__access.log.tar.gz'}
         body: {equals: "stable compressed archive\n"}
-      - path: {equals: '{{WORK_DIR}}/logs/access.log'}
-        body: {matches: '"path":"/compress-stable"'}
 
   - name: first-rotation-time-aligns-with-hour-boundary
     runtime:

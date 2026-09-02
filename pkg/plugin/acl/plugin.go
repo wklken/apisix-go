@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -165,12 +166,44 @@ func (p *Plugin) externalUserLabels(r *http.Request) (map[string]any, bool) {
 	if value, isBoolean := user.(bool); isBoolean && !value {
 		return nil, false
 	}
-	value, _ := p.path.FirstFound(user)
+	value := firstJSONPathValue(p.path, user)
 	key := p.config.ExternalUserLabelFieldKey
 	if key == "" {
 		key = p.config.ExternalUserLabelField
 	}
 	return map[string]any{key: value}, true
+}
+
+func firstJSONPathValue(path jp.Expr, data any) any {
+	locations := path.Locate(data, 0)
+	if len(locations) == 0 {
+		value, _ := path.FirstFound(data)
+		return value
+	}
+	location := slices.MinFunc(locations, func(a, b jp.Expr) int {
+		return strings.Compare(apisixJSONPathSortKey(a), apisixJSONPathSortKey(b))
+	})
+	value, _ := location.FirstFound(data)
+	return value
+}
+
+// APISIX 3.17's lua-jsonpath sorts matches by their dot-joined path before
+// returning the first value. Go map iteration order must not affect that choice.
+func apisixJSONPathSortKey(path jp.Expr) string {
+	parts := make([]string, 0, len(path))
+	for _, fragment := range path {
+		switch fragment := fragment.(type) {
+		case jp.Root:
+			parts = append(parts, "$")
+		case jp.At:
+			parts = append(parts, "@")
+		case jp.Child:
+			parts = append(parts, string(fragment))
+		case jp.Nth:
+			parts = append(parts, strconv.Itoa(int(fragment)))
+		}
+	}
+	return strings.Join(parts, ".")
 }
 
 func consumerLabels(r *http.Request) (map[string]any, bool) {

@@ -9,7 +9,10 @@
 **apisix-go is an open-source, Go-native implementation of the [Apache APISIX](https://github.com/apache/apisix) data plane.** It targets APISIX 3.17 compatibility and is designed for straightforward distribution, operation, and extension across API and edge gateway deployments.
 
 > [!WARNING]
-> apisix-go is under active development and is not ready for production use.
+> **Release candidate scope:** apisix-go is a release candidate for the
+> documented Apache APISIX 3.17 HTTP data-plane scope. The APISIX stream
+> subsystem (TCP/UDP) is excluded. Production deployment still requires
+> environment-specific validation.
 
 ## Why apisix-go?
 

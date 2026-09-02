@@ -92,6 +92,14 @@ func TestRootCommandConfigFlagMetadata(t *testing.T) {
 	}
 }
 
+func TestRootCommandDescriptionStatesRCScope(t *testing.T) {
+	root := newRootCommand()
+	want := "APISIX 3.17 HTTP data plane release candidate; stream subsystem excluded"
+	if root.Short != want {
+		t.Fatalf("root command description = %q, want %q", root.Short, want)
+	}
+}
+
 func TestRootCommandDoesNotExposeObsoleteViperFlag(t *testing.T) {
 	root := newRootCommand()
 	if flag := root.PersistentFlags().Lookup("viper"); flag != nil {

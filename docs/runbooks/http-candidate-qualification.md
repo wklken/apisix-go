@@ -2,7 +2,8 @@
 
 This runbook qualifies one immutable APISIX-Go source revision for the bounded
 HTTP data-plane claim in [HTTP data-plane compatibility](../http-data-plane.md).
-It covers repository-owned functional and runtime-stability evidence only.
+It covers repository-owned functional and runtime-stability evidence only. The
+APISIX stream subsystem is excluded from this qualification.
 
 It does not publish images or archives, validate upgrade/rollback, or accept an
 operator environment. Kubernetes or systemd deployment policy remains outside
@@ -53,10 +54,13 @@ Record the candidate as one of:
 - **failed**: a required gate failed; or
 - **pending**: required infrastructure or evidence was unavailable.
 
-A passing candidate supports only this claim:
+A passing candidate promotes the recorded revision to release-candidate status
+only for the documented Apache APISIX 3.17 HTTP data-plane scope. The APISIX
+stream subsystem is excluded from this qualification.
 
-> The documented HTTP data plane is functionally and runtime-stability verified
-> for the recorded source revision, candidate identity, tested plugin behavior, and
-> dependency boundaries.
+> The recorded source revision is a release candidate for the documented Apache
+> APISIX 3.17 HTTP data-plane scope. The APISIX stream subsystem is excluded, and
+> production deployment still requires environment-specific validation.
 
-It is not a repository-wide or environment-specific production-readiness claim.
+This qualification does not cover the APISIX stream subsystem, excluded
+features, or any specific production environment.

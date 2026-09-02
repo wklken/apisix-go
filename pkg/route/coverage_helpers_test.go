@@ -3,6 +3,7 @@ package route
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -211,6 +212,19 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 			err:          routeNetError{},
 			wantStatus:   http.StatusBadGateway,
 			wantTCPCalls: 1,
+		},
+		{
+			name:         "wrapped network",
+			err:          fmt.Errorf("readLoopPeekFailLocked: %w", routeNetError{}),
+			wantStatus:   http.StatusBadGateway,
+			wantTCPCalls: 1,
+		},
+		{
+			name:         "wrapped timeout",
+			err:          fmt.Errorf("TLS handshake failed: %w", routeNetError{timeout: true}),
+			wantStatus:   http.StatusGatewayTimeout,
+			wantTCPCalls: 1,
+			wantTimeout:  true,
 		},
 		{name: "eof", err: io.EOF, wantStatus: http.StatusBadGateway, wantTCPCalls: 1},
 		{name: "canceled", err: context.Canceled, wantStatus: StatusClientClosedRequest},

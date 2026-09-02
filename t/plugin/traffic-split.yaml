@@ -184,7 +184,7 @@ cases:
           id: checked
           nodes:
             - host: '{{FIXTURE.unhealthy.ADDR}}'
-              weight: 1
+              weight: 2
             - host: '{{FIXTURE.healthy.ADDR}}'
               weight: 1
           type: roundrobin

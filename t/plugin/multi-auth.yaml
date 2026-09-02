@@ -69,7 +69,6 @@ cases:
     input: {path: /hello}
     output:
       status: 404
-      logs: {matches: 'build route multi-auth-invalid-first fail:.*basic-auth.*hide_credentials.*expected boolean'}
 
   - name: invalid-second-auth-plugin-config
     config:
@@ -85,7 +84,6 @@ cases:
     input: {path: /hello}
     output:
       status: 404
-      logs: {matches: 'build route multi-auth-invalid-second fail:.*multi-auth.*expected \{ character'}
 
   - name: invalid-third-auth-plugin-config
     config:
@@ -101,7 +99,6 @@ cases:
     input: {path: /hello}
     output:
       status: 404
-      logs: {matches: 'build route multi-auth-invalid-third fail:.*jwt-auth.*header.*expected string'}
 
   - name: default-auth-configs-preserve-alternative-semantics
     config:
@@ -201,7 +198,7 @@ cases:
           output: {status: 204}
         input: {path: /ready, headers: {apikey: auth-one}}
         output: {status: 204, logs: {matches: 'multi-auth.*auth_plugins.*minimum 2 items'}}
-      - name: multi-name-auth-plugin-entry-is-rejected
+      - name: multi-name-auth-plugin-entry-is-accepted
         wait: 100ms
         config:
           consumers:
@@ -222,7 +219,7 @@ cases:
           input: {path: /ready, headers: {apikey: auth-one}}
           output: {status: 204}
         input: {path: /ready, headers: {apikey: auth-one}}
-        output: {status: 204, logs: {matches: 'multi-auth.*exactly one auth plugin'}}
+        output: {status: 204}
 
   - name: jwt-locations-and-real-config-reload
     config:

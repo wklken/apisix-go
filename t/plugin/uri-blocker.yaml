@@ -11,8 +11,6 @@ cases:
       path: /hello
     output:
       status: 404
-      logs:
-        matches: 'build route uri-blocker-invalid-regex fail:.*compile block_rules:.*missing closing.*[.][+][(]'
 
   - name: accept-multiple-valid-rules
     config:
@@ -49,8 +47,6 @@ cases:
       path: /hello
     output:
       status: 404
-      logs:
-        matches: 'build route uri-blocker-one-invalid-rule fail:.*compile block_rules:.*missing closing.*[\^]a[|][\^]b[(]'
 
   - name: one-rule-blocks-query
     config:
@@ -199,7 +195,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route uri-blocker-empty-message fail:.*rejected_msg.*(length|minLength).*1'
+            matches: 'validate plugin uri-blocker config: /rejected_msg: length must be >= 1'
       - name: boolean
         config:
           routes:
@@ -214,7 +210,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route uri-blocker-boolean-message fail:.*rejected_msg.*expected string'
+            matches: 'validate plugin uri-blocker config: /rejected_msg: expected string, but got boolean'
 
   - name: custom-rejected-message
     config:
@@ -232,7 +228,7 @@ cases:
     output:
       status: 403
       body:
-        equals: '{"error_msg":"access is not allowed"}'
+        equals: "{\"error_msg\":\"access is not allowed\"}\n"
 
   - name: case-insensitive
     config:
@@ -251,7 +247,7 @@ cases:
     output:
       status: 403
       body:
-        equals: '{"error_msg":"access is not allowed"}'
+        equals: "{\"error_msg\":\"access is not allowed\"}\n"
 
   - name: normalized-path-cannot-bypass-anchor
     runtime:

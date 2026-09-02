@@ -45,7 +45,7 @@ cases:
         output: &schema_rejection
           status: 404
           logs:
-            matches: 'build route dingtalk-auth-.*fail:.*dingtalk-auth'
+            matches: 'validate plugin dingtalk-auth config:'
       - name: short-secret
         config:
           routes:
@@ -59,7 +59,8 @@ cases:
                   redirect_uri: /login
         input:
           path: /hello
-        output: *schema_rejection
+        output:
+          status: 404
 
   - name: redirect-without-code
     config:

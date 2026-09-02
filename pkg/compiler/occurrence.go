@@ -75,6 +75,9 @@ func factoryOccurrencesFromCandidates(
 				}
 			case "consumers":
 				for _, factory := range sortedFactories(resource.view.plugins) {
+					if pluginConfigDisabled(resource.view.plugins[factory]) {
+						continue
+					}
 					if err := appendFactoryOccurrence(
 						&occurrences, schemas, domain, key, capability.SecretConsumerConfig, factory,
 					); err != nil {
@@ -86,6 +89,9 @@ func factoryOccurrencesFromCandidates(
 					continue
 				}
 				for _, factory := range sortedFactories(resource.view.plugins) {
+					if pluginConfigDisabled(resource.view.plugins[factory]) {
+						continue
+					}
 					entry, exists := schemas.factories[factory]
 					if !exists {
 						return nil, generation.ErrIntegrity

@@ -101,6 +101,7 @@ type ResourceDecision struct {
 	Key         ResourceKey
 	Disposition ResourceDisposition
 	Code        string
+	Diagnostic  string
 }
 
 type PublicationCandidate struct {

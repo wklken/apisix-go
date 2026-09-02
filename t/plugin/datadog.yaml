@@ -23,8 +23,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:metadata-defaults,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: metadata-endpoint-drives-real-delivery
         input: {method: GET, path: /opentracing}
@@ -51,14 +61,23 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: accepted-resources-proxy-and-deliver
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
-
-  - name: one-request-emits-six-ordered-coalesced-metrics
+  - name: one-request-emits-six-ordered-datagrams
     config:
       plugin_metadata:
         - {id: datadog, host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}'}
@@ -77,10 +96,20 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
-      - name: exact-six-line-dogstatsd-payload
+      - name: six-ordered-dogstatsd-datagrams
         input: {method: GET, path: /opentracing}
         output: {status: 200, body: {equals: opentracing}}
 
@@ -106,10 +135,25 @@ cases:
       - name: sink
         kind: udp
         network_expect:
-          - payload: &two_request_metrics
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-          - payload: *two_request_metrics
-        network_respond: [{payload: ''}, {payload: ''}]
+          - payload: &two_request_metrics_1
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload: &two_request_metrics_2
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload: &two_request_metrics_3
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload: &two_request_metrics_4
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload: &two_request_metrics_5
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload: &two_request_metrics_6
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload: *two_request_metrics_1
+          - payload: *two_request_metrics_2
+          - payload: *two_request_metrics_3
+          - payload: *two_request_metrics_4
+          - payload: *two_request_metrics_5
+          - payload: *two_request_metrics_6
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: first-request
         input: {method: GET, path: /opentracing}
@@ -140,8 +184,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^mycompany\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.ingress\.size:0\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\nmycompany\.egress\.size:11\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^mycompany\.request\.counter:1\|c\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^mycompany\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^mycompany\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^mycompany\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^mycompany\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^mycompany\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: custom-namespace-is-live
         input: {method: GET, path: /opentracing}
@@ -169,8 +223,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:datadog,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: custom-tags-are-emitted
         input: {method: GET, path: /opentracing}
@@ -197,8 +261,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: route-id-is-emitted
         input: {method: GET, path: /opentracing}
@@ -227,8 +301,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:route-1,service_name:service-1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: resource-names-are-emitted
         input: {method: GET, path: /opentracing}
@@ -256,8 +340,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,new_tag:must,route_name:1,service_name:1,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: explicit-false-is-not-defaulted-away
         input: {method: GET, path: /opentracing}
@@ -289,8 +383,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_name:datadog,consumer:user0,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: key-auth-consumer-context-reaches-datadog
         input: {method: GET, path: '/opentracing?apikey=user0'}
@@ -326,8 +430,18 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^apisix\.request\.counter:1\|c\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.ingress\.size:0\|ms\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http\napisix\.egress\.size:11\|ms\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
-        network_respond: [{payload: ''}]
+              matches: '^apisix\.request\.counter:1\|c\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.request\.latency:[0-9]+\|h\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.upstream\.latency:[0-9]+\|h\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.apisix\.latency:[0-9]+\|h\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.ingress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+          - payload:
+              matches: '^apisix\.egress\.size:[1-9][0-9]*\|ms\|#source:apisix,route_tag1:foo,route_tag2:bar,route_name:datadog,path:/articles/\*/comments,method:GET,balancer_ip:127\.0\.0\.1,response_status:200,response_status_class:2xx,scheme:http$'
+        network_respond: [{payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}, {payload: ''}]
     steps:
       - name: wildcard-route-matches-rewrites-and-tags-original-pattern
         input: {method: GET, path: '/articles/12345/comments?foo=bar'}

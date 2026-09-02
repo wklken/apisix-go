@@ -50,6 +50,7 @@ cases:
           body: {equals: hello world}
 
   - name: missing-username-schema-diagnostic
+    wait_for_generation: true
     config:
       routes:
         - id: authz-casbin-missing-username

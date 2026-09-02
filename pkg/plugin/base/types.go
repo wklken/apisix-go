@@ -29,6 +29,40 @@ type ConsumerLookup interface {
 	ConsumerGroupByID(id string) (resource.ConsumerGroup, bool)
 }
 
+type ConsumerCredentialUse func(resource.Consumer, resource.PluginConfig) error
+
+type ConsumerCredentialLookup interface {
+	UseConsumerCredential(
+		context.Context,
+		string,
+		string,
+		ConsumerCredentialUse,
+	) (bool, error)
+}
+
+// UseConsumerCredential resolves a credential only for the duration of use.
+// Legacy lookup implementations without request-scoped secret support retain
+// the existing in-memory lookup behavior used by focused plugin tests.
+func UseConsumerCredential(
+	ctx context.Context,
+	lookup ConsumerLookup,
+	plugin string,
+	key string,
+	use ConsumerCredentialUse,
+) (bool, error) {
+	if lookup == nil || use == nil {
+		return false, nil
+	}
+	if scoped, ok := lookup.(ConsumerCredentialLookup); ok {
+		return scoped.UseConsumerCredential(ctx, plugin, key, use)
+	}
+	consumer, found := lookup.ConsumerByPluginKey(plugin, key)
+	if !found {
+		return false, nil
+	}
+	return true, use(consumer, consumer.Plugins[plugin])
+}
+
 type Dependencies struct {
 	Config            *config.EffectiveConfig
 	Secrets           secret.GenerationSecrets

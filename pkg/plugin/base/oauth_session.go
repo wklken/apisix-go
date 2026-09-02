@@ -11,7 +11,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -21,49 +20,7 @@ import (
 const (
 	oauthSessionVersion       = 1
 	maxOAuthSessionCookieSize = 3800
-	// OAuthStateLifetime bounds the browser state cookie and replay window.
-	OAuthStateLifetime = 5 * time.Minute
 )
-
-// NewOAuthState returns a URL-safe, cryptographically random OAuth state
-// value. Callers should bind the value to a sealed session before sending it
-// to an OAuth provider.
-func NewOAuthState() (string, error) {
-	state := make([]byte, 32)
-	if _, err := rand.Read(state); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(state), nil
-}
-
-// OAuthStateReplayCache records successfully consumed state cookies for their
-// short lifetime. The zero value is ready for use.
-type OAuthStateReplayCache struct {
-	mu      sync.Mutex
-	entries map[string]time.Time
-}
-
-// Consume returns true once for a state cookie value and false for replays.
-func (c *OAuthStateReplayCache) Consume(value string, now time.Time) bool {
-	if value == "" {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.entries == nil {
-		c.entries = make(map[string]time.Time)
-	}
-	for key, expiresAt := range c.entries {
-		if !expiresAt.After(now) {
-			delete(c.entries, key)
-		}
-	}
-	if _, exists := c.entries[value]; exists {
-		return false
-	}
-	c.entries[value] = now.Add(OAuthStateLifetime)
-	return true
-}
 
 type oauthSessionEnvelope struct {
 	Version     int    `json:"v"`

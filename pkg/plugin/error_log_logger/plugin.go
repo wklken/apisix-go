@@ -44,8 +44,6 @@ type Plugin struct {
 
 	observerLifecycleMu sync.Mutex
 	observerStopped     bool
-	startupWarnings     []string
-	startupWarningsSent bool
 
 	clickhousePassword         *secret.Value
 	kafkaPasswords             []indexedSecret
@@ -313,9 +311,8 @@ func (p *Plugin) PostInit() error {
 		logger.Info("please set the correct plugin_metadata for error-log-logger")
 		return nil
 	}
-	p.startupWarnings = p.securityWarnings()
 	if !p.metadataSelected {
-		for _, warning := range p.startupWarnings {
+		for _, warning := range p.securityWarnings() {
 			logger.Warn(warning)
 		}
 	}
@@ -536,7 +533,6 @@ func (p *Plugin) StartObserving() {
 		return
 	}
 	p.observerStop = p.installObserver()
-	p.enqueueStartupWarningsLocked()
 }
 
 func (p *Plugin) StartObservingWithTasks(tasks *runtime.TaskOwner) error {
@@ -570,27 +566,12 @@ func (p *Plugin) StartObservingWithTasks(tasks *runtime.TaskOwner) error {
 
 	stop := p.installObserver()
 	p.observerStop = stop
-	p.enqueueStartupWarningsLocked()
 	close(ready)
 	return nil
 }
 
 func (p *Plugin) installObserver() func() {
 	return logger.ReplaceObserver(name, p.observeEntry)
-}
-
-func (p *Plugin) enqueueStartupWarningsLocked() {
-	if p.startupWarningsSent || len(p.startupWarnings) == 0 || p.BatchProcessor == nil {
-		return
-	}
-	p.startupWarningsSent = true
-	for _, warning := range p.startupWarnings {
-		now := time.Now()
-		p.observeEntry(logger.Entry{
-			Time: now, Level: "WARN", Message: warning,
-			Line: fmt.Sprintf("%s [warn] %s", now.UTC().Format(time.RFC3339Nano), warning),
-		})
-	}
 }
 
 func (p *Plugin) observeEntry(entry logger.Entry) {

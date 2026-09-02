@@ -493,6 +493,39 @@ func TestRealIPWrapsLimitCountWithIndependentQuota(t *testing.T) {
 	}
 }
 
+func TestRunRequestPhasePublishesRejectedResponseAsEarlyStop(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Count:        1,
+		TimeWindow:   60,
+		Key:          "remote_addr",
+		RejectedCode: http.StatusServiceUnavailable,
+	})
+	phase, ok := any(p).(base.RequestPhasePlugin)
+	if !ok {
+		t.Fatal("limit-count does not implement base.RequestPhasePlugin")
+	}
+
+	request := func() *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "192.0.2.1:1234"
+		return r
+	}
+	firstResponse := httptest.NewRecorder()
+	first := phase.RunRequestPhase(firstResponse, request())
+	if first.Decision != base.RequestContinue || firstResponse.Code != http.StatusOK {
+		t.Fatalf("first result = %+v status=%d, want continue without response", first, firstResponse.Code)
+	}
+
+	rejectedResponse := httptest.NewRecorder()
+	rejected := phase.RunRequestPhase(rejectedResponse, request())
+	if rejected.Decision != base.RequestStop || rejected.Source != apisixctx.ResponseSourceEarlyStop {
+		t.Fatalf("rejected result = %+v, want early stop", rejected)
+	}
+	if rejectedResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("rejected status = %d, want %d", rejectedResponse.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestHandlerUsesHTTPVariableKey(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Count:        1,

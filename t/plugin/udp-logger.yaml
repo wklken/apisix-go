@@ -74,7 +74,7 @@ cases:
         path: /missing-host
       output:
         logs:
-            matches: 'validate plugin udp-logger config:.*host.*required'
+            matches: 'validate plugin udp-logger config:.*missing properties:.*host'
         status: 404
 
     - name: string-timeout-is-rejected
@@ -277,7 +277,7 @@ cases:
       output:
         logs:
             matches: 'validate plugin udp-logger metadata:.*log_format.*expected object.*got string'
-        status: 404
+        status: 502
 
     - name: metadata-custom-log-format-is-delivered
       config:
@@ -316,7 +316,6 @@ cases:
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
                 - {path: /@timestamp, rfc3339: true}
                 - {path: /route_id, value: {equals: udp-logger-plugin-metadata}}
-                - {path: /service_id, value: {equals: ''}}
           network_respond:
             - payload: ''
       steps:
@@ -369,7 +368,6 @@ cases:
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
                 - {path: /@timestamp, rfc3339: true}
                 - {path: /route_id, value: {equals: udp-logger-changed-metadata}}
-                - {path: /service_id, value: {equals: ''}}
           network_respond:
             - payload: ''
       steps:

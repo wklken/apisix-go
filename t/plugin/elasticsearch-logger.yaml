@@ -13,7 +13,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}, Content-Type: {equals: application/x-ndjson}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {absent: true}, Content-Type: {equals: application/x-ndjson}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"unauthenticated-setup","test":"test"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: configured-route-writes-real-bulk-log, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -32,7 +32,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}, Content-Type: {equals: application/x-ndjson}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {absent: true}, Content-Type: {equals: application/x-ndjson}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"unauthenticated-success","test":"test"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: proxy-response-and-bulk-write-succeed, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -57,7 +57,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"auth-setup","test":"test"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: configured-auth-is-used-at-the-sink, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -76,7 +76,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"auth-success","test":"test"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: authenticated-write-succeeds, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -95,7 +95,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"no-auth-rejection-setup","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"missing authentication"}'}]
     steps:
       - name: proxy-succeeds-while-sink-rejects
@@ -117,7 +117,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"no-auth-rejection","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"missing authentication"}'}]
     steps:
       - name: proxy-remains-successful-on-logger-failure
@@ -139,7 +139,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"bad-auth-rejection-setup","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"bad credentials"}'}]
     steps:
       - name: configured-bad-auth-is-rejected
@@ -161,7 +161,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"test"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"bad-auth-rejection","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"bad credentials"}'}]
     steps:
       - name: bad-auth-failure-is-logged
@@ -186,7 +186,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_client_ip":"127\.0\.0\.1","custom_host":"metadata\.example","custom_timestamp":"[^"]+"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_client_ip":"127\.0\.0\.1","custom_host":"metadata\.example","custom_timestamp":"[^"]+","route_id":"metadata-setup"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: metadata-format-is-live, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -208,7 +208,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_client_ip":"127\.0\.0\.1","custom_host":"metadata\.example","custom_timestamp":"[^"]+"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_client_ip":"127\.0\.0\.1","custom_host":"metadata\.example","custom_timestamp":"[^"]+","route_id":"metadata-hit"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: custom-metadata-document-is-written, input: {path: /hello, headers: {Host: metadata.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -238,7 +238,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"encrypted-password"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"1","test":"encrypted-password"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: runtime-uses-decrypted-password, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -262,7 +262,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"multi-setup"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"multi-endpoint-setup","test":"multi-setup"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: one-configured-endpoint-receives-real-write, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -284,7 +284,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_host":"route\.example"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_host":"route\.example","route_id":"route-format-setup"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: route-format-overrides-metadata, input: {path: /hello, headers: {Host: route.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -306,7 +306,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_host":"route\.example"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"custom_host":"route\.example","route_id":"route-format-hit"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: route-format-document-is-written, input: {path: /hello, headers: {Host: route.example}}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -325,7 +325,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es8"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"es8-type-setup","test":"es8"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: configured-type-is-not-emitted-for-es8, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -344,7 +344,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es8"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"es8-type-hit","test":"es8"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: es8-write-has-no-type-metadata, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -363,7 +363,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"test":"request-body"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"route_id":"request-body","test":"request-body"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: request-body-is-preserved-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
@@ -382,7 +382,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"response":\{"body":"hello world\\n"\},"test":"response-body"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"response":\{"body":"hello world\\n"\},"route_id":"response-body","test":"response-body"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: response-body-is-returned-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
@@ -401,7 +401,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es9"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"es9-setup","test":"es9"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"9.0.0"}}'}]
     steps:
       - {name: es9-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -420,7 +420,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es9"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"es9-success","test":"es9"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"9.0.0"}}'}]
     steps:
       - {name: es9-write-succeeds-without-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -439,7 +439,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es7"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"es7-setup","test":"es7"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"7.17.22"}}'}]
     steps:
       - {name: es7-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -458,7 +458,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"test":"es7"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"es7-success","test":"es7"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"7.17.22"}}'}]
     steps:
       - {name: es7-write-succeeds-without-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -477,7 +477,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services","_type":"_doc"\}\}\n\{"test":"es6"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services","_type":"_doc"\}\}\n\{"route_id":"es6-setup","test":"es6"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"6.8.23"}}'}]
     steps:
       - {name: es6-compatible-write-is-configured, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
@@ -496,7 +496,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk\?timeout=10000ms$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services","_type":"_doc"\}\}\n\{"test":"es6"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services","_type":"_doc"\}\}\n\{"route_id":"es6-success","test":"es6"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"6.8.23"}}'}]
     steps:
       - {name: es6-write-emits-required-doc-type, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}

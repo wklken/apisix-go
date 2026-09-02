@@ -819,3 +819,29 @@ func TestStreamingHeaderFilterAppliesActualCORSHeaders(t *testing.T) {
 		t.Fatalf("allow origin = %q, want %q", got, req.Header.Get("Origin"))
 	}
 }
+
+func TestStreamingHeaderFilterUsesOriginCapturedBeforeRequestRewrite(t *testing.T) {
+	p := newTestPlugin(
+		t,
+		Config{AllowOrigins: "https://original.example", AllowMethods: http.MethodGet},
+	)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req.Header.Set("Origin", "https://original.example")
+
+	result := p.RunRequestPhase(httptest.NewRecorder(), req)
+	if result.Decision != base.RequestContinue || result.Request == nil {
+		t.Fatalf("request phase = decision:%d request:%v, want continuing request", result.Decision, result.Request)
+	}
+	if result.Request != req {
+		t.Fatalf("request phase replaced request pointer: got %p, want %p", result.Request, req)
+	}
+	result.Request.Header.Set("Origin", "https://rewritten.example")
+	state := base.StreamingResponseState{Header: make(http.Header)}
+
+	if err := p.RunStreamingHeaderFilter(result.Request, &state); err != nil {
+		t.Fatalf("RunStreamingHeaderFilter() error = %v", err)
+	}
+	if got := state.Header.Get("Access-Control-Allow-Origin"); got != "https://original.example" {
+		t.Fatalf("allow origin = %q, want original request origin", got)
+	}
+}

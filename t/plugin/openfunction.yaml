@@ -32,7 +32,7 @@ cases:
         output: &schema_error
           status: 404
           logs:
-            matches: 'build route openfunction-.*fail:.*openfunction'
+            matches: 'validate plugin openfunction config:'
       - name: numeric-function-uri
         config:
           routes:
@@ -58,7 +58,7 @@ cases:
       expect:
         method: GET
         path:
-          equals: /function-sample
+          equals: /function-sample?
       respond:
         status: 200
         body: "Hello, function-sample!\n"
@@ -83,7 +83,7 @@ cases:
       expect:
         method: POST
         path:
-          equals: /default/test-body
+          equals: /default/test-body?
         body:
           equals: test
       respond:
@@ -163,7 +163,7 @@ cases:
     upstream:
       expect:
         path:
-          equals: /default/non-existent
+          equals: /default/non-existent?
         body:
           equals: test
       respond:
@@ -188,7 +188,7 @@ cases:
       expect:
         method: GET
         path:
-          equals: /openfunction
+          equals: /openfunction?
       respond:
         status: 200
         body: "Hello, openfunction!\n"

@@ -12,9 +12,9 @@ cases:
     input:
       path: /hello
     output:
-      status: 404
+      status: 500
       logs:
-        matches: 'validate plugin chaitin-waf metadata:.*nodes.*minimum 1'
+        matches: 'validate plugin chaitin-waf metadata: /nodes: minimum 1 items required'
 
   - name: metadata-requires-node-host
     config:
@@ -30,9 +30,9 @@ cases:
     input:
       path: /hello
     output:
-      status: 404
+      status: 500
       logs:
-        matches: 'validate plugin chaitin-waf metadata:.*host.*required'
+        matches: "validate plugin chaitin-waf metadata: /nodes/0: missing properties: 'host'"
 
   - name: default-pass
     config: &pass_config
@@ -62,7 +62,7 @@ cases:
             body: hello world
       - &waf_fixture
         name: waf
-        kind: http
+        kind: t1k
         expect:
           - path:
               equals: /hello
@@ -145,7 +145,7 @@ cases:
     fixtures:
       - *primary_fixture
       - name: waf
-        kind: http
+        kind: t1k
         respond:
           - *pass_response
     steps:
@@ -183,11 +183,11 @@ cases:
           - *hello_response
           - *hello_response
       - name: waf
-        kind: http
+        kind: t1k
         expect:
           - &loopback_waf_request
-            headers:
-              X-Forwarded-For:
+            t1k_extra:
+              RemoteAddr:
                 equals: 127.0.0.1
           - *loopback_waf_request
         respond:
@@ -209,14 +209,14 @@ cases:
         output: *pass_output
 
   - name: real-client-ip-from-trusted-forwarded-for
-    runtime:
-      apisix:
-        trusted_addresses: [127.0.0.0/8]
     config:
       routes:
         - id: chaitin-waf-real-client-ip-enabled
           uri: /hello
           plugins:
+            real-ip:
+              source: http_x_forwarded_for
+              trusted_addresses: [127.0.0.0/8]
             chaitin-waf:
               match:
                 - vars:
@@ -228,10 +228,10 @@ cases:
     fixtures:
       - *primary_fixture
       - name: waf
-        kind: http
+        kind: t1k
         expect:
-          - headers:
-              X-Forwarded-For:
+          - t1k_extra:
+              RemoteAddr:
                 equals: 192.0.2.10
         respond:
           - *pass_response
@@ -245,14 +245,14 @@ cases:
         output: *pass_output
 
   - name: spoofed-forwarded-for-from-untrusted-peer
-    runtime:
-      apisix:
-        trusted_addresses: [192.0.2.1/32]
     config:
       routes:
         - id: chaitin-waf-untrusted-forwarded-for
           uri: /hello
           plugins:
+            real-ip:
+              source: http_x_forwarded_for
+              trusted_addresses: [192.0.2.1/32]
             chaitin-waf:
               match:
                 - vars:
@@ -264,7 +264,7 @@ cases:
     fixtures:
       - *primary_fixture
       - name: waf
-        kind: http
+        kind: t1k
         expect:
           - *loopback_waf_request
         respond:
@@ -298,7 +298,7 @@ cases:
     fixtures:
       - *primary_fixture
       - name: waf
-        kind: http
+        kind: t1k
         expect:
           - path:
               equals: /hello
@@ -343,7 +343,7 @@ cases:
     fixtures:
       - *primary_fixture
       - name: waf
-        kind: http
+        kind: t1k
         expect:
           - path:
               equals: /hello
@@ -390,7 +390,7 @@ cases:
     fixtures:
       - *primary_fixture
       - name: waf
-        kind: http
+        kind: t1k
         respond:
           - status: 200
             body: '{"status":200}'

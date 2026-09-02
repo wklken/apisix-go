@@ -402,6 +402,10 @@ func (w *StandaloneFileWatcher) commitAcknowledgement(
 	if err != nil {
 		return err
 	}
+	diagnostics, err := generation.DecisionDiagnostics(ack.Decisions)
+	if err != nil {
+		return err
+	}
 	w.acknowledgedCursor = ack.Cursor
 	w.acknowledgedRevisions = ack.Revisions
 	w.acknowledgedDecisions = nextDecisions
@@ -411,6 +415,9 @@ func (w *StandaloneFileWatcher) commitAcknowledgement(
 		ack.Decisions,
 		len(nextQuarantine),
 	)
+	for _, diagnostic := range diagnostics {
+		logger.Error(diagnostic)
+	}
 	return nil
 }
 

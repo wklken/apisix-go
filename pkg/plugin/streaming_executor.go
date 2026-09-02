@@ -19,6 +19,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 	"github.com/wklken/apisix-go/pkg/plugin/compression"
 )
 
@@ -29,6 +30,7 @@ type StreamingResponseExecutor struct {
 	bindings              []Binding
 	terminals             []RouteTerminalCandidate
 	hasStaticHeaderFilter bool
+	bufferedDynamic       bool
 }
 
 type streamingFinish struct {
@@ -458,6 +460,17 @@ func (e *StreamingResponseExecutor) WithRouteTerminals(
 	return &clone, nil
 }
 
+func (e *StreamingResponseExecutor) withBufferedDynamicFallback() *StreamingResponseExecutor {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	clone.bindings = cloneBindings(e.bindings)
+	clone.terminals = append([]RouteTerminalCandidate(nil), e.terminals...)
+	clone.bufferedDynamic = true
+	return &clone
+}
+
 func validateExclusiveTerminalCandidates(terminals []RouteTerminalCandidate) error {
 	for _, candidate := range terminals {
 		if candidate.Terminal == nil {
@@ -562,6 +575,12 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 			!capability.CompressionOffer && !capability.StreamingResponseOwner &&
 			capability.ExclusiveProtocol == ProtocolNone && len(buffered) > 0 {
 			dynamicBindings = append(dynamicBindings, binding)
+			continue
+		}
+		if e.bufferedDynamic && len(buffered) > 0 &&
+			!capability.CompressionOffer && !capability.StreamingBodyFilter &&
+			!capability.StreamingResponseOwner && capability.ExclusiveProtocol == ProtocolNone &&
+			!isDualModeResponseBinding(binding, capability) {
 			continue
 		}
 		if capability.CompressionOffer || capability.BufferedBodyFilter || capability.StreamingBodyFilter ||
@@ -814,7 +833,7 @@ func (f *streamingFinish) wrapNegotiatedCompression(
 			return selected
 		}
 		var err error
-		selected, err = f.applyCompression(w, r, status)
+		selected, err = f.applyCompression(w, r, status, w.Header())
 		if err != nil {
 			panic(streamingSetupError{err: err})
 		}
@@ -913,12 +932,13 @@ func (f *streamingFinish) applyCompression(
 	w http.ResponseWriter,
 	r *http.Request,
 	status int,
+	header http.Header,
 ) (http.ResponseWriter, error) {
 	if f == nil || f.compression == nil || f.compression.state == nil {
 		return w, nil
 	}
 	decision := f.compression.state.Decide(compression.ResponseMeta{
-		Method: r.Method, Status: status, Header: w.Header().Clone(),
+		Method: r.Method, Status: status, Header: header.Clone(),
 	})
 	if decision.Vary {
 		base.AppendVaryToken(w.Header(), "Accept-Encoding")
@@ -1028,12 +1048,15 @@ func (e *StreamingResponseExecutor) CommitResponse(
 	}
 	state.Status = streamingState.Status
 	state.Header = streamingState.Header
+	if cacheutil.RequiredVary(r, "Accept-Encoding") {
+		base.AppendVaryToken(state.Header, "Accept-Encoding")
+	}
 	request, negotiation, err := e.registerCompressionOffers(r)
 	if err != nil {
 		return err
 	}
 	finish := &streamingFinish{compression: negotiation}
-	inner, err := finish.applyCompression(w, request, state.Status)
+	inner, err := finish.applyCompression(w, request, state.Status, state.Header)
 	if err != nil {
 		result := finish.finish(err)
 		if panicErr := streamingPanicError(err); panicErr != nil {

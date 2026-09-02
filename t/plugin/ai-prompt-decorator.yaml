@@ -150,7 +150,7 @@ cases:
     input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"messages":[{"role":"user","content":"hello"}]}' }
     output:
       status: 404
-      logs: {matches: 'build route ai-prompt-decorator-empty fail:.*ai-prompt-decorator'}
+      logs: {matches: "validate plugin ai-prompt-decorator config: /: missing properties: 'prepend'"}
 
   - name: responses-prepend
     config:

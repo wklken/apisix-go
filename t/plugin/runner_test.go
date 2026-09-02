@@ -72,7 +72,7 @@ const integrationFallbackRootsEnv = "APISIX_GO_INTEGRATION_FALLBACK_ROOTS"
 
 const pluginSmokeCaseEnv = "APISIX_GO_PLUGIN_SMOKE_CASE"
 
-const samlRSASHA256Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+const samlRSASHA512Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"
 
 const maxParallelPluginCases = 6
 
@@ -611,6 +611,10 @@ func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
 	if got, want := fmt.Sprint(plugins), "[node-status prometheus]"; got != want {
 		t.Fatalf("plugins = %s, want %s", got, want)
 	}
+	apisix := config["apisix"].(map[string]any)
+	if got, ok := apisix["enable_control"].(bool); !ok || got {
+		t.Fatalf("apisix.enable_control = %#v, want false", apisix["enable_control"])
+	}
 }
 
 func TestRenderRuntimeConfigDerivesStandalonePlugins(t *testing.T) {
@@ -687,6 +691,61 @@ func TestRenderRuntimeConfigDerivesStandalonePlugins(t *testing.T) {
 	}
 	if !reflect.DeepEqual(standalone, wantStandalone) {
 		t.Fatalf("standalone config mutated: got %#v, want %#v", standalone, wantStandalone)
+	}
+}
+
+func TestStandaloneConfigAddsHarnessRouteOnlyForConfigRejection(t *testing.T) {
+	logPattern := "field is required"
+	spec := Case{
+		Config: map[string]any{"routes": []any{map[string]any{"id": "invalid", "uri": "/invalid"}}},
+		Output: HTTPOutput{
+			Status: http.StatusNotFound,
+			Logs:   &Matcher{Matches: &logPattern},
+		},
+	}
+
+	configured, added, err := standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() error = %v", err)
+	}
+	if !added {
+		t.Fatal("standaloneConfigWithHarnessReadyRoute() did not add the config-rejection readiness route")
+	}
+	routes := configured["routes"].([]any)
+	if len(routes) != 2 {
+		t.Fatalf("routes = %#v, want target and harness readiness routes", routes)
+	}
+	if original := spec.Config["routes"].([]any); len(original) != 1 {
+		t.Fatalf("original routes mutated = %#v", original)
+	}
+
+	spec.Output.Status = 0
+	configured, added, err = standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() log-only rejection error = %v", err)
+	}
+	if !added || len(configured["routes"].([]any)) != 2 {
+		t.Fatalf("log-only rejection config = %#v, added = %t; want readiness route", configured, added)
+	}
+
+	spec.Output.Status = http.StatusNotFound
+	spec.Output.Logs = nil
+	configured, added, err = standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() ordinary 404 error = %v", err)
+	}
+	if added || len(configured["routes"].([]any)) != 1 {
+		t.Fatalf("ordinary 404 config = %#v, added = %t; want unchanged", configured, added)
+	}
+
+	spec.WaitForGeneration = true
+	spec.Steps = []CaseStep{{Name: "rejected-route", Output: HTTPOutput{Status: http.StatusNotFound}}}
+	configured, added, err = standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() explicit readiness error = %v", err)
+	}
+	if !added || len(configured["routes"].([]any)) != 2 {
+		t.Fatalf("explicit readiness config = %#v, added = %t; want harness route", configured, added)
 	}
 }
 
@@ -2012,6 +2071,10 @@ func TestSAMLRedirectFixtureSignatureRejectsRelayStateTampering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign Redirect request: %v", err)
 	}
+	const wantSignatureMethod = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"
+	if got := redirect.Query().Get("SigAlg"); got != wantSignatureMethod {
+		t.Fatalf("Redirect SigAlg = %q, want APISIX 3.17 RSA-SHA512", got)
+	}
 	if err := validateSAMLRedirectFixtureSignature(
 		redirect.RawQuery,
 		"SAMLRequest",
@@ -2265,6 +2328,7 @@ type capturedRequest struct {
 	host     string
 	protocol string
 	headers  http.Header
+	t1kExtra map[string]string
 	body     string
 }
 
@@ -2379,6 +2443,9 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 	if spec.Kind == "https-connect" {
 		return startHTTPSConnectFixture(spec)
+	}
+	if spec.Kind == "t1k" {
+		return startT1KFixture(spec)
 	}
 	if spec.Kind != "http" && spec.Kind != "https" && spec.Kind != "h2c" {
 		return startNetworkFixture(spec)
@@ -3035,6 +3102,7 @@ func renderRuntimeConfig(port int, overrides map[string]any) ([]byte, error) {
 	mergeMap(config, overrides)
 	apisix := ensureMap(config, "apisix")
 	apisix["enable_admin"] = false
+	apisix["enable_control"] = false
 	apisix["node_listen"] = []any{
 		map[string]any{"ip": "127.0.0.1", "port": port},
 	}
@@ -3196,6 +3264,30 @@ func renderStandaloneConfig(config map[string]any, replacements map[string]strin
 	return data, nil
 }
 
+func standaloneConfigWithHarnessReadyRoute(spec Case) (map[string]any, bool, error) {
+	configRejectionStatus := spec.Output.Status == 0 || spec.Output.Status == http.StatusNotFound
+	implicitLogRejection := spec.Output.Logs != nil && len(spec.Steps) == 0
+	if !configRejectionStatus || (!spec.WaitForGeneration && !implicitLogRejection) {
+		return spec.Config, false, nil
+	}
+	config, err := cloneConfigMap(spec.Config)
+	if err != nil {
+		return nil, false, fmt.Errorf("clone config-rejection standalone config: %w", err)
+	}
+	routes, _ := config["routes"].([]any)
+	config["routes"] = append(routes, map[string]any{
+		"id":  "__apisix_go_integration_ready",
+		"uri": "/__apisix_go_integration_ready",
+		"plugins": map[string]any{
+			"mocking": map[string]any{
+				"response_status":  http.StatusNoContent,
+				"response_example": "",
+			},
+		},
+	})
+	return config, true, nil
+}
+
 func replaceFixturePlaceholders(data []byte, replacements map[string]string) ([]byte, error) {
 	for placeholder, value := range replacements {
 		if strings.HasSuffix(placeholder, ".PORT}}") {
@@ -3281,7 +3373,10 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 		t.Fatalf("write scenario files: %v", err)
 	}
 	runtimeOverrides := spec.Runtime
-	standaloneResources := spec.Config
+	standaloneResources, _, err := standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("prepare standalone config: %v", err)
+	}
 	tlsPort := 0
 	enableHTTP2 := caseUsesHTTP2(spec)
 	if enableHTTP2 {
@@ -4271,7 +4366,7 @@ func samlFixtureSigner(entityID string, certificatePEM string, privateKeyPEM str
 		EntityID:        entityID,
 		Key:             key,
 		Certificate:     certificate,
-		SignatureMethod: samlRSASHA256Method,
+		SignatureMethod: samlRSASHA512Method,
 		IDPMetadata:     &saml.EntityDescriptor{EntityID: "fixture-peer"},
 	}, nil
 }
@@ -4299,9 +4394,9 @@ func signedSAMLFixtureRedirectURL(
 	if relayState != "" {
 		signedQuery += "&RelayState=" + url.QueryEscape(relayState)
 	}
-	signedQuery += "&SigAlg=" + url.QueryEscape(samlRSASHA256Method)
-	digest := sha256.Sum256([]byte(signedQuery))
-	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	signedQuery += "&SigAlg=" + url.QueryEscape(samlRSASHA512Method)
+	digest := sha512.Sum512([]byte(signedQuery))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA512)
 	if err != nil {
 		return nil, err
 	}
@@ -4342,8 +4437,8 @@ func validateSAMLRedirectFixtureSignature(rawQuery string, field string, certifi
 		return errors.New("SigAlg is required")
 	}
 	decodedSigAlg, err := url.QueryUnescape(sigAlg)
-	if err != nil || decodedSigAlg != samlRSASHA256Method {
-		return errors.New("Redirect SigAlg must be rsa-sha256")
+	if err != nil || decodedSigAlg != samlRSASHA512Method {
+		return errors.New("Redirect SigAlg must be rsa-sha512")
 	}
 	signatureValue, ok := parameters["Signature"]
 	if !ok {
@@ -4374,8 +4469,8 @@ func validateSAMLRedirectFixtureSignature(rawQuery string, field string, certifi
 	if !ok {
 		return errors.New("SP certificate does not contain an RSA public key")
 	}
-	digest := sha256.Sum256([]byte(signedQuery))
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+	digest := sha512.Sum512([]byte(signedQuery))
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA512, digest[:], signature); err != nil {
 		return fmt.Errorf("verify Redirect signature: %w", err)
 	}
 	return nil
@@ -4442,8 +4537,8 @@ func validateSPAuthenticationRequest(request *http.Request, rawXML []byte, certi
 	}
 	if request.Method == http.MethodGet {
 		signatureValue := request.URL.Query().Get("Signature")
-		if signatureValue == "" || request.URL.Query().Get("SigAlg") != samlRSASHA256Method {
-			return errors.New("Redirect binding requires rsa-sha256 SigAlg and Signature")
+		if signatureValue == "" || request.URL.Query().Get("SigAlg") != samlRSASHA512Method {
+			return errors.New("Redirect binding requires rsa-sha512 SigAlg and Signature")
 		}
 		signature, err := base64.StdEncoding.DecodeString(signatureValue)
 		if err != nil {
@@ -4459,8 +4554,8 @@ func validateSPAuthenticationRequest(request *http.Request, rawXML []byte, certi
 		if !ok {
 			return errors.New("SP certificate does not contain an RSA public key")
 		}
-		digest := sha256.Sum256([]byte(signedQuery))
-		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		digest := sha512.Sum512([]byte(signedQuery))
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA512, digest[:], signature); err != nil {
 			return fmt.Errorf("verify Redirect signature: %w", err)
 		}
 		return nil
@@ -5651,6 +5746,12 @@ func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received captur
 		}
 	}
 	assertHeaders(t, "upstream", expected.Headers, received.headers)
+	for name, matcher := range expected.T1KExtra {
+		value, present := received.t1kExtra[name]
+		if err := matcher.match(value, present); err != nil {
+			t.Errorf("T1K EXTRA field %q: %v", name, err)
+		}
+	}
 	if expected.Body != nil {
 		if err := expected.Body.match(received.body, true); err != nil {
 			t.Errorf("upstream body: %v", err)

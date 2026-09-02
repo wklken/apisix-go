@@ -31,7 +31,7 @@ cases:
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - {name: whitelist-is-accepted, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: blacklist-wins, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: blacklist-wins, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"The consumer_name is forbidden.\"}\n"}}}
 
   - name: basic-auth-whitelist
     config:
@@ -45,9 +45,9 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}}}
       - {name: jack1-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"The consumer_name is forbidden.\"}\n"}}}
 
   - name: basic-auth-blacklist
     config:
@@ -61,8 +61,8 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
-      - {name: jack1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}}}
+      - {name: jack1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"request is forbidden\"}\n"}}}
       - {name: jack2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: whitelist-without-authentication
@@ -74,9 +74,9 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-identity, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
-      - {name: jack1-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
-      - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+      - {name: missing-identity, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the consumer_name for this request\"}\n"}}}
+      - {name: jack1-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the consumer_name for this request\"}\n"}}}
+      - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the consumer_name for this request\"}\n"}}}
 
   - name: blacklist-without-authentication
     config:
@@ -87,9 +87,9 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-identity, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
-      - {name: jack1-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
-      - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_name for this request"}'}}}
+      - {name: missing-identity, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the consumer_name for this request\"}\n"}}}
+      - {name: jack1-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the consumer_name for this request\"}\n"}}}
+      - {name: jack2-header-does-not-authenticate, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the consumer_name for this request\"}\n"}}}
 
   - name: allowed-by-methods-rejects-get
     config:
@@ -101,7 +101,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: get-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: get-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"The consumer_name is forbidden.\"}\n"}}}
 
   - name: allowed-by-methods-permits-get
     config:
@@ -127,7 +127,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: blacklisted-jack1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: blacklisted-jack1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"The consumer_name is forbidden.\"}\n"}}}
       - {name: jack2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
 
   - name: whitelist-precedes-allowed-by-methods
@@ -143,7 +143,7 @@ cases:
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - {name: whitelisted-jack1-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: jack2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"The consumer_name is forbidden.\"}\n"}}}
 
   - name: removal-disables-consumer-restriction
     config:
@@ -158,7 +158,7 @@ cases:
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
       - {name: jack1-is-allowed-before-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: jack2-is-rejected-before-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_name is forbidden."}'}}}
+      - {name: jack2-is-rejected-before-removal, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"The consumer_name is forbidden.\"}\n"}}}
       - name: remove-plugin-and-reload
         config:
           routes:
@@ -228,7 +228,7 @@ cases:
           headers:
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
-        output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"The service_id is forbidden.\"}\n"}}
 
   - name: consumer-plugin-blacklists-matching-service-id
     config:
@@ -256,7 +256,7 @@ cases:
           headers:
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
-        output: {status: 401, body: {equals: '{"message":"The service_id is forbidden."}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"The service_id is forbidden.\"}\n"}}
 
   - name: consumer-plugin-allows-unlisted-service-id
     config:
@@ -341,7 +341,7 @@ cases:
             headers:
               X-Custom-Header-A: asld$%dfasf
               X-Custom-Header-B: 23879fmsldfk
-          output: {status: 401, body: {equals: '{"message":"The route_id is forbidden."}'}}
+          output: {status: 401, body: {equals: "{\"message\":\"The route_id is forbidden.\"}\n"}}
         input:
           method: GET
           path: /hello
@@ -349,7 +349,7 @@ cases:
           headers:
             X-Custom-Header-A: asld$%dfasf
             X-Custom-Header-B: 23879fmsldfk
-        output: {status: 401, body: {equals: '{"message":"The route_id is forbidden."}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"The route_id is forbidden.\"}\n"}}
 
   - name: consumer-group-whitelist
     config:
@@ -367,9 +367,9 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}}}
       - {name: group1-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: group2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"The consumer_group_id is forbidden."}'}}}
+      - {name: group2-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"The consumer_group_id is forbidden.\"}\n"}}}
 
   - name: consumer-group-blacklist
     config:
@@ -387,10 +387,10 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}}
-      - {name: group1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: '{"message":"request is forbidden"}'}}}
+      - {name: missing-authorization, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}}}
+      - {name: group1-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMTk6MTIzNDU2'}}, output: {status: 403, body: {equals: "{\"message\":\"request is forbidden\"}\n"}}}
       - {name: group2-is-allowed, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjA6MTIzNDU2'}}, output: {status: 200, body: {equals: hello world}}}
-      - {name: consumer-without-group-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjE6MTIzNDU2'}}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the consumer_group_id for this request"}'}}}
+      - {name: consumer-without-group-is-rejected, input: {method: GET, path: /hello, headers: {Authorization: 'Basic amFjazIwMjE6MTIzNDU2'}}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the consumer_group_id for this request\"}\n"}}}
 
   - name: service-id-blacklist-without-identity
     config:
@@ -401,7 +401,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-service-id-is-rejected, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the service_id for this request"}'}}}
+      - {name: missing-service-id-is-rejected, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the service_id for this request\"}\n"}}}
 
   - name: service-id-whitelist-without-identity
     config:
@@ -412,4 +412,4 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures: [{name: primary, kind: http, respond: [{status: 200, body: hello world}]}]
     steps:
-      - {name: missing-service-id-is-rejected, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: '{"message":"The request is rejected, please check the service_id for this request"}'}}}
+      - {name: missing-service-id-is-rejected, input: {method: GET, path: /hello}, output: {status: 401, body: {equals: "{\"message\":\"The request is rejected, please check the service_id for this request\"}\n"}}}

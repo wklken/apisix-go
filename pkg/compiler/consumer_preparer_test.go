@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/generation"
+	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/testutil"
@@ -83,10 +84,9 @@ func newConsumerAttemptFactory(
 	return &consumerAttemptFactory{registration: factory, consumers: preparer}, compiler
 }
 
-func TestConsumerBindingPreparerMaterializesExactFinalConsumerOccurrences(t *testing.T) {
+func TestConsumerBindingPreparerDefersConsumerSecretsUntilCredentialUse(t *testing.T) {
 	broker := &consumerPreparationBroker{resolved: map[string]string{
-		"$ENV://BASIC_USER":     "resolved-user",
-		"$ENV://BASIC_PASSWORD": "resolved-password",
+		"$ENV://BASIC_USER": "resolved-user",
 	}}
 	factory, _ := newConsumerAttemptFactory(t, broker)
 	desired := mustGenerationSnapshot(t, 51, []generation.Resource{
@@ -103,22 +103,46 @@ func TestConsumerBindingPreparerMaterializesExactFinalConsumerOccurrences(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer, ok := prepared.consumers.ConsumerByPluginKey("basic-auth", "resolved-user")
-	if !ok || consumer.Username != "consumer-1" || consumer.GroupID != "group-1" {
-		t.Fatalf("resolved consumer = %#v/%v", consumer, ok)
+	lookup := newConsumerLookupView(prepared.consumers, prepared.preparation, factory.consumers.catalog)
+	used, err := base.UseConsumerCredential(
+		context.Background(),
+		lookup,
+		"basic-auth",
+		"resolved-user",
+		func(resource.Consumer, resource.PluginConfig) error { return nil },
+	)
+	if err == nil || used {
+		t.Fatalf("unavailable consumer credential = %v/%v, want false/error", used, err)
 	}
-	config, ok := consumer.Plugins["basic-auth"].(map[string]any)
-	if !ok || config["username"] != "resolved-user" || config["password"] != "resolved-password" {
-		t.Fatalf("resolved basic-auth config = %#v", consumer.Plugins["basic-auth"])
+	broker.resolved["$ENV://BASIC_PASSWORD"] = "resolved-password"
+	used, err = base.UseConsumerCredential(
+		context.Background(),
+		lookup,
+		"basic-auth",
+		"resolved-user",
+		func(consumer resource.Consumer, config resource.PluginConfig) error {
+			values, ok := config.(map[string]any)
+			if !ok || values["username"] != "resolved-user" || values["password"] != "resolved-password" {
+				t.Fatalf("resolved basic-auth config = %#v", config)
+			}
+			if raw := consumer.Plugins["basic-auth"].(map[string]any); raw["password"] != "$ENV://BASIC_PASSWORD" {
+				t.Fatalf("consumer retained resolved secret = %#v", raw)
+			}
+			return nil
+		},
+	)
+	if err != nil || !used {
+		t.Fatalf("resolved consumer credential = %v/%v, want true/nil", used, err)
 	}
 	if _, ok := prepared.consumers.ConsumerGroupByID("group-1"); !ok {
 		t.Fatal("resolved consumer group is missing")
 	}
-	if consumer.ConfigDigest == ([32]byte{}) {
+	consumer, ok := prepared.consumers.ConsumerByID("consumer-1")
+	if !ok || consumer.ConfigDigest == ([32]byte{}) {
 		t.Fatal("consumer raw publication digest is zero")
 	}
-	if len(broker.scopes) != 2 {
-		t.Fatalf("materialization scopes = %#v, want two declared fields", broker.scopes)
+	if len(broker.scopes) != 3 {
+		t.Fatalf("materialization scopes = %#v, want three request-time uses", broker.scopes)
 	}
 	fields := make(map[string]bool, len(broker.scopes))
 	for _, scope := range broker.scopes {
@@ -205,8 +229,18 @@ func TestConsumerBindingPreparerSkipsMissingOptionalDeclaredFields(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := prepared.consumers.ConsumerByPluginKey("jwt-auth", "resolved-jwt-key"); !ok {
-		t.Fatal("resolved JWT consumer is missing")
+	lookup := newConsumerLookupView(prepared.consumers, prepared.preparation, factory.consumers.catalog)
+	used, err := base.UseConsumerCredential(
+		context.Background(), lookup, "jwt-auth", "resolved-jwt-key",
+		func(consumer resource.Consumer, _ resource.PluginConfig) error {
+			if consumer.Username != "jwt-consumer" {
+				t.Fatalf("resolved JWT consumer = %#v", consumer)
+			}
+			return nil
+		},
+	)
+	if err != nil || !used {
+		t.Fatalf("resolved JWT consumer = %v/%v, want true/nil", used, err)
 	}
 	if len(broker.scopes) != 1 || broker.scopes[0].Field != "key" {
 		t.Fatalf("optional field materialization scopes = %#v, want key only", broker.scopes)
@@ -252,6 +286,46 @@ func TestConsumerBindingPreparerIndexesNonCredentialConsumerPlugin(t *testing.T)
 	}
 }
 
+func TestConsumerBindingPreparerLetsLaterStaticCredentialOwnerReplaceEarlier(t *testing.T) {
+	broker := &consumerPreparationBroker{}
+	factory, _ := newConsumerAttemptFactory(t, broker)
+	desired := mustGenerationSnapshot(t, 65, []generation.Resource{
+		resourceValue(
+			"consumers",
+			"a-earlier-consumer",
+			`{"username":"a-earlier-consumer","plugins":{"wolf-rbac":{"appid":"shared-app","server":"http://earlier.example"}}}`,
+		),
+		resourceValue(
+			"consumers",
+			"z-later-consumer",
+			`{"username":"z-later-consumer","plugins":{"wolf-rbac":{"appid":"shared-app","server":"http://later.example"},"echo":{"body":"later consumer"}}}`,
+		),
+	}, nil)
+
+	prepared, err := factory.prepareGenerationSecrets(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, ok := prepared.consumers.ConsumerByPluginKey("wolf-rbac", "shared-app")
+	if !ok {
+		t.Fatal("duplicate static credential was not indexed")
+	}
+	if consumer.ID != "z-later-consumer" {
+		t.Fatalf("duplicate static credential owner = %q, want z-later-consumer", consumer.ID)
+	}
+	if echo := consumer.Plugins["echo"].(map[string]any); echo["body"] != "later consumer" {
+		t.Fatalf("replacement consumer echo config = %#v", echo)
+	}
+	if len(broker.scopes) != 0 {
+		t.Fatalf("static credential materialized secret scopes: %#v", broker.scopes)
+	}
+	if err := prepared.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConsumerBindingPreparerPreservesEmptyResolvedLookupCompatibility(t *testing.T) {
 	broker := &consumerPreparationBroker{resolved: map[string]string{
 		"$ENV://EMPTY_USER": "",
@@ -271,9 +345,18 @@ func TestConsumerBindingPreparerPreservesEmptyResolvedLookupCompatibility(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer, ok := prepared.consumers.ConsumerByPluginKey("basic-auth", "")
-	if !ok || consumer.Username != "empty-user-consumer" {
-		t.Fatalf("empty resolved lookup = (%+v, %v)", consumer, ok)
+	lookup := newConsumerLookupView(prepared.consumers, prepared.preparation, factory.consumers.catalog)
+	used, err := base.UseConsumerCredential(
+		context.Background(), lookup, "basic-auth", "",
+		func(consumer resource.Consumer, _ resource.PluginConfig) error {
+			if consumer.Username != "empty-user-consumer" {
+				t.Fatalf("empty resolved lookup = %+v", consumer)
+			}
+			return nil
+		},
+	)
+	if err != nil || !used {
+		t.Fatalf("empty resolved lookup = %v/%v, want true/nil", used, err)
 	}
 	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
@@ -300,11 +383,19 @@ func TestConsumerBindingPreparerRejectsDuplicateResolvedLookupWithoutCredentialL
 			`{"username":"consumer-two","plugins":{"basic-auth":{"username":"$ENV://USER_TWO","password":"$ENV://PASS_TWO"}}}`,
 		),
 	}, nil)
-	_, err := factory.prepareGenerationSecrets(
+	prepared, err := factory.prepareGenerationSecrets(
 		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
 	)
-	if err == nil {
-		t.Fatal("duplicate resolved consumer lookup unexpectedly succeeded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := newConsumerLookupView(prepared.consumers, prepared.preparation, factory.consumers.catalog)
+	used, err := base.UseConsumerCredential(
+		context.Background(), lookup, "basic-auth", "duplicate-resolved-user",
+		func(resource.Consumer, resource.PluginConfig) error { return nil },
+	)
+	if err == nil || used {
+		t.Fatalf("duplicate resolved consumer lookup = %v/%v, want false/error", used, err)
 	}
 	for _, sensitive := range []string{
 		"USER_ONE", "PASS_ONE", "USER_TWO", "PASS_TWO",
@@ -314,9 +405,12 @@ func TestConsumerBindingPreparerRejectsDuplicateResolvedLookupWithoutCredentialL
 			t.Fatalf("duplicate error leaked %q: %v", sensitive, err)
 		}
 	}
+	if closeErr := prepared.Close(context.Background()); closeErr != nil {
+		t.Fatal(closeErr)
+	}
 }
 
-func TestConsumerBindingPreparerFailedCandidatePreservesLastGoodGeneration(t *testing.T) {
+func TestConsumerBindingPreparerUnavailableCredentialDoesNotReplaceLastGoodGeneration(t *testing.T) {
 	const (
 		oldUserRef       = "$ENV://LAST_GOOD_USER"
 		oldPasswordRef   = "$ENV://LAST_GOOD_PASSWORD"
@@ -357,11 +451,22 @@ func TestConsumerBindingPreparerFailedCandidatePreservesLastGoodGeneration(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	lastGoodLookup := newConsumerLookupView(
+		lastGood.consumers, lastGood.preparation, factory.consumers.catalog,
+	)
 	assertLastGood := func() {
 		t.Helper()
-		consumer, ok := lastGood.consumers.ConsumerByPluginKey("basic-auth", oldResolvedUser)
-		if !ok || consumer.Username != consumerResource {
-			t.Fatalf("last-good lookup = %#v/%v", consumer, ok)
+		used, useErr := base.UseConsumerCredential(
+			context.Background(), lastGoodLookup, "basic-auth", oldResolvedUser,
+			func(consumer resource.Consumer, _ resource.PluginConfig) error {
+				if consumer.Username != consumerResource {
+					t.Fatalf("last-good lookup = %#v", consumer)
+				}
+				return nil
+			},
+		)
+		if useErr != nil || !used {
+			t.Fatalf("last-good lookup = %v/%v", used, useErr)
 		}
 	}
 	assertLastGood()
@@ -370,50 +475,54 @@ func TestConsumerBindingPreparerFailedCandidatePreservesLastGoodGeneration(t *te
 	previous := map[generation.Domain]generation.PublishedGeneration{
 		generation.DomainHTTP: publishedForDomain(generation.DomainHTTP, lastGoodSnapshot),
 	}
-	if failed, prepareErr := factory.prepareGenerationSecrets(
+	candidate, prepareErr := factory.prepareGenerationSecrets(
 		context.Background(),
 		ticketForSnapshot(failedSnapshot, generation.DomainHTTP),
 		failedSnapshot,
 		previous,
-	); prepareErr == nil {
-		if failed != nil {
-			_ = failed.Close(context.Background())
-		}
-		t.Fatal("candidate with unavailable consumer credentials unexpectedly prepared")
+	)
+	if prepareErr != nil {
+		t.Fatal(prepareErr)
+	}
+	candidateLookup := newConsumerLookupView(
+		candidate.consumers, candidate.preparation, factory.consumers.catalog,
+	)
+	used, useErr := base.UseConsumerCredential(
+		context.Background(), candidateLookup, "basic-auth", newResolvedUser,
+		func(resource.Consumer, resource.PluginConfig) error { return nil },
+	)
+	if useErr == nil || used {
+		t.Fatalf("unavailable candidate credential = %v/%v, want false/error", used, useErr)
 	}
 	assertLastGood()
-	if _, ok := lastGood.consumers.ConsumerByPluginKey("basic-auth", newResolvedUser); ok {
-		t.Fatal("failed candidate credential leaked into last-good generation")
-	}
 
 	broker.resolved[newUserRef] = newResolvedUser
 	broker.resolved[newPasswordRef] = "next-password"
-	recoveredSnapshot := consumerSnapshot(63, newUserRef, newPasswordRef)
-	recovered, err := factory.prepareGenerationSecrets(
-		context.Background(),
-		ticketForSnapshot(recoveredSnapshot, generation.DomainHTTP),
-		recoveredSnapshot,
-		previous,
+	used, useErr = base.UseConsumerCredential(
+		context.Background(), candidateLookup, "basic-auth", newResolvedUser,
+		func(consumer resource.Consumer, _ resource.PluginConfig) error {
+			if consumer.Username != consumerResource {
+				t.Fatalf("recovered lookup = %#v", consumer)
+			}
+			return nil
+		},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recoveredConsumer, ok := recovered.consumers.ConsumerByPluginKey("basic-auth", newResolvedUser)
-	if !ok || recoveredConsumer.Username != consumerResource {
-		t.Fatalf("recovered lookup = %#v/%v", recoveredConsumer, ok)
+	if useErr != nil || !used {
+		t.Fatalf("late candidate credential = %v/%v, want true/nil", used, useErr)
 	}
 	assertLastGood()
-	if _, ok := recovered.consumers.ConsumerByPluginKey("basic-auth", oldResolvedUser); ok {
-		t.Fatal("recovered generation retained last-good credential")
-	}
 
 	if err := lastGood.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := recovered.consumers.ConsumerByPluginKey("basic-auth", newResolvedUser); !ok {
-		t.Fatal("closing last-good generation invalidated recovered generation")
+	used, useErr = base.UseConsumerCredential(
+		context.Background(), candidateLookup, "basic-auth", newResolvedUser,
+		func(resource.Consumer, resource.PluginConfig) error { return nil },
+	)
+	if useErr != nil || !used {
+		t.Fatalf("closing last-good invalidated candidate = %v/%v", used, useErr)
 	}
-	if err := recovered.Close(context.Background()); err != nil {
+	if err := candidate.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -450,31 +559,32 @@ func TestConsumerBindingPreparerKeepsOverlappingGenerationsIndependent(t *testin
 	generationN1 := prepare(
 		58, "consumer-n-plus-1", "$ENV://USER_N_PLUS_1", "$ENV://PASS_N_PLUS_1",
 	)
-	if _, ok := generationN.consumers.ConsumerByPluginKey("basic-auth", "resolved-user-n"); !ok {
-		t.Fatal("generation N lookup is missing")
+	lookupN := newConsumerLookupView(generationN.consumers, generationN.preparation, factory.consumers.catalog)
+	lookupN1 := newConsumerLookupView(generationN1.consumers, generationN1.preparation, factory.consumers.catalog)
+	assertCredential := func(lookup consumerLookupView, key string) {
+		t.Helper()
+		used, useErr := base.UseConsumerCredential(
+			context.Background(), lookup, "basic-auth", key,
+			func(resource.Consumer, resource.PluginConfig) error { return nil },
+		)
+		if useErr != nil || !used {
+			t.Fatalf("credential %q = %v/%v", key, used, useErr)
+		}
 	}
-	if _, ok := generationN1.consumers.ConsumerByPluginKey("basic-auth", "resolved-user-n-plus-1"); !ok {
-		t.Fatal("generation N+1 lookup is missing")
-	}
+	assertCredential(lookupN, "resolved-user-n")
+	assertCredential(lookupN1, "resolved-user-n-plus-1")
 
-	var readers sync.WaitGroup
-	for range 4 {
-		readers.Go(func() {
-			for range 1000 {
-				generationN.consumers.ConsumerByPluginKey("basic-auth", "resolved-user-n")
-			}
-		})
-	}
 	if err := generationN.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	readers.Wait()
-	if _, ok := generationN.consumers.ConsumerByPluginKey("basic-auth", "resolved-user-n"); ok {
-		t.Fatal("closed generation N remains readable")
+	used, useErr := base.UseConsumerCredential(
+		context.Background(), lookupN, "basic-auth", "resolved-user-n",
+		func(resource.Consumer, resource.PluginConfig) error { return nil },
+	)
+	if useErr != nil || used {
+		t.Fatalf("closed generation N credential = %v/%v, want false/nil", used, useErr)
 	}
-	if _, ok := generationN1.consumers.ConsumerByPluginKey("basic-auth", "resolved-user-n-plus-1"); !ok {
-		t.Fatal("closing generation N invalidated generation N+1")
-	}
+	assertCredential(lookupN1, "resolved-user-n-plus-1")
 	if err := generationN1.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -529,6 +639,35 @@ func TestConsumerBindingPreparerRejectsForeignOccurrenceBeforeMaterialization(t 
 		t.Fatalf("foreign occurrence reached materialization: %#v", broker.scopes)
 	}
 	if err := materialization.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConsumerBindingPreparerSkipsDisabledConsumerPluginWithoutOccurrence(t *testing.T) {
+	broker := &consumerPreparationBroker{}
+	factory, _ := newConsumerAttemptFactory(t, broker)
+	desired := mustGenerationSnapshot(t, 66, []generation.Resource{
+		resourceValue(
+			"consumers",
+			"disabled-consumer",
+			`{"username":"disabled-consumer","plugins":{"basic-auth":{"_meta":{"disable":true},"username":"$ENV://DISABLED_USER","password":"$ENV://DISABLED_PASSWORD"}}}`,
+		),
+	}, nil)
+
+	prepared, err := factory.prepareGenerationSecrets(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, ok := prepared.consumers.ConsumerByID("disabled-consumer")
+	if !ok || consumer.Username != "disabled-consumer" {
+		t.Fatalf("disabled consumer record = %#v/%v, want retained consumer without credential binding", consumer, ok)
+	}
+	if len(broker.scopes) != 0 {
+		t.Fatalf("disabled consumer materialized secret scopes: %#v", broker.scopes)
+	}
+	if err := prepared.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

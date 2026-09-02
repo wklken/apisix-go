@@ -398,14 +398,13 @@ cases:
           respond:
             - body: '{"model":"gpt-4","choices":[],"usage":{"total_tokens":10}}'
               status: 200
-        - expect:
-            - method: POST
+        - expect_requests: 0
           kind: http
           name: gpt3
           respond:
             - body: '{"model":"gpt-3","choices":[],"usage":{"total_tokens":10}}'
               status: 200
-      name: global-limits-drive-multi-instance-fallback
+      name: global-limit-applies-across-multi-instance-route
       steps:
         - input:
             body: '{"messages":[]}'
@@ -424,11 +423,9 @@ cases:
                 Content-Type: application/json
             method: POST
             path: /ai
-          name: rate-limited-instance-falls-back
+          name: global-limit-rejects-lower-priority-instance
           output:
-            body:
-                matches: gpt-3
-            status: 200
+            status: 503
         - input:
             body: '{"messages":[]}'
             headers:

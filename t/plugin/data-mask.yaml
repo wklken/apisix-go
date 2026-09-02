@@ -321,7 +321,7 @@ cases:
           - method: POST
             path: {equals: /logs}
             body:
-              json_equals: '{"request_line":"GET /hello?token=%2A%2A%2A%2A%2A HTTP/1.1"}'
+              json_equals: '{"request_line":"GET /hello?token=***** HTTP/1.1","route_id":"data-mask-access-log"}'
         respond:
           - status: 200
     steps:

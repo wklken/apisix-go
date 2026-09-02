@@ -68,6 +68,21 @@ func TestParseVaryHeader(t *testing.T) {
 	}
 }
 
+func TestRequiredVaryIsRequestLocalAndCaseInsensitive(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	marked := WithRequiredVary(request, "Accept-Encoding")
+
+	if RequiredVary(request, "accept-encoding") {
+		t.Fatal("original request unexpectedly inherited required Vary")
+	}
+	if !RequiredVary(marked, "ACCEPT-ENCODING") {
+		t.Fatal("marked request lost required Vary")
+	}
+	if RequiredVary(marked, "Accept-Language") {
+		t.Fatal("unmarked Vary field reported as required")
+	}
+}
+
 func TestVarySignaturePreservesOrderDelimiterAndMD5(t *testing.T) {
 	r := &http.Request{
 		Header: http.Header{

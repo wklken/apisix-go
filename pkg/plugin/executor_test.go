@@ -14,6 +14,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	corsplugin "github.com/wklken/apisix-go/pkg/plugin/cors"
+	realipplugin "github.com/wklken/apisix-go/pkg/plugin/real_ip"
 )
 
 type executorTraceKey struct{}
@@ -857,6 +858,42 @@ func TestRouteOpenTelemetryRunsBeforeAuthenticationExactlyOnce(t *testing.T) {
 				t.Fatalf("order = %v, want %v", order, tt.wantOrder)
 			}
 		})
+	}
+}
+
+func TestRouteRealIPRunsBeforeWolfAuthentication(t *testing.T) {
+	realIP := &realipplugin.Plugin{}
+	if err := realIP.Init(); err != nil {
+		t.Fatalf("real-ip Init: %v", err)
+	}
+	config := realIP.Config().(*realipplugin.Config)
+	config.Source = "http_x_real_ip"
+	config.TrustedAddresses = []string{"127.0.0.0/8"}
+	if err := realIP.PostInit(); err != nil {
+		t.Fatalf("real-ip PostInit: %v", err)
+	}
+
+	observedClientIP := ""
+	wolf := newExecutorRequestPlugin(
+		"wolf-rbac",
+		2555,
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			observedClientIP = apisixctx.EffectiveRemoteIP(r)
+			return base.ContinueRequest(r)
+		},
+	)
+	handler := NewRequestPipeline([]Binding{
+		pipelineBinding("real-ip", realIP, ScopeRoute, realIP.GetPriority()),
+		pipelineBinding("wolf-rbac", wolf, ScopeRoute, wolf.GetPriority()),
+	}, nil).Then(http.NotFoundHandler())
+	request := httptest.NewRequest(http.MethodGet, "/hello", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	request.Header.Set("X-Real-IP", "192.0.2.10")
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if observedClientIP != "192.0.2.10" {
+		t.Fatalf("Wolf authentication client IP = %q, want route real-ip result", observedClientIP)
 	}
 }
 

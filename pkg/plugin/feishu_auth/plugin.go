@@ -3,10 +3,8 @@ package feishu_auth
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -28,8 +26,6 @@ type Plugin struct {
 	lifecycleMu sync.RWMutex
 	client      *http.Client
 
-	oauthStateReplay *base.OAuthStateReplayCache
-
 	appSecret    secret.Value
 	appSecretSet bool
 
@@ -48,7 +44,6 @@ const (
 	defaultAccessTokenURL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
 	defaultUserInfoURL    = "https://open.feishu.cn/open-apis/authen/v1/user_info"
 	sessionCookieName     = "feishu_session"
-	oauthStateCookieName  = "feishu_oauth_state"
 )
 
 const schema = `
@@ -197,9 +192,6 @@ func (p *Plugin) PostInit() error {
 			Transport: p.transport(),
 		}
 	}
-	if p.oauthStateReplay == nil {
-		p.oauthStateReplay = &base.OAuthStateReplayCache{}
-	}
 	return nil
 }
 
@@ -306,16 +298,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		code := base.CodeFromRequest(r, p.config.CodeHeader, p.config.CodeQuery)
-		if r.Header.Get(p.config.CodeHeader) == "" {
-			if code == "" {
-				p.redirectToProvider(w, r)
-				return
-			}
-			if !p.verifyAndConsumeOAuthState(r) {
-				http.Error(w, util.BuildMessageResponse("Invalid OAuth state"), http.StatusUnauthorized)
-				return
-			}
-			p.deleteOAuthStateCookie(w)
+		if code == "" {
+			p.redirectToProvider(w, r)
+			return
 		}
 
 		accessToken, err := p.fetchAccessToken(r, code)
@@ -342,79 +327,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) redirectToProvider(w http.ResponseWriter, r *http.Request) {
-	state, err := base.NewOAuthState()
-	if err != nil {
-		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
-		return
-	}
-	now := time.Now()
-	var sealed string
-	err = p.useSessionSecretsLocked(func(current string, _ []string) error {
-		var sealErr error
-		sealed, sealErr = base.SealOAuthSession(
-			[]byte(state), current, p.oauthStateFingerprint(), now, now.Add(base.OAuthStateLifetime),
-		)
-		return sealErr
-	})
-	if err != nil {
-		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
-		return
-	}
-	redirectURI, err := oauthRedirectWithState(p.config.RedirectURI, state)
-	if err != nil {
-		http.Error(w, util.BuildMessageResponse("Invalid OAuth redirect URI"), http.StatusInternalServerError)
-		return
-	}
-	http.SetCookie(w, p.oauthStateCookie(sealed))
-	http.Redirect(w, r, redirectURI, http.StatusFound)
+	http.Redirect(w, r, p.config.RedirectURI, http.StatusFound)
 }
 
-func (p *Plugin) verifyAndConsumeOAuthState(r *http.Request) bool {
-	cookie, err := r.Cookie(oauthStateCookieName)
-	if err != nil || cookie.Value == "" {
-		return false
-	}
-	stateValues, ok := r.URL.Query()["state"]
-	if !ok || len(stateValues) != 1 || stateValues[0] == "" {
-		return false
-	}
-	now := time.Now()
-	stateMatches := false
-	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
-		return useOpenedFeishuOAuthState(
-			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), now,
-			func(state []byte) error {
-				stateMatches = subtle.ConstantTimeCompare(state, []byte(stateValues[0])) == 1
-				return nil
-			},
-		)
-	})
-	if err != nil || !stateMatches {
-		return false
-	}
-	return p.oauthStateReplay != nil && p.oauthStateReplay.Consume(cookie.Value, now)
-}
-
-func useOpenedFeishuOAuthState(
-	value string,
-	current string,
-	fallbacks []string,
-	fingerprint string,
-	now time.Time,
-	use func([]byte) error,
-) error {
-	if use == nil {
-		return secret.ErrCredentialUnavailable
-	}
-	state, err := base.OpenOAuthSession(value, current, fallbacks, fingerprint, now)
-	if err != nil {
-		return err
-	}
-	defer clear(state)
-	return use(state)
-}
-
-func (p *Plugin) oauthStateFingerprint() string {
+func (p *Plugin) sessionFingerprint() string {
 	return base.Sha256Hex(strings.Join([]string{
 		name,
 		p.config.AppID,
@@ -426,35 +342,6 @@ func (p *Plugin) oauthStateFingerprint() string {
 		p.config.CodeHeader,
 		p.config.CodeQuery,
 	}, "\x00"))
-}
-
-func (p *Plugin) oauthStateCookie(value string) *http.Cookie {
-	return &http.Cookie{
-		Name:     oauthStateCookieName,
-		Value:    value,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(base.OAuthStateLifetime / time.Second),
-	}
-}
-
-func (p *Plugin) deleteOAuthStateCookie(w http.ResponseWriter) {
-	cookie := p.oauthStateCookie("deleted")
-	cookie.MaxAge = -1
-	cookie.Expires = time.Unix(1, 0).UTC()
-	http.SetCookie(w, cookie)
-}
-
-func oauthRedirectWithState(rawURI string, state string) (string, error) {
-	redirectURI, err := url.Parse(rawURI)
-	if err != nil {
-		return "", err
-	}
-	query := redirectURI.Query()
-	query.Set("state", state)
-	redirectURI.RawQuery = query.Encode()
-	return redirectURI.String(), nil
 }
 
 func (p *Plugin) fetchAccessToken(r *http.Request, code string) (string, error) {
@@ -545,7 +432,7 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 	var session sessionPayload
 	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
 		return useVerifiedFeishuSessionPayload(
-			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), time.Now(),
+			cookie.Value, current, fallbacks, p.sessionFingerprint(), time.Now(),
 			func(payload []byte) error {
 				return json.Unmarshal(payload, &session)
 			},
@@ -595,7 +482,7 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
 		var sealErr error
 		value, sealErr = sealAndClearFeishuSessionPayload(
-			payload, current, p.oauthStateFingerprint(), now, expiresAt,
+			payload, current, p.sessionFingerprint(), now, expiresAt,
 		)
 		return sealErr
 	}); err != nil {
@@ -688,7 +575,6 @@ func (p *Plugin) Stop() {
 		p.client.CloseIdleConnections()
 		p.client = nil
 	}
-	p.oauthStateReplay = nil
 	p.appSecret = secret.Value{}
 	p.appSecretSet = false
 	p.sessionSecret = secret.Value{}

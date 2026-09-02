@@ -2,8 +2,12 @@ package generation
 
 import (
 	"slices"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 )
+
+const maxDecisionDiagnosticBytes = 2048
 
 // ValidatePublicationSet checks that a publication set is an exact structural
 // match for its apply ticket and that every domain candidate is internally
@@ -72,7 +76,8 @@ func ValidatePublicationCandidate(
 	decisions := make(map[ResourceKey]ResourceDecision, len(candidate.Decisions))
 	for _, decision := range candidate.Decisions {
 		if !validResourceKey(decision.Key) || decision.Code == "" || !utf8.ValidString(decision.Code) ||
-			!validDisposition(decision.Disposition) {
+			!validDisposition(decision.Disposition) || !validDecisionDiagnostic(decision.Diagnostic) ||
+			(decision.Diagnostic != "" && !rejectedDisposition(decision.Disposition)) {
 			return ErrInvalidClosure
 		}
 		if _, exists := decisions[decision.Key]; exists {
@@ -108,6 +113,38 @@ func ValidatePublicationCandidate(
 		}
 	}
 	return nil
+}
+
+// DecisionDiagnostics returns safe, stable diagnostics from a provider
+// acknowledgement. Providers use this single validation boundary before
+// writing compiler-supplied diagnostics to their logs.
+func DecisionDiagnostics(decisions map[Domain][]ResourceDecision) ([]string, error) {
+	diagnostics := make([]string, 0)
+	for _, domainDecisions := range decisions {
+		for _, decision := range domainDecisions {
+			if !validDecisionDiagnostic(decision.Diagnostic) ||
+				(decision.Diagnostic != "" && !rejectedDisposition(decision.Disposition)) {
+				return nil, ErrIntegrity
+			}
+			if decision.Diagnostic != "" {
+				diagnostics = append(diagnostics, decision.Diagnostic)
+			}
+		}
+	}
+	slices.Sort(diagnostics)
+	return slices.Compact(diagnostics), nil
+}
+
+func validDecisionDiagnostic(diagnostic string) bool {
+	return len(diagnostic) <= maxDecisionDiagnosticBytes &&
+		utf8.ValidString(diagnostic) &&
+		strings.IndexFunc(diagnostic, unicode.IsControl) == -1
+}
+
+func rejectedDisposition(disposition ResourceDisposition) bool {
+	return disposition == DispositionLastGood ||
+		disposition == DispositionQuarantined ||
+		disposition == DispositionFailClosed
 }
 
 // ValidatePublishedGeneration checks the structural identity and closure

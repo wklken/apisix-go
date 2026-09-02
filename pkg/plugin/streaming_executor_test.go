@@ -957,7 +957,7 @@ func TestCompressionWrapperPanicIsAttributed(t *testing.T) {
 		t.Fatalf("registerCompressionOffers() error = %v", err)
 	}
 	_, err = (&streamingFinish{compression: negotiation}).applyCompression(
-		&task10MinimalWriter{}, request, http.StatusOK,
+		&task10MinimalWriter{}, request, http.StatusOK, make(http.Header),
 	)
 	var panicErr *PanicError
 	if !errors.As(err, &panicErr) || panicErr.Factory != "gzip" || panicErr.Phase != PhaseBodyFilter ||
@@ -1767,6 +1767,31 @@ func TestStreamingExecutorRejectsDynamicConsumerBodyFilter(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "body-transformer") ||
 		!strings.Contains(err.Error(), "consumer-body") {
 		t.Fatalf("PostResolutionHook() error = %v, want dynamic body-filter rejection", err)
+	}
+}
+
+func TestStreamingExecutorAllowsDynamicConsumerBodyFilterWithBufferedFallback(t *testing.T) {
+	executor, err := NewStreamingResponseExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	body := newResponseTestPlugin(
+		"body-transformer",
+		1,
+		responseTestConfig{stage: "none", body: true},
+	)
+	binding := checkedResponseBinding(t, "body-transformer", body, ScopeConsumer, "consumer-body")
+	binding.Provenance.Kind = ResourceConsumer
+
+	replacement, err := executor.withBufferedDynamicFallback().PostResolutionHook(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		EffectiveBindingSet{merged: []Binding{binding}},
+	)
+	if err != nil {
+		t.Fatalf("PostResolutionHook() error = %v", err)
+	}
+	if dynamic := dynamicStreamingBindings(replacement); len(dynamic) != 0 {
+		t.Fatalf("dynamic streaming bindings = %#v, want buffered fallback ownership", dynamic)
 	}
 }
 

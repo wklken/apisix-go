@@ -62,9 +62,10 @@ func (input normalizedInput) keys() []generation.ResourceKey {
 }
 
 type resourceIssue struct {
-	Key  generation.ResourceKey
-	Code string
-	Err  error
+	Key        generation.ResourceKey
+	Code       string
+	Err        error
+	Diagnostic string
 }
 
 type dependencyGraph struct {

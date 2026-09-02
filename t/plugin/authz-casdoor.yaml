@@ -30,6 +30,7 @@ cases:
                 Location:
                   matches: '^http://127\.0\.0\.1:[0-9]+/login/oauth/authorize\?.*client_id=7ceb9b7fda4a9061ec1c.*$'
       - name: callback-query-rejected
+        wait_for_generation: true
         config:
           routes:
             - id: authz-casdoor-callback-query
@@ -43,10 +44,11 @@ cases:
         input:
           path: /anything/d
         output: &schema_rejection
-          status: 503
+          status: 404
           logs:
-            matches: 'worker generation preparation failed'
+            matches: 'validate plugin authz-casdoor config:'
       - name: endpoint-trailing-slash-rejected
+        wait_for_generation: true
         config:
           routes:
             - id: authz-casdoor-endpoint-slash
@@ -184,7 +186,7 @@ cases:
         output:
           status: 503
           body:
-            matches: 'no session found'
+            equals: ''
           logs:
             matches: 'no session found'
 

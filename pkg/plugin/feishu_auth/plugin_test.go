@@ -201,7 +201,7 @@ func TestMaterializeScopedSecretsOwnsFeishuOAuthAndSessionSecrets(t *testing.T) 
 		strings.Join(p.config.SecretFallbacks, "|") != strings.Join(config.SecretFallbacks, "|") {
 		t.Fatalf("failed materialization changed public config: %#v", p.config)
 	}
-	if p.client != nil || p.oauthStateReplay != nil || p.appSecretSet ||
+	if p.client != nil || p.appSecretSet ||
 		p.appSecret != (secret.Value{}) || p.sessionSecretSet ||
 		p.sessionSecret != (secret.Value{}) || len(p.sessionSecretFallbacks) != 0 ||
 		p.secretsPrepared {
@@ -305,30 +305,6 @@ func TestFeishuDerivedOAuthAndSessionPayloadsAreCleared(t *testing.T) {
 		fingerprint   = "feishu-derived-test"
 	)
 	now := time.Unix(1_800_000_000, 0)
-
-	t.Run("opened oauth state", func(t *testing.T) {
-		sealed, err := base.SealOAuthSession(
-			[]byte("state-a"), sessionSecret, fingerprint, now, now.Add(time.Minute),
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var retained []byte
-		err = useOpenedFeishuOAuthState(
-			sealed, sessionSecret, nil, fingerprint, now,
-			func(state []byte) error {
-				retained = state
-				if string(state) != "state-a" {
-					t.Fatalf("opened state = %q, want state-a", state)
-				}
-				return nil
-			},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		assertFeishuBytesCleared(t, retained)
-	})
 
 	t.Run("verified session payload", func(t *testing.T) {
 		payload := []byte(`{"userinfo":{"open_id":"ou-a"},"expires_at":1800000060}`)
@@ -593,23 +569,6 @@ func TestFeishuGenerationOAuthAndSessionStateIsIsolated(t *testing.T) {
 	if user, ok := rotated.userInfoFromSession(requestRotated); !ok || user["open_id"] != "generation-n" {
 		t.Fatal("configured fallback did not verify the previous generation cookie")
 	}
-	stateResponse := httptest.NewRecorder()
-	n.redirectToProvider(stateResponse, httptest.NewRequest(http.MethodGet, "http://gateway.test", nil))
-	stateCookie := findFeishuStateCookie(stateResponse.Result().Cookies())
-	stateRedirect, err := url.Parse(stateResponse.Header().Get("Location"))
-	if err != nil || stateCookie == nil {
-		t.Fatalf("N OAuth state setup = (%#v, %v)", stateCookie, err)
-	}
-	rotatedCallback := httptest.NewRequest(
-		http.MethodGet,
-		"http://gateway.test/callback?state="+url.QueryEscape(stateRedirect.Query().Get("state")),
-		nil,
-	)
-	rotatedCallback.AddCookie(stateCookie)
-	if !rotated.verifyAndConsumeOAuthState(rotatedCallback) {
-		t.Fatal("configured fallback did not open the previous generation OAuth state")
-	}
-
 	n.Stop()
 	nextCookie, err := nPlusOne.sessionCookie(map[string]any{"open_id": "generation-next"})
 	if err != nil {
@@ -690,10 +649,10 @@ func TestFeishuStopDrainsActiveRequestAndPreventsResurrection(t *testing.T) {
 		t.Fatal("Stop did not finish after active request drained")
 	}
 	p.Stop()
-	if p.client != nil || p.oauthStateReplay != nil || p.appSecretSet ||
+	if p.client != nil || p.appSecretSet ||
 		p.sessionSecretSet || len(p.sessionSecretFallbacks) != 0 ||
 		p.secretsPrepared {
-		t.Fatal("Stop retained Feishu client, replay, or secret state")
+		t.Fatal("Stop retained Feishu client or secret state")
 	}
 	late := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -822,17 +781,15 @@ func TestHandlerRedirectsWhenNoSessionAndNoCode(t *testing.T) {
 	if location.Scheme != "https" || location.Host != "login.feishu.cn" || location.Path != "/oauth" {
 		t.Fatalf("Location = %q, want configured OAuth endpoint", location)
 	}
-	if location.Query().Get("state") == "" {
-		t.Fatal("Location does not contain an OAuth state")
+	if got := rr.Header().Get("Location"); got != "https://login.feishu.cn/oauth" {
+		t.Fatalf("Location = %q, want configured redirect URI verbatim", got)
 	}
-	stateCookie := findFeishuStateCookie(rr.Result().Cookies())
-	if stateCookie == nil || stateCookie.Path != "/" || !stateCookie.HttpOnly || stateCookie.Secure ||
-		stateCookie.SameSite != http.SameSiteLaxMode || stateCookie.MaxAge != 300 {
-		t.Fatalf("OAuth state cookie = %#v, want APISIX 3.17 defaults", stateCookie)
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("redirect cookies = %#v, want none", cookies)
 	}
 }
 
-func TestHandlerAcceptsQueryCodeOnlyWithValidOAuthState(t *testing.T) {
+func TestHandlerAcceptsQueryCodeWithoutLocalOAuthState(t *testing.T) {
 	var tokenRequests int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -857,26 +814,7 @@ func TestHandlerAcceptsQueryCodeOnlyWithValidOAuthState(t *testing.T) {
 		UserInfoURL:     api.URL + "/userinfo",
 	})
 
-	initial := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
-		initial,
-		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders", nil),
-	)
-	stateCookie := findFeishuStateCookie(initial.Result().Cookies())
-	if stateCookie == nil {
-		t.Fatal("OAuth state cookie was not set")
-	}
-	state, err := url.Parse(initial.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse OAuth redirect: %v", err)
-	}
-
-	callback := httptest.NewRequest(
-		http.MethodGet,
-		"http://gateway.example.com/callback?code=code-a&state="+url.QueryEscape(state.Query().Get("state")),
-		nil,
-	)
-	callback.AddCookie(stateCookie)
+	callback := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/callback?code=code-a", nil)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })).
 		ServeHTTP(rr, callback)
@@ -886,58 +824,6 @@ func TestHandlerAcceptsQueryCodeOnlyWithValidOAuthState(t *testing.T) {
 
 	if rr.Code != http.StatusAccepted || tokenRequests != 1 {
 		t.Fatalf("callback status/token requests = %d/%d, want 202/1", rr.Code, tokenRequests)
-	}
-	if got := findFeishuStateCookie(
-		rr.Result().Cookies(),
-	); got == nil || got.MaxAge != -1 || got.Path != "/" ||
-		got.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("state deletion cookie = %#v, want matching expired cookie", got)
-	}
-
-	// The original cookie must not be reusable even if a client ignores the
-	// deletion response.
-	replay := httptest.NewRecorder()
-	replayReq := httptest.NewRequest(
-		http.MethodGet,
-		"http://gateway.example.com/callback?code=code-a&state="+url.QueryEscape(state.Query().Get("state")),
-		nil,
-	)
-	replayReq.AddCookie(stateCookie)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { t.Fatal("replayed OAuth state reached next") })).
-		ServeHTTP(replay, replayReq)
-	if replay.Code != http.StatusUnauthorized || tokenRequests != 1 {
-		t.Fatalf("replay status/token requests = %d/%d, want 401/1", replay.Code, tokenRequests)
-	}
-}
-
-func TestHandlerRejectsMissingOrMismatchedOAuthStateBeforeProviderCall(t *testing.T) {
-	providerCalls := 0
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		providerCalls++
-		_, _ = w.Write([]byte(`{"access_token":"unexpected"}`))
-	}))
-	t.Cleanup(api.Close)
-	p := newTestPlugin(t, Config{
-		AppID:           "app-id",
-		AppSecret:       "app-secret",
-		Secret:          "12345678",
-		AuthRedirectURI: "https://gateway.example.com/callback",
-		RedirectURI:     "https://login.feishu.cn/oauth",
-		AccessTokenURL:  api.URL + "/token",
-		UserInfoURL:     api.URL + "/userinfo",
-	})
-
-	for _, rawQuery := range []string{"code=code-a", "code=code-a&state=wrong"} {
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/callback?"+rawQuery, nil)
-		p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("invalid OAuth state reached next") })).
-			ServeHTTP(rr, req)
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("query %q status = %d, want 401", rawQuery, rr.Code)
-		}
-	}
-	if providerCalls != 0 {
-		t.Fatalf("provider calls = %d, want 0 for invalid OAuth state", providerCalls)
 	}
 }
 
@@ -1260,7 +1146,7 @@ func TestFeishuSessionCookieUsesEncryptedConfigBoundEnvelope(t *testing.T) {
 			now := time.Now()
 			var err error
 			expiredValue, err = base.SealOAuthSession(
-				payload, current, issuer.oauthStateFingerprint(), now.Add(-2*time.Hour), now.Add(-time.Hour),
+				payload, current, issuer.sessionFingerprint(), now.Add(-2*time.Hour), now.Add(-time.Hour),
 			)
 			return err
 		})
@@ -1334,15 +1220,6 @@ func assertFeishuSessionRejected(t *testing.T, p *Plugin, cookie *http.Cookie) {
 func findFeishuSessionCookie(cookies []*http.Cookie) *http.Cookie {
 	for _, cookie := range cookies {
 		if cookie.Name == "feishu_session" {
-			return cookie
-		}
-	}
-	return nil
-}
-
-func findFeishuStateCookie(cookies []*http.Cookie) *http.Cookie {
-	for _, cookie := range cookies {
-		if cookie.Name == "feishu_oauth_state" {
 			return cookie
 		}
 	}

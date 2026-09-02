@@ -67,3 +67,6 @@ jobs:
 
       - name: Run plugin harness unit tests
         run: make test-plugin-harness
+
+      - name: Run full plugin integration tests
+        run: make test-integration

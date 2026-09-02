@@ -40,7 +40,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: "build route example-missing-i fail:.*missing properties: 'i'"
+        matches: "validate plugin example-plugin config: /: missing properties: 'i'"
 
   - name: reject-number-below-minimum
     config:
@@ -59,7 +59,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: 'build route example-negative-i fail:.*must be >= 0 but found -1'
+        matches: 'validate plugin example-plugin config: /i: must be >= 0'
 
   - name: reject-wrong-string-type
     config:
@@ -78,7 +78,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: 'build route example-wrong-string fail:.*expected string'
+        matches: 'validate plugin example-plugin config: /s: expected string, but got number'
 
   - name: reject-empty-array
     config:
@@ -97,7 +97,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: 'build route example-empty-array fail:.*minimum 1 items required'
+        matches: 'validate plugin example-plugin config: /t: minimum 1 items required'
 
   - name: load-and-filter-configured-plugin
     runtime:

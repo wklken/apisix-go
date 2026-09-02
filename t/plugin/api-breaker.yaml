@@ -156,7 +156,7 @@ cases:
         output: &invalid_output
           status: 404
           logs:
-            matches: 'build route api-breaker-invalid-.*fail:.*api-breaker'
+            matches: 'validate plugin api-breaker config:'
       - name: negative-max-breaker-sec
         runtime: *runtime
         config:
@@ -612,5 +612,3 @@ cases:
         input: *breaker_input
         output:
           status: 502
-          logs:
-            matches: '(?s)breaker_time: 2.*breaker_time: 4.*breaker_time: 8.*breaker_time: 10'

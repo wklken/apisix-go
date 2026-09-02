@@ -642,6 +642,9 @@ func TestResponseRewriteRunsOneAtomicBufferedBodyCallback(t *testing.T) {
 	if got := state.Header.Get("Content-Length"); got != "" {
 		t.Fatalf("Content-Length = %q, want invalidated", got)
 	}
+	if values, ok := state.Header["Content-Length"]; !ok || values != nil {
+		t.Fatalf("Content-Length marker = %#v/%t, want explicit nil suppression", values, ok)
+	}
 }
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {

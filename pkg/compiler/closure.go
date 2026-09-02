@@ -83,6 +83,7 @@ func buildDomainCandidateContext(
 					Key:         key,
 					Disposition: generation.DispositionQuarantined,
 					Code:        issue.Code,
+					Diagnostic:  issue.Diagnostic,
 				},
 			}
 			continue
@@ -94,6 +95,7 @@ func buildDomainCandidateContext(
 						Key:         key,
 						Disposition: generation.DispositionLastGood,
 						Code:        issue.Code,
+						Diagnostic:  issue.Diagnostic,
 					},
 					value: value,
 				}
@@ -116,6 +118,7 @@ func buildDomainCandidateContext(
 				Key:         key,
 				Disposition: generation.DispositionFailClosed,
 				Code:        issue.Code,
+				Diagnostic:  issue.Diagnostic,
 			},
 		}
 	}
@@ -307,6 +310,7 @@ func invalidateSelectedDecision(
 	}
 	current.decision.Disposition = generation.DispositionFailClosed
 	current.decision.Code = "effective-invalid"
+	current.decision.Diagnostic = issue.Diagnostic
 	switch issue.Code {
 	case "dependency-missing", "dependency-cycle":
 		current.decision.Disposition = generation.DispositionQuarantined

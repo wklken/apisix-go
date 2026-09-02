@@ -1377,6 +1377,63 @@ func TestDiskStrategyPersistsVaryVariantsAcrossPluginInstances(t *testing.T) {
 	}
 }
 
+func TestDiskStrategyInvalidatesLegacyBaseEntryWhenVaryIsRequired(t *testing.T) {
+	root := t.TempDir()
+	zones := setConfiguredZones(t, []appconfig.Zone{{Name: "disk-vary-upgrade", DiskPath: root}})
+	config := Config{CacheStrategy: "disk", CacheZone: "disk-vary-upgrade", CacheTTL: 60}
+
+	legacy := newTestPlugin(t, config, zones)
+	legacyRequest := httptest.NewRequest(http.MethodGet, "/vary-upgrade", nil)
+	if err := legacy.storeState(
+		legacyRequest,
+		legacy.cacheKey(legacyRequest),
+		base.ResponseState{
+			Status: http.StatusOK,
+			Header: http.Header{"Content-Type": {"text/plain"}},
+			Body:   []byte("legacy-identity"),
+		},
+		time.Minute,
+		false,
+	); err != nil {
+		t.Fatalf("store legacy base entry: %v", err)
+	}
+
+	upgraded := newTestPlugin(t, config, zones)
+	request := httptest.NewRequest(http.MethodGet, "/vary-upgrade", nil)
+	request.Header.Set("Accept-Encoding", "gzip")
+	request = cacheutil.WithRequiredVary(request, "Accept-Encoding")
+	response := httptest.NewRecorder()
+	result := upgraded.RunRequestPhase(response, request)
+	if result.Decision != base.RequestContinue || response.Header().Get(cacheStatusHeader) != "MISS" {
+		t.Fatalf(
+			"legacy lookup = decision:%v status:%q, want continue/MISS",
+			result.Decision,
+			response.Header().Get(cacheStatusHeader),
+		)
+	}
+	if err := upgraded.RunFinalResponseStore(result.Request, base.ResponseState{
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": {"text/plain"}, "Vary": {"Accept-Encoding"}},
+		Body:   []byte("gzip-variant"),
+	}); err != nil {
+		t.Fatalf("store upgraded Vary entry: %v", err)
+	}
+
+	reloaded := newTestPlugin(t, config, zones)
+	hitRequest := httptest.NewRequest(http.MethodGet, "/vary-upgrade", nil)
+	hitRequest.Header.Set("Accept-Encoding", "gzip")
+	hitRequest = cacheutil.WithRequiredVary(hitRequest, "accept-encoding")
+	hit := reloaded.RunRequestPhase(httptest.NewRecorder(), hitRequest)
+	if hit.Decision != base.RequestStop || hit.Source != apisixctx.ResponseSourceCacheHit {
+		t.Fatalf("upgraded lookup = decision:%v source:%q, want cache hit", hit.Decision, hit.Source)
+	}
+	holder := base.CacheHitResponseHolderFromRequest(hit.Request)
+	state, published, err := holder.ConsumePublished()
+	if err != nil || !published || string(state.Body) != "gzip-variant" {
+		t.Fatalf("upgraded cache hit = %#v published=%v err=%v", state, published, err)
+	}
+}
+
 func TestHandlerIsolatesCacheByConsumerByDefault(t *testing.T) {
 	p := newTestPlugin(t, Config{CacheTTL: 60})
 	calls := 0

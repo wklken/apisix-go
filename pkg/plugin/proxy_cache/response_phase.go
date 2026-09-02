@@ -126,7 +126,12 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.ContinueRequest(r)
 	}
 
-	if entry, status := p.lookup(r, key); status == "HIT" {
+	entry, status := p.lookup(r, key)
+	if status == "HIT" && !cacheEntrySatisfiesRequiredVary(r, entry) {
+		p.purgeAll(key)
+		status = "MISS"
+	}
+	if status == "HIT" {
 		r = publishCacheHit(r, entry, "HIT")
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceCacheHit)
 	} else if status == "EXPIRED" || status == "STALE" {
@@ -148,6 +153,14 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		intents.publish(p, p.newStoreIntent(key, r))
 	}
 	return base.ContinueRequest(r)
+}
+
+func cacheEntrySatisfiesRequiredVary(r *http.Request, entry cacheEntry) bool {
+	if !cacheutil.RequiredVary(r, "Accept-Encoding") {
+		return true
+	}
+	varyHeaders, cacheable := cacheutil.ParseVaryHeader(entry.header)
+	return cacheable && slices.Contains(varyHeaders, "accept-encoding")
 }
 
 func (p *Plugin) newStoreIntent(key string, r *http.Request) storeIntent {

@@ -2,6 +2,7 @@ package cors
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -152,6 +153,8 @@ type Metadata struct {
 	AllowOrigins map[string]string `json:"allow_origins"`
 }
 
+type originalOriginKey struct{}
+
 func (p *Plugin) Init() error {
 	p.Name = name
 	p.Priority = priority
@@ -242,6 +245,7 @@ func (p *Plugin) Config() any {
 // RunRequestPhase owns CORS OPTIONS handling. Preflight and bare OPTIONS are
 // local responses and therefore stop the request pipeline exactly once.
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	*r = *r.WithContext(context.WithValue(r.Context(), originalOriginKey{}, r.Header.Get("Origin")))
 	if r.Method != http.MethodOptions {
 		return base.ContinueRequest(r)
 	}
@@ -260,6 +264,9 @@ func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, state *base.Streaming
 	requestedHeaders := ""
 	if r != nil {
 		origin = r.Header.Get("Origin")
+		if captured, ok := r.Context().Value(originalOriginKey{}).(string); ok {
+			origin = captured
+		}
 		requestedHeaders = r.Header.Get("Access-Control-Request-Headers")
 	}
 	p.setAPISIXResponseHeaders(state.Header, origin, requestedHeaders)

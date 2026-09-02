@@ -42,7 +42,7 @@ cases:
           - method: POST
             path: {equals: /services/collector}
             headers: {Authorization: {equals: 'Splunk good-token'}, X-Splunk-Request-Channel: {equals: channel-good}, Content-Type: {equals: application/json}}
-            body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"marker":"successful-envelope"\}\}\n?$'}
+            body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"marker":"successful-envelope","route_id":"splunk-success"\}\}\n?$'}
         respond: [{status: 200, body: ok}]
     steps: [{name: client-upstream-and-hec-envelope-succeed, input: {path: /success}, output: {status: 200, body: {equals: hello world}}, wait: 1s}]
 
@@ -59,7 +59,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: /message-one}}], respond: [{delay: 100ms, status: 200, body: message-one-ok}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk message-one-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"@timestamp":".+","client_ip":"127\.0\.0\.1","host":"127\.0\.0\.1","message_1":"test custom log format in plugin","upstream_host":"127\.0\.0\.1"\}\}\n?$'}}], respond: [{status: 200, body: ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk message-one-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"@timestamp":".+","client_ip":"127\.0\.0\.1","host":"127\.0\.0\.1","message_1":"test custom log format in plugin","route_id":"splunk-message-one","upstream_host":"127\.0\.0\.1"\}\}\n?$'}}], respond: [{status: 200, body: ok}]}
     steps: [{name: metadata-format-reaches-hec, input: {path: /message-one}, output: {status: 200, body: {equals: message-one-ok}}, wait: 1s}]
 
   - name: metadata-custom-format-message-two
@@ -74,7 +74,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: /message-two}}], respond: [{status: 200, body: message-two-ok}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk message-two-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"@timestamp":".+","host":"127\.0\.0\.1","message_2":"logger format in plugin","vip":"127\.0\.0\.1"\}\}\n?$'}}], respond: [{status: 200, body: ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk message-two-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"@timestamp":".+","host":"127\.0\.0\.1","message_2":"logger format in plugin","route_id":"splunk-message-two","vip":"127\.0\.0\.1"\}\}\n?$'}}], respond: [{status: 200, body: ok}]}
     steps: [{name: source-owned-format-reaches-hec, input: {path: /message-two}, output: {status: 200, body: {equals: message-two-ok}}, wait: 1s}]
 
   - name: batch-three-concatenated-events
@@ -87,7 +87,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: /batch}}, {method: GET, path: {equals: /batch}}, {method: GET, path: {equals: /batch}}], respond: [{status: 200, body: batch-ok}, {status: 200, body: batch-ok}, {status: 200, body: batch-ok}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk batch-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data"\}\}\n?\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data"\}\}\n?\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data"\}\}\n?$'}}], respond: [{status: 200, body: ok}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /services/collector}, headers: {Authorization: {equals: 'Splunk batch-token'}}, body: {matches: '^\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data","route_id":"splunk-batch"\}\}\n?\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data","route_id":"splunk-batch"\}\}\n?\{"time":[0-9.]+,"host":".+","source":"apache-apisix-splunk-hec-logging","sourcetype":"_json","event":\{"message_3":"test batched data","route_id":"splunk-batch"\}\}\n?$'}}], respond: [{status: 200, body: ok}]}
     steps:
       - {name: first-batch-entry, input: {path: /batch}, output: {status: 200, body: {equals: batch-ok}}}
       - {name: second-batch-entry, input: {path: /batch}, output: {status: 200, body: {equals: batch-ok}}}

@@ -130,20 +130,28 @@ func validateRawSchemas(
 	switch resource.key.Kind {
 	case "plugin_metadata":
 		entry, exists := schemas.factories[resource.key.ID]
-		valid := exists && entry.metadata != nil && schemaAccepts(
-			entry.metadata,
-			schemas.catalog,
-			resource.key.ID,
-			capability.SecretPluginMetadata,
-			resource.document,
-		)
+		valid, diagnostic := false, ""
+		if exists && entry.metadata != nil {
+			valid, diagnostic = schemaAdmission(
+				entry.metadata,
+				schemas.catalog,
+				resource.key.ID,
+				capability.SecretPluginMetadata,
+				resource.document,
+			)
+		}
 		if !valid {
-			*issues = append(*issues, newIssue(
+			issue := newIssue(
 				resource.key, pluginMetadataSchemaInvalidCode, "plugin metadata schema validation failed",
-			))
+			)
+			issue.Diagnostic = diagnostic
+			*issues = append(*issues, issue)
 		}
 	case "consumers":
 		for factory, config := range resource.view.plugins {
+			if pluginConfigDisabled(config) {
+				continue
+			}
 			entry, exists := schemas.factories[factory]
 			if !exists {
 				continue
@@ -152,11 +160,22 @@ func validateRawSchemas(
 			if consumerSchema == nil && entry.consumerAllowed {
 				consumerSchema = entry.config
 			}
-			if consumerSchema == nil ||
-				!schemaAccepts(consumerSchema, schemas.catalog, factory, capability.SecretConsumerConfig, config) {
-				*issues = append(*issues, newIssue(
+			valid, diagnostic := schemaAdmission(
+				consumerSchema, schemas.catalog, factory, capability.SecretConsumerConfig, config,
+			)
+			if valid && consumer.Supports(factory) &&
+				!hasMaterializableConsumerSecretEnvelope(schemas.catalog, factory, config) {
+				if err := consumer.ValidateResolved(factory, config); err != nil {
+					valid = false
+					diagnostic = safeConsumerSemanticDiagnostic(err)
+				}
+			}
+			if !valid {
+				issue := newIssue(
 					resource.key, consumerSchemaInvalidCode, "consumer schema validation failed",
-				))
+				)
+				issue.Diagnostic = diagnostic
+				*issues = append(*issues, issue)
 				return
 			}
 		}
@@ -166,14 +185,21 @@ func validateRawSchemas(
 		}
 		resourceDomains := generation.DomainsForResourceKind(resource.key.Kind)
 		for factory, config := range resource.view.plugins {
+			if pluginConfigDisabled(config) {
+				continue
+			}
 			entry, exists := schemas.factories[factory]
 			if !exists {
 				continue
 			}
-			if schemaAccepts(entry.config, schemas.catalog, factory, capability.SecretPluginConfig, config) {
+			valid, diagnostic := schemaAdmission(
+				entry.config, schemas.catalog, factory, capability.SecretPluginConfig, config,
+			)
+			if valid {
 				continue
 			}
 			issue := newIssue(resource.key, pluginSchemaInvalidCode, "plugin schema validation failed")
+			issue.Diagnostic = diagnostic
 			for _, domain := range entry.domains {
 				if slices.Contains(resourceDomains, domain) {
 					issuesByDomain[domain] = append(issuesByDomain[domain], issue)
@@ -181,6 +207,53 @@ func validateRawSchemas(
 			}
 		}
 	}
+}
+
+func hasMaterializableConsumerSecretEnvelope(
+	catalog *capability.SecretDeclarationCatalog,
+	factory string,
+	config any,
+) bool {
+	found := false
+	_ = catalog.TransformDeclaredFields(
+		factory,
+		capability.SecretConsumerConfig,
+		config,
+		func(_ capability.SecretDeclaration, _ string, value any) (any, error) {
+			text, ok := value.(string)
+			if ok && capability.IsMaterializableSecretEnvelope(text) {
+				found = true
+			}
+			return value, nil
+		},
+	)
+	return found
+}
+
+func safeConsumerSemanticDiagnostic(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch err.Error() {
+	case "the secret length should be 32 chars",
+		"the secret length after base64 decode should be 32 chars":
+		return err.Error()
+	default:
+		return ""
+	}
+}
+
+func pluginConfigDisabled(config any) bool {
+	values, ok := config.(map[string]any)
+	if !ok {
+		return false
+	}
+	metadata, ok := values["_meta"].(map[string]any)
+	if !ok {
+		return false
+	}
+	disabled, _ := metadata["disable"].(bool)
+	return disabled
 }
 
 func regularPluginResourceKind(kind string) bool {
@@ -192,20 +265,21 @@ func regularPluginResourceKind(kind string) bool {
 	}
 }
 
-func schemaAccepts(
+func schemaAdmission(
 	compiled *util.CompiledSchema,
 	catalog *capability.SecretDeclarationCatalog,
 	factory string,
 	source capability.SecretDeclarationSource,
 	document any,
-) bool {
+) (bool, string) {
 	if compiled == nil {
-		return false
+		return false, ""
 	}
 	validationErr := compiled.Validate(document)
 	if validationErr == nil {
-		return true
+		return true, ""
 	}
+	diagnostic := safeSchemaDiagnostic(factory, source, validationErr)
 
 	admitted := make(map[string]struct{})
 	if err := catalog.TransformDeclaredFields(
@@ -220,14 +294,111 @@ func schemaAccepts(
 			return value, nil
 		},
 	); err != nil || len(admitted) == 0 {
-		return false
+		return false, diagnostic
 	}
 
 	var schemaErr *jsonschema.ValidationError
 	if !errors.As(validationErr, &schemaErr) {
-		return false
+		return false, diagnostic
 	}
-	return terminalValidationLocationsAdmitted(schemaErr, admitted)
+	if terminalValidationLocationsAdmitted(schemaErr, admitted) {
+		return true, ""
+	}
+	return false, diagnostic
+}
+
+func safeSchemaDiagnostic(
+	factory string,
+	source capability.SecretDeclarationSource,
+	validationErr error,
+) string {
+	var schemaErr *jsonschema.ValidationError
+	if !errors.As(validationErr, &schemaErr) {
+		return ""
+	}
+	leaf := firstValidationLeaf(schemaErr)
+	if leaf == nil {
+		return ""
+	}
+	location := leaf.InstanceLocation
+	if location == "" {
+		location = "/"
+	}
+	message := safeValidationMessage(leaf)
+	if message == "" {
+		return ""
+	}
+	label := "plugin " + factory + " config"
+	switch source {
+	case capability.SecretPluginMetadata:
+		label = "plugin " + factory + " metadata"
+	case capability.SecretConsumerConfig:
+		label = "consumer plugin " + factory + " config"
+	}
+	return fmt.Sprintf("validate %s: %s: %s", label, location, message)
+}
+
+func firstValidationLeaf(root *jsonschema.ValidationError) *jsonschema.ValidationError {
+	if root == nil {
+		return nil
+	}
+	leaves := make([]*jsonschema.ValidationError, 0, 1)
+	var collect func(*jsonschema.ValidationError)
+	collect = func(current *jsonschema.ValidationError) {
+		if len(current.Causes) == 0 {
+			leaves = append(leaves, current)
+			return
+		}
+		for _, cause := range current.Causes {
+			collect(cause)
+		}
+	}
+	collect(root)
+	slices.SortFunc(leaves, func(left, right *jsonschema.ValidationError) int {
+		if byLocation := strings.Compare(left.InstanceLocation, right.InstanceLocation); byLocation != 0 {
+			return byLocation
+		}
+		return strings.Compare(left.KeywordLocation, right.KeywordLocation)
+	})
+	return leaves[0]
+}
+
+func safeValidationMessage(validationErr *jsonschema.ValidationError) string {
+	keyword := validationErr.KeywordLocation
+	if index := strings.LastIndexByte(keyword, '/'); index >= 0 {
+		keyword = keyword[index+1:]
+	}
+	switch keyword {
+	case "type", "required", "additionalProperties", "dependentRequired", "dependencies":
+		return validationErr.Message
+	case "enum":
+		return "value is not in the allowed set"
+	case "const":
+		return "value does not match the required constant"
+	case "format":
+		return "value does not match the required format"
+	case "pattern":
+		return validationErr.Message
+	case "minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties":
+		return schemaConstraintWithoutInstanceValue(validationErr.Message)
+	case "maximum", "exclusiveMaximum", "maxLength", "maxItems", "maxProperties":
+		return schemaConstraintWithoutInstanceValue(validationErr.Message)
+	case "multipleOf":
+		return "value is not an allowed multiple"
+	case "uniqueItems":
+		return "array items must be unique"
+	default:
+		return "value does not satisfy schema rule " + keyword
+	}
+}
+
+func schemaConstraintWithoutInstanceValue(message string) string {
+	for _, separator := range []string{", but got ", ", but found ", " but found "} {
+		if prefix, _, found := strings.Cut(message, separator); found {
+			return prefix
+		}
+	}
+	return message
 }
 
 func terminalValidationLocationsAdmitted(

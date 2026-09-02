@@ -1127,6 +1127,11 @@ func (c *ConfigClient) applyCandidate(ctx context.Context, candidate etcdProvide
 		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
 		return err
 	}
+	diagnostics, err := generation.DecisionDiagnostics(ack.Decisions)
+	if err != nil {
+		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		metrics.RecordConfigApplyAttemptFailure("etcd", "provider")
 		return err
@@ -1149,6 +1154,9 @@ func (c *ConfigClient) applyCandidate(ctx context.Context, candidate etcdProvide
 		ack.Decisions,
 		len(nextQuarantine),
 	)
+	for _, diagnostic := range diagnostics {
+		logger.Error(diagnostic)
+	}
 	return nil
 }
 

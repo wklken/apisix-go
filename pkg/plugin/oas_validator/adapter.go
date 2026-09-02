@@ -39,6 +39,11 @@ func compileSpec(
 	client *http.Client,
 	headers map[string]string,
 ) (*compiledSpec, error) {
+	var err error
+	raw, err = normalizeOpenAPI31PathItems(raw)
+	if err != nil {
+		return nil, err
+	}
 	loader := openapi3.NewLoader()
 	loader.Context = ctx
 	loader.IsExternalRefsAllowed = true
@@ -47,7 +52,11 @@ func compileSpec(
 		raw,
 		origin,
 		func(ctx context.Context, refURL *url.URL) ([]byte, error) {
-			return fetchDocument(ctx, client, refURL, headers, origin)
+			document, err := fetchDocument(ctx, client, refURL, headers, origin)
+			if err != nil {
+				return nil, err
+			}
+			return normalizeOpenAPI31PathItems(document)
 		},
 	)
 	if err != nil {
@@ -76,6 +85,64 @@ func compileSpec(
 		return nil, err
 	}
 	return &compiledSpec{document: doc, router: router}, nil
+}
+
+// normalizeOpenAPI31PathItems inlines local components.pathItems references.
+// kin-openapi validates the OpenAPI 3.1 JSON Schema keywords used by APISIX,
+// but its Components type does not yet expose the 3.1 pathItems field.
+func normalizeOpenAPI31PathItems(raw []byte) ([]byte, error) {
+	if !bytes.Contains(raw, []byte("pathItems")) {
+		return raw, nil
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		return nil, err
+	}
+	components, ok := document["components"].(map[string]any)
+	if !ok {
+		return raw, nil
+	}
+	pathItems, ok := components["pathItems"].(map[string]any)
+	if !ok {
+		return raw, nil
+	}
+	paths, ok := document["paths"].(map[string]any)
+	if !ok {
+		return raw, nil
+	}
+	for path, value := range paths {
+		pathItem, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		ref, _ := pathItem["$ref"].(string)
+		const prefix = "#/components/pathItems/"
+		if !strings.HasPrefix(ref, prefix) {
+			continue
+		}
+		name := strings.TrimPrefix(ref, prefix)
+		template, ok := pathItems[name].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("openapi path item reference %q is unresolved", ref)
+		}
+		resolved := make(map[string]any, len(template)+len(pathItem)-1)
+		maps.Copy(resolved, template)
+		for key, sibling := range pathItem {
+			if key != "$ref" {
+				resolved[key] = sibling
+			}
+		}
+		paths[path] = resolved
+	}
+	delete(components, "pathItems")
+	normalized, err := json.Marshal(document)
+	if err != nil {
+		return nil, err
+	}
+	if len(normalized) > maxOASTotalBytes {
+		return nil, fmt.Errorf("openapi document exceeds %d bytes", maxOASTotalBytes)
+	}
+	return normalized, nil
 }
 
 // refOrigin returns a usable document path for relative $ref resolution.

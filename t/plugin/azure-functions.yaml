@@ -14,7 +14,7 @@ cases:
         upstream: &function_ok
           expect:
             path:
-              equals: /httptrigger
+              equals: /httptrigger?
           respond:
             status: 200
             body: done
@@ -34,7 +34,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route azure-functions-missing-uri fail:.*azure-functions'
+            matches: "validate plugin azure-functions config: /: missing properties: 'function_uri'"
 
   - name: invoke-and-http2-response
     frontend_tls:
@@ -53,11 +53,11 @@ cases:
           - &httptrigger_request
             method: GET
             path:
-              equals: /httptrigger
+              equals: /httptrigger?
           - *httptrigger_request
           - method: HEAD
             path:
-              equals: /httptrigger
+              equals: /httptrigger?
         respond:
           - &function_response
             status: 200
@@ -127,7 +127,7 @@ cases:
     upstream:
       expect:
         path:
-          equals: /azure-demo
+          equals: /azure-demo?
         headers:
           X-Functions-Key:
             equals: test_key
@@ -206,16 +206,16 @@ cases:
         expect:
           - method: GET
             path:
-              equals: /api/httptrigger
+              equals: /api/httptrigger?
           - method: GET
             path:
-              equals: /api/http/trigger
+              equals: /api/http/trigger?
           - method: GET
             path:
-              equals: /api/http/trigger
+              equals: /api/http/trigger?
           - method: GET
             path:
-              equals: /api
+              equals: /api?
         respond:
           - status: 200
             body: "invocation /api/httptrigger successful\n"

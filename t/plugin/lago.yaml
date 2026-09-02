@@ -43,7 +43,7 @@ cases:
         output: &schema_rejected
           status: 404
           logs:
-            matches: 'build route lago-schema-.*fail:.*lago'
+            matches: 'validate plugin lago config:'
       - name: endpoint-addrs-must-not-be-empty
         runtime: *lago_runtime
         config:
@@ -183,6 +183,16 @@ cases:
       - name: audit
         kind: http
         expect:
+          - method: POST
+            path:
+              equals: /api/v1/events/batch
+            headers:
+              Authorization:
+                equals: Bearer token
+              Content-Type:
+                matches: '^application/json'
+            body:
+              matches: '"transaction_id":""[^}]*"external_subscription_id":""[^}]*"code":"test"'
           - &normal_event
             method: POST
             path:

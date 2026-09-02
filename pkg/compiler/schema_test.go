@@ -127,7 +127,8 @@ func TestRawSchemaAdmissionRejectsInvalidPluginMetadataAndConsumerConfigs(t *tes
 			}
 			if test.secret != "" &&
 				(strings.Contains(issues[0].Err.Error(), test.secret) ||
-					strings.Contains(issues[0].Code, test.secret)) {
+					strings.Contains(issues[0].Code, test.secret) ||
+					strings.Contains(issues[0].Diagnostic, test.secret)) {
 				t.Fatalf("schema issue leaked input %q: %#v", test.secret, issues[0])
 			}
 			if got := string(input.resources[test.resource.Key].raw); got != beforeRaw {
@@ -149,6 +150,47 @@ func TestRawSchemaAdmissionRejectsInvalidPluginMetadataAndConsumerConfigs(t *tes
 				generation.DispositionFailClosed, test.wantCode,
 			)
 		})
+	}
+}
+
+func TestRawSchemaAdmissionCarriesSafeFieldDiagnostic(t *testing.T) {
+	const forbidden = "do-not-log-this-value"
+	resource := resourceValue(
+		"routes",
+		"private-route-id",
+		`{"id":"private-route-id","plugins":{"traffic-label":{"rules":[{"match":[["uri","==","/hello"]],"actions":[{"set_headers":{"X-Secret":"`+forbidden+`"},"weight":0.2}]}]}}}`,
+	)
+	compiler := newTestCompiler(t)
+	result, err := validateContext(context.Background(), normalizedSchemaInput(t, resource), compiler.schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := result.issuesForDomain(generation.DomainHTTP)
+	if len(issues) != 1 {
+		t.Fatalf("schema issues = %#v, want one", issues)
+	}
+	diagnostic := issues[0].Diagnostic
+	for _, want := range []string{"traffic-label", "weight", "integer"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("diagnostic = %q, want %q", diagnostic, want)
+		}
+	}
+	for _, forbiddenText := range []string{forbidden, "private-route-id"} {
+		if strings.Contains(diagnostic, forbiddenText) {
+			t.Fatalf("diagnostic leaked %q: %q", forbiddenText, diagnostic)
+		}
+	}
+
+	desired := mustGenerationSnapshot(t, 44, []generation.Resource{resource}, nil)
+	set, err := compiler.PreparePublication(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := set.Domains[generation.DomainHTTP].Decisions
+	if len(decisions) != 1 || decisions[0].Diagnostic != diagnostic {
+		t.Fatalf("publication decisions = %#v, want safe schema diagnostic %q", decisions, diagnostic)
 	}
 }
 
@@ -218,6 +260,43 @@ func TestRawConsumerSchemaAdmitsOnlyDeclaredMaterializableEnvelopes(t *testing.T
 	}
 }
 
+func TestRawConsumerSemanticValidationQuarantinesInvalidJWESecrets(t *testing.T) {
+	tests := map[string]struct {
+		config     string
+		diagnostic string
+	}{
+		"raw length": {
+			config:     `{"key":"user-key","secret":"123456789012345678901234567890123"}`,
+			diagnostic: "the secret length should be 32 chars",
+		},
+		"base64 decoded length": {
+			config:     `{"key":"user-key","secret":"MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIz","is_base64_encoded":true}`,
+			diagnostic: "the secret length after base64 decode should be 32 chars",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			compiler := newTestCompiler(t)
+			input := normalizedSchemaInput(t, resourceValue(
+				"consumers", "alice",
+				`{"username":"alice","plugins":{"jwe-decrypt":`+test.config+`}}`,
+			))
+			result, err := validateContext(context.Background(), input, compiler.schemas)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issues := result.issuesForDomain(generation.DomainHTTP)
+			if len(issues) != 1 || issues[0].Code != consumerSchemaInvalidCode {
+				t.Fatalf("schema issues = %#v, want one %s", issues, consumerSchemaInvalidCode)
+			}
+			if issues[0].Diagnostic != test.diagnostic {
+				t.Fatalf("diagnostic = %q, want %q", issues[0].Diagnostic, test.diagnostic)
+			}
+		})
+	}
+}
+
 func TestSchemaAcceptsDeclaredEnvelopeForEverySource(t *testing.T) {
 	for _, test := range []struct {
 		factory string
@@ -241,13 +320,14 @@ func TestSchemaAcceptsDeclaredEnvelopeForEverySource(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !schemaAccepts(
+			accepted, _ := schemaAdmission(
 				compiled,
 				catalog,
 				test.factory,
 				test.source,
 				map[string]any{test.field: "$ENV://TOKEN"},
-			) {
+			)
+			if !accepted {
 				t.Fatalf("declared %s envelope was rejected", test.source)
 			}
 		})
@@ -291,6 +371,19 @@ func TestRawSchemaAdmissionPreservesUnknownPluginCode(t *testing.T) {
 		resourceValue("routes", "r1", `{"id":"r1","plugins":{"unknown-plugin":{"secret":"opaque"}}}`),
 		generation.DispositionFailClosed,
 		"plugin-unsupported",
+	)
+}
+
+func TestRawSchemaAdmissionSkipsDisabledPluginConfig(t *testing.T) {
+	assertSchemaDecision(
+		t,
+		resourceValue(
+			"routes",
+			"disabled-authz-casbin",
+			`{"id":"disabled-authz-casbin","uri":"/hello","plugins":{"authz-casbin":{"_meta":{"disable":true}}}}`,
+		),
+		generation.DispositionPublished,
+		"validated",
 	)
 }
 

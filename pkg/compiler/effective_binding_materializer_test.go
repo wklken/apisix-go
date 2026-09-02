@@ -104,6 +104,51 @@ func TestEffectiveBindingMaterializerAppliesAPISIXPluginContext(t *testing.T) {
 	}
 }
 
+func TestEffectiveBindingMaterializerAdmitsDeclaredSecretEnvelopeOnly(t *testing.T) {
+	instance, err := plugin.NewFactoryInstance("authz-keycloak", base.Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.Plugin().Init(); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := capability.NewSecretDeclarationCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate := defaultEffectiveBindingOps().validateConfig
+	for _, test := range []struct {
+		name   string
+		secret string
+		want   bool
+	}{
+		{name: "declared encrypted envelope", secret: "$encrypted://" + strings.Repeat("x", 128), want: true},
+		{name: "oversized plaintext", secret: strings.Repeat("x", 128), want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{
+				"client_id":      "course_management",
+				"client_secret":  test.secret,
+				"token_endpoint": "https://keycloak.example/token",
+			}
+			validationErr := validate(instance.Plugin(), config)
+			if validationErr == nil {
+				t.Fatal("strict schema validation error = nil")
+			}
+			if got := admitDeclaredSecretEnvelope(
+				instance.Plugin(),
+				"authz-keycloak",
+				capability.SecretPluginConfig,
+				config,
+				catalog,
+				validationErr,
+			); got != test.want {
+				t.Fatalf("admitDeclaredSecretEnvelope() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestEffectiveBindingMaterializerRejectsRawOccurrenceEnumeration(t *testing.T) {
 	prepared, fixture := newEffectiveBindingMaterializerFixture(
 		t,

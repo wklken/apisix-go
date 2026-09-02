@@ -73,7 +73,7 @@ var responseCapabilityRegistry = map[string]ResponseCapability{
 	"grpc-web":         {HeaderFilter: true, StreamingBodyFilter: true, ExclusiveProtocol: ProtocolGRPCWeb},
 	"gzip":             {HeaderFilter: true, StreamingBodyFilter: true, CompressionOffer: true},
 	"http-dubbo":       {ExclusiveProtocol: ProtocolHTTPDubbo, SeparateSubsystem: true},
-	"kafka-proxy":      {StreamingResponseOwner: true, ExclusiveProtocol: ProtocolKafka, SeparateSubsystem: true},
+	"kafka-proxy":      {},
 	"mcp-bridge":       {StreamingResponseOwner: true},
 	"mocking":          {},
 	"mqtt-proxy":       {StreamingResponseOwner: true, ExclusiveProtocol: ProtocolMQTT, SeparateSubsystem: true},
@@ -478,7 +478,7 @@ func compatibleBoundedAdapter(binding Binding, capability ResponseCapability) bo
 		return false
 	}
 	switch binding.Descriptor.Factory {
-	case "gzip", "brotli", "cors":
+	case "gzip", "brotli", "cors", "response-rewrite":
 		return true
 	default:
 		return false
@@ -521,9 +521,8 @@ func (p ResponsePlan) Install(pipeline RequestPipeline, terminal http.Handler) h
 			writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
 		})
 	}
-	pipeline = pipeline.WithStreamingResponseExecutor(streaming)
 	if len(p.bufferedBindings) == 0 && pipeline.resolve == nil {
-		return pipeline.Then(terminal)
+		return pipeline.WithStreamingResponseExecutor(streaming).Then(terminal)
 	}
 	executor, err := NewBufferedResponseExecutor(
 		p.staticBindings,
@@ -535,6 +534,8 @@ func (p ResponsePlan) Install(pipeline RequestPipeline, terminal http.Handler) h
 			writeStableResponseError(w, http.StatusInternalServerError, "Internal Server Error")
 		})
 	}
+	streaming = streaming.withBufferedDynamicFallback()
+	pipeline = pipeline.WithStreamingResponseExecutor(streaming)
 	return pipeline.WithBufferedResponseExecutor(executor.WithStreamingResponseExecutor(streaming)).Then(terminal)
 }
 

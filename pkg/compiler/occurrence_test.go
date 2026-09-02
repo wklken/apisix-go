@@ -104,3 +104,33 @@ func TestFinalFactoryOccurrencesIgnorePluginMetadataTombstones(t *testing.T) {
 		t.Fatalf("plugin metadata tombstone occurrences = %#v, want none", got)
 	}
 }
+
+func TestFactoryOccurrencesIgnoreDisabledPluginConfigs(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 34, []generation.Resource{
+		resourceValue(
+			"routes",
+			"disabled-route",
+			`{"id":"disabled-route","plugins":{"key-auth":{"_meta":{"disable":true},"key":"$secret://vault/team/key"}}}`,
+		),
+		resourceValue(
+			"consumers",
+			"disabled-consumer",
+			`{"username":"disabled-consumer","plugins":{"basic-auth":{"_meta":{"disable":true},"username":"user","password":"$secret://vault/team/password"}}}`,
+		),
+	}, nil)
+	compiler := newTestCompiler(t)
+
+	got, err := factoryOccurrencesFromCandidates(
+		context.Background(),
+		map[generation.Domain]generation.PublicationCandidate{
+			generation.DomainHTTP: {Snapshot: snapshot},
+		},
+		compiler.schemas,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("disabled plugin occurrences = %#v, want none", got)
+	}
+}

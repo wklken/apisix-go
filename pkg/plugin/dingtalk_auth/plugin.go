@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"fmt"
 	"net/http"
@@ -32,8 +31,6 @@ type Plugin struct {
 	tokenMu    sync.Mutex
 	tokenCache map[tokenCacheKey]tokenCacheEntry
 
-	oauthStateReplay *base.OAuthStateReplayCache
-
 	appSecret       secret.Value
 	appSecretSet    bool
 	appSecretDigest [sha256.Size]byte
@@ -53,7 +50,6 @@ const (
 	defaultUserInfoURL    = "https://oapi.dingtalk.com/topapi/v2/user/getuserinfo"
 	defaultAccessTokenURL = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
 	sessionCookieName     = "dingtalk_session"
-	oauthStateCookieName  = "dingtalk_oauth_state"
 	tokenCacheTTL         = 7000 * time.Second
 )
 
@@ -219,9 +215,6 @@ func (p *Plugin) PostInit() error {
 	if p.tokenCache == nil {
 		p.tokenCache = make(map[tokenCacheKey]tokenCacheEntry)
 	}
-	if p.oauthStateReplay == nil {
-		p.oauthStateReplay = &base.OAuthStateReplayCache{}
-	}
 	return nil
 }
 
@@ -341,16 +334,9 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		code := base.CodeFromRequest(r, p.config.CodeHeader, p.config.CodeQuery)
-		if r.Header.Get(p.config.CodeHeader) == "" {
-			if code == "" {
-				p.redirectToProvider(w, r)
-				return
-			}
-			if !p.verifyAndConsumeOAuthState(r) {
-				http.Error(w, util.BuildMessageResponse("Invalid OAuth state"), http.StatusUnauthorized)
-				return
-			}
-			p.deleteOAuthStateCookie(w)
+		if code == "" {
+			p.redirectToProvider(w, r)
+			return
 		}
 
 		accessToken, err := p.accessToken(r)
@@ -387,56 +373,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func (p *Plugin) redirectToProvider(w http.ResponseWriter, r *http.Request) {
-	state, err := base.NewOAuthState()
-	if err != nil {
-		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
-		return
-	}
-	now := time.Now()
-	var sealed string
-	err = p.useSessionSecretsLocked(func(current string, _ []string) error {
-		var sealErr error
-		sealed, sealErr = base.SealOAuthSession(
-			[]byte(state), current, p.oauthStateFingerprint(), now, now.Add(base.OAuthStateLifetime),
-		)
-		return sealErr
-	})
-	if err != nil {
-		http.Error(w, util.BuildMessageResponse("Failed to create OAuth state"), http.StatusInternalServerError)
-		return
-	}
-	redirectURI, err := oauthRedirectWithState(p.config.RedirectURI, state)
-	if err != nil {
-		http.Error(w, util.BuildMessageResponse("Invalid OAuth redirect URI"), http.StatusInternalServerError)
-		return
-	}
-	http.SetCookie(w, p.oauthStateCookie(sealed))
-	http.Redirect(w, r, redirectURI, http.StatusFound)
+	http.Redirect(w, r, p.config.RedirectURI, http.StatusFound)
 }
 
-func (p *Plugin) verifyAndConsumeOAuthState(r *http.Request) bool {
-	cookie, err := r.Cookie(oauthStateCookieName)
-	if err != nil || cookie.Value == "" {
-		return false
-	}
-	now := time.Now()
-	var state []byte
-	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
-		var openErr error
-		state, openErr = base.OpenOAuthSession(
-			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), now,
-		)
-		return openErr
-	})
-	stateValues, ok := r.URL.Query()["state"]
-	if err != nil || !ok || len(stateValues) != 1 || stateValues[0] == "" ||
-		subtle.ConstantTimeCompare(state, []byte(stateValues[0])) != 1 {
-		return false
-	}
-	return p.oauthStateReplay != nil && p.oauthStateReplay.Consume(cookie.Value, now)
-}
-
-func (p *Plugin) oauthStateFingerprint() string {
+func (p *Plugin) sessionFingerprint() string {
 	return base.Sha256Hex(strings.Join([]string{
 		name,
 		p.config.AppKey,
@@ -447,35 +387,6 @@ func (p *Plugin) oauthStateFingerprint() string {
 		p.config.CodeHeader,
 		p.config.CodeQuery,
 	}, "\x00"))
-}
-
-func (p *Plugin) oauthStateCookie(value string) *http.Cookie {
-	return &http.Cookie{
-		Name:     oauthStateCookieName,
-		Value:    value,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(base.OAuthStateLifetime / time.Second),
-	}
-}
-
-func (p *Plugin) deleteOAuthStateCookie(w http.ResponseWriter) {
-	cookie := p.oauthStateCookie("deleted")
-	cookie.MaxAge = -1
-	cookie.Expires = time.Unix(1, 0).UTC()
-	http.SetCookie(w, cookie)
-}
-
-func oauthRedirectWithState(rawURI string, state string) (string, error) {
-	redirectURI, err := url.Parse(rawURI)
-	if err != nil {
-		return "", err
-	}
-	query := redirectURI.Query()
-	query.Set("state", state)
-	redirectURI.RawQuery = query.Encode()
-	return redirectURI.String(), nil
 }
 
 func (p *Plugin) accessToken(r *http.Request) (string, error) {
@@ -597,7 +508,7 @@ func (p *Plugin) userInfoFromSession(r *http.Request) (map[string]any, bool) {
 	err = p.useSessionSecretsLocked(func(current string, fallbacks []string) error {
 		var openErr error
 		payload, openErr = base.OpenOAuthSession(
-			cookie.Value, current, fallbacks, p.oauthStateFingerprint(), time.Now(),
+			cookie.Value, current, fallbacks, p.sessionFingerprint(), time.Now(),
 		)
 		return openErr
 	})
@@ -632,7 +543,7 @@ func (p *Plugin) sessionCookie(userinfo map[string]any) (*http.Cookie, error) {
 	if err := p.useSessionSecretsLocked(func(current string, _ []string) error {
 		var sealErr error
 		value, sealErr = base.SealOAuthSession(
-			payload, current, p.oauthStateFingerprint(), now, expiresAt,
+			payload, current, p.sessionFingerprint(), now, expiresAt,
 		)
 		return sealErr
 	}); err != nil {
@@ -720,7 +631,6 @@ func (p *Plugin) Stop() {
 	clear(p.tokenCache)
 	p.tokenCache = nil
 	p.tokenMu.Unlock()
-	p.oauthStateReplay = nil
 	p.appSecret = secret.Value{}
 	p.appSecretSet = false
 	p.appSecretDigest = [sha256.Size]byte{}

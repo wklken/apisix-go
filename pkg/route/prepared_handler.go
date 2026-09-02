@@ -657,7 +657,8 @@ func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
 			status = http.StatusBadGateway
 			directorFailed = true
 		} else if !errors.Is(err, context.Canceled) {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				pxy.ReportTCPFailureOutcome(r, true)
 			} else {
 				pxy.ReportTCPFailureOutcome(r, false)
@@ -666,8 +667,9 @@ func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
 		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
 
 		if !overloaded {
-			if e, ok := err.(net.Error); ok {
-				if e.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) {
+				if netErr.Timeout() {
 					status = http.StatusGatewayTimeout
 				} else {
 					status = http.StatusBadGateway

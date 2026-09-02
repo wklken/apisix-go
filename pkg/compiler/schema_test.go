@@ -260,6 +260,43 @@ func TestRawConsumerSchemaAdmitsOnlyDeclaredMaterializableEnvelopes(t *testing.T
 	}
 }
 
+func TestRawConsumerSemanticValidationQuarantinesInvalidJWESecrets(t *testing.T) {
+	tests := map[string]struct {
+		config     string
+		diagnostic string
+	}{
+		"raw length": {
+			config:     `{"key":"user-key","secret":"123456789012345678901234567890123"}`,
+			diagnostic: "the secret length should be 32 chars",
+		},
+		"base64 decoded length": {
+			config:     `{"key":"user-key","secret":"MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIz","is_base64_encoded":true}`,
+			diagnostic: "the secret length after base64 decode should be 32 chars",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			compiler := newTestCompiler(t)
+			input := normalizedSchemaInput(t, resourceValue(
+				"consumers", "alice",
+				`{"username":"alice","plugins":{"jwe-decrypt":`+test.config+`}}`,
+			))
+			result, err := validateContext(context.Background(), input, compiler.schemas)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issues := result.issuesForDomain(generation.DomainHTTP)
+			if len(issues) != 1 || issues[0].Code != consumerSchemaInvalidCode {
+				t.Fatalf("schema issues = %#v, want one %s", issues, consumerSchemaInvalidCode)
+			}
+			if issues[0].Diagnostic != test.diagnostic {
+				t.Fatalf("diagnostic = %q, want %q", issues[0].Diagnostic, test.diagnostic)
+			}
+		})
+	}
+}
+
 func TestSchemaAcceptsDeclaredEnvelopeForEverySource(t *testing.T) {
 	for _, test := range []struct {
 		factory string
@@ -334,6 +371,19 @@ func TestRawSchemaAdmissionPreservesUnknownPluginCode(t *testing.T) {
 		resourceValue("routes", "r1", `{"id":"r1","plugins":{"unknown-plugin":{"secret":"opaque"}}}`),
 		generation.DispositionFailClosed,
 		"plugin-unsupported",
+	)
+}
+
+func TestRawSchemaAdmissionSkipsDisabledPluginConfig(t *testing.T) {
+	assertSchemaDecision(
+		t,
+		resourceValue(
+			"routes",
+			"disabled-authz-casbin",
+			`{"id":"disabled-authz-casbin","uri":"/hello","plugins":{"authz-casbin":{"_meta":{"disable":true}}}}`,
+		),
+		generation.DispositionPublished,
+		"validated",
 	)
 }
 

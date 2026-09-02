@@ -113,43 +113,32 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequest(r)
 	}
 
-	consumer, ok := p.consumerByUsername(user)
-	if !ok {
+	var consumer resource.Consumer
+	credentialMessage := `{"message":"Invalid user authorization"}`
+	found, credentialErr := base.UseConsumerCredential(
+		r.Context(), p.ConsumerLookup(), name, user,
+		func(candidate resource.Consumer, config resource.PluginConfig) error {
+			var ba basicAuth
+			if err := util.Parse(config, &ba); err != nil {
+				credentialMessage = `{"message":"Invalid authorization config in consumer settings"}`
+				return errInvalidBasicValue
+			}
+			if subtle.ConstantTimeCompare([]byte(pass), []byte(ba.Password)) != 1 {
+				return errInvalidBasicValue
+			}
+			consumer = candidate
+			return nil
+		},
+	)
+	if credentialErr != nil || !found {
 		ctx.RecordAuthProbeDiagnostic(r, "failed to find user: invalid user")
 		if result, ok := p.anonymousConsumerResult(w, r); ok {
 			return result
 		}
-		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
+		p.writeAuthError(w, credentialMessage)
 		return base.StopRequest(r)
 	}
 	logger.Info("find consumer " + consumer.Username)
-
-	consumerPluginConfig, exists := consumer.Plugins["basic-auth"]
-	if !exists {
-		if result, ok := p.anonymousConsumerResult(w, r); ok {
-			return result
-		}
-		p.writeAuthError(w, `{"message":"Missing authorization config in consumer settings"}`)
-		return base.StopRequest(r)
-	}
-
-	var ba basicAuth
-	err = util.Parse(consumerPluginConfig, &ba)
-	if err != nil {
-		if result, ok := p.anonymousConsumerResult(w, r); ok {
-			return result
-		}
-		p.writeAuthError(w, `{"message":"Invalid authorization config in consumer settings"}`)
-		return base.StopRequest(r)
-	}
-
-	if subtle.ConstantTimeCompare([]byte(pass), []byte(ba.Password)) != 1 {
-		if result, ok := p.anonymousConsumerResult(w, r); ok {
-			return result
-		}
-		p.writeAuthError(w, `{"message":"Invalid user authorization"}`)
-		return base.StopRequest(r)
-	}
 
 	r = ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))
 	return base.ContinueRequest(r)
@@ -171,14 +160,6 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 	}
 
 	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))), true
-}
-
-func (p *Plugin) consumerByUsername(username string) (resource.Consumer, bool) {
-	lookup := p.ConsumerLookup()
-	if lookup == nil {
-		return resource.Consumer{}, false
-	}
-	return lookup.ConsumerByPluginKey(name, username)
 }
 
 func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {

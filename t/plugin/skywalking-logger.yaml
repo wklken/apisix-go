@@ -75,7 +75,7 @@ cases:
     input: {path: /missing-endpoint}
     output:
       status: 404
-      logs: {matches: 'endpoint_addr.*required|required.*endpoint_addr'}
+      logs: {matches: "missing properties: 'endpoint_addr'"}
 
   - name: real-delivery-and-hostname-instance
     config:
@@ -347,13 +347,12 @@ cases:
                     '@timestamp': {matches: '^\d{4}-\d{2}-\d{2}T'}
                     client_ip: {equals: 127.0.0.1}
                     route_id: {equals: skywalking-overflow}
-          - *overflow-entry
-        respond: [{delay: 2s, status: 200}, {delay: 2s, status: 200}]
+        respond: [{delay: 2s, status: 200}]
     steps:
-      - name: third-entry-is-discarded-while-two-deliveries-are-bounded
+      - name: excess-entries-are-discarded-while-one-delivery-is-bounded
         repeat: 3
         input: {path: /overflow, headers: {Host: localhost}}
         output:
           status: 200
           body: {equals: overflow-ok}
-          logs: {matches: 'max pending entries limit exceeded for logger batch processor \[skywalking logger\], pending \[2\], max_pending_entries \[1\]'}
+          logs: {matches: 'max pending entries limit exceeded for logger batch processor \[skywalking logger\], pending \[1\], max_pending_entries \[1\]'}

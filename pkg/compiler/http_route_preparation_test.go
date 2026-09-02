@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -317,5 +318,59 @@ func TestWorkerFactoryKeepsRouteWithRedisLimitCountConsumer(t *testing.T) {
 	}
 	if got := prepared.HTTP().Quarantined(); len(got) != 0 {
 		t.Fatalf("quarantined routes = %#v, want none", got)
+	}
+}
+
+func TestWorkerFactoryRunsReplacementConsumerResponseBinding(t *testing.T) {
+	wolf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/wolf/rbac/access_check" {
+			t.Fatalf("wolf request path = %q", r.URL.Path)
+		}
+		_, _ = w.Write(
+			[]byte(`{"ok":true,"data":{"userInfo":{"nickname":"administrator","username":"admin","id":"100"}}}`),
+		)
+	}))
+	defer wolf.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("upstream body"))
+	}))
+	defer upstream.Close()
+
+	factory := newScopedWorkerTestFactory(t)
+	factory.effective.Config.Apisix.ID = "node-1"
+	factory.effective.Config.Plugins = []string{"wolf-rbac", "echo"}
+	t.Cleanup(func() {
+		if err := factory.Close(context.Background()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	desired := mustGenerationSnapshot(t, 197, []generation.Resource{
+		resourceValue("consumers", "wolf_rbac_unit_test", fmt.Sprintf(`{
+"username":"wolf_rbac_unit_test","plugins":{"wolf-rbac":{"appid":"wolf-rbac-app","server":%q}}}`, wolf.URL)),
+		resourceValue("consumers", "wolf_rbac_with_other_plugins", fmt.Sprintf(`{
+"username":"wolf_rbac_with_other_plugins","plugins":{
+"wolf-rbac":{"appid":"wolf-rbac-app","server":%q},
+"echo":{"body":"consumer merge echo plugins\n"}}}`, wolf.URL)),
+		resourceValue("routes", "wolf-consumer-readiness", fmt.Sprintf(`{
+"id":"wolf-consumer-readiness","uri":"/probe","plugins":{"wolf-rbac":{}},
+"upstream":{"nodes":{%q:1},"type":"roundrobin"}}`, strings.TrimPrefix(upstream.URL, "http://"))),
+	}, nil)
+	prepared, err := factory.PrepareGeneration(
+		context.Background(), ticketForSnapshot(desired, generation.DomainHTTP), desired, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := prepared.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/probe", nil)
+	request.Header.Set("Authorization", "V1#wolf-rbac-app#wolf-rbac-token")
+	response := httptest.NewRecorder()
+	prepared.HTTP().Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "consumer merge echo plugins\n" {
+		t.Fatalf("replacement consumer response = %d/%q", response.Code, response.Body.String())
 	}
 }

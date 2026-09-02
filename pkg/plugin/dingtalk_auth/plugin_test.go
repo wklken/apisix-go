@@ -441,26 +441,6 @@ func TestDingTalkGenerationCachesAndCookiesAreIsolated(t *testing.T) {
 	if user, ok := rotated.userInfoFromSession(requestRotated); !ok || user["userid"] != "generation-n" {
 		t.Fatal("configured fallback did not verify the previous generation cookie")
 	}
-	stateResponse := httptest.NewRecorder()
-	n.redirectToProvider(
-		stateResponse,
-		httptest.NewRequest(http.MethodGet, "http://gateway.test", nil),
-	)
-	stateCookie := findDingTalkStateCookie(stateResponse.Result().Cookies())
-	stateRedirect, err := url.Parse(stateResponse.Header().Get("Location"))
-	if err != nil || stateCookie == nil {
-		t.Fatalf("N OAuth state setup = (%#v, %v)", stateCookie, err)
-	}
-	rotatedCallback := httptest.NewRequest(
-		http.MethodGet,
-		"http://gateway.test/callback?state="+url.QueryEscape(stateRedirect.Query().Get("state")),
-		nil,
-	)
-	rotatedCallback.AddCookie(stateCookie)
-	if !rotated.verifyAndConsumeOAuthState(rotatedCallback) {
-		t.Fatal("configured fallback did not open the previous generation OAuth state")
-	}
-
 	n.Stop()
 	if len(nPlusOne.tokenCache) != 1 {
 		t.Fatal("retiring N cleared N+1 token cache")
@@ -543,10 +523,10 @@ func TestDingTalkStopDrainsActiveRefreshAndPreventsResurrection(t *testing.T) {
 		t.Fatal("Stop did not finish after active refresh drained")
 	}
 	p.Stop()
-	if p.client != nil || p.tokenCache != nil || p.oauthStateReplay != nil ||
+	if p.client != nil || p.tokenCache != nil ||
 		p.appSecretSet || p.sessionSecretSet ||
 		len(p.sessionSecretFallbacks) != 0 || p.secretsPrepared {
-		t.Fatal("Stop retained DingTalk client, cache, replay, or secret state")
+		t.Fatal("Stop retained DingTalk client, cache, or secret state")
 	}
 	late := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -620,17 +600,15 @@ func TestHandlerRedirectsWhenNoSessionAndNoCode(t *testing.T) {
 	if location.Scheme != "https" || location.Host != "login.dingtalk.com" || location.Path != "/oauth2/auth" {
 		t.Fatalf("Location = %q, want configured OAuth endpoint", location)
 	}
-	if location.Query().Get("state") == "" {
-		t.Fatal("Location does not contain an OAuth state")
+	if got := rr.Header().Get("Location"); got != "https://login.dingtalk.com/oauth2/auth" {
+		t.Fatalf("Location = %q, want configured redirect URI verbatim", got)
 	}
-	stateCookie := findDingTalkStateCookie(rr.Result().Cookies())
-	if stateCookie == nil || stateCookie.Path != "/" || !stateCookie.HttpOnly || stateCookie.Secure ||
-		stateCookie.SameSite != http.SameSiteLaxMode || stateCookie.MaxAge != 300 {
-		t.Fatalf("OAuth state cookie = %#v, want APISIX 3.17 defaults", stateCookie)
+	if cookies := rr.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("redirect cookies = %#v, want none", cookies)
 	}
 }
 
-func TestHandlerAcceptsQueryCodeOnlyWithValidOAuthState(t *testing.T) {
+func TestHandlerAcceptsQueryCodeWithoutLocalOAuthState(t *testing.T) {
 	var tokenRequests int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -654,26 +632,7 @@ func TestHandlerAcceptsQueryCodeOnlyWithValidOAuthState(t *testing.T) {
 		UserInfoURL:    api.URL + "/userinfo",
 	})
 
-	initial := httptest.NewRecorder()
-	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(
-		initial,
-		httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders", nil),
-	)
-	stateCookie := findDingTalkStateCookie(initial.Result().Cookies())
-	if stateCookie == nil {
-		t.Fatal("OAuth state cookie was not set")
-	}
-	stateRedirect, err := url.Parse(initial.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse OAuth redirect: %v", err)
-	}
-
-	callback := httptest.NewRequest(
-		http.MethodGet,
-		"http://gateway.example.com/callback?code=code-a&state="+url.QueryEscape(stateRedirect.Query().Get("state")),
-		nil,
-	)
-	callback.AddCookie(stateCookie)
+	callback := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/callback?code=code-a", nil)
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })).
 		ServeHTTP(rr, callback)
@@ -683,55 +642,6 @@ func TestHandlerAcceptsQueryCodeOnlyWithValidOAuthState(t *testing.T) {
 
 	if rr.Code != http.StatusAccepted || tokenRequests != 1 {
 		t.Fatalf("callback status/token requests = %d/%d, want 202/1", rr.Code, tokenRequests)
-	}
-	if got := findDingTalkStateCookie(
-		rr.Result().Cookies(),
-	); got == nil || got.MaxAge != -1 || got.Path != "/" ||
-		got.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("state deletion cookie = %#v, want matching expired cookie", got)
-	}
-
-	replay := httptest.NewRecorder()
-	replayReq := httptest.NewRequest(
-		http.MethodGet,
-		"http://gateway.example.com/callback?code=code-a&state="+url.QueryEscape(stateRedirect.Query().Get("state")),
-		nil,
-	)
-	replayReq.AddCookie(stateCookie)
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { t.Fatal("replayed OAuth state reached next") })).
-		ServeHTTP(replay, replayReq)
-	if replay.Code != http.StatusUnauthorized || tokenRequests != 1 {
-		t.Fatalf("replay status/token requests = %d/%d, want 401/1", replay.Code, tokenRequests)
-	}
-}
-
-func TestHandlerRejectsMissingOrMismatchedOAuthStateBeforeProviderCall(t *testing.T) {
-	providerCalls := 0
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		providerCalls++
-		_, _ = w.Write([]byte(`{"accessToken":"unexpected"}`))
-	}))
-	t.Cleanup(api.Close)
-	p := newTestPlugin(t, Config{
-		AppKey:         "app-key",
-		AppSecret:      "app-secret",
-		Secret:         "12345678",
-		RedirectURI:    "https://login.dingtalk.com/oauth2/auth",
-		AccessTokenURL: api.URL + "/token",
-		UserInfoURL:    api.URL + "/userinfo",
-	})
-
-	for _, rawQuery := range []string{"code=code-a", "code=code-a&state=wrong"} {
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/callback?"+rawQuery, nil)
-		p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("invalid OAuth state reached next") })).
-			ServeHTTP(rr, req)
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("query %q status = %d, want 401", rawQuery, rr.Code)
-		}
-	}
-	if providerCalls != 0 {
-		t.Fatalf("provider calls = %d, want 0 for invalid OAuth state", providerCalls)
 	}
 }
 
@@ -1067,7 +977,7 @@ func TestDingTalkSessionCookieUsesEncryptedConfigBoundEnvelope(t *testing.T) {
 			now := time.Now()
 			var err error
 			expiredValue, err = base.SealOAuthSession(
-				payload, current, issuer.oauthStateFingerprint(), now.Add(-2*time.Hour), now.Add(-time.Hour),
+				payload, current, issuer.sessionFingerprint(), now.Add(-2*time.Hour), now.Add(-time.Hour),
 			)
 			return err
 		})
@@ -1141,15 +1051,6 @@ func assertDingTalkSessionRejected(t *testing.T, p *Plugin, cookie *http.Cookie)
 func findDingTalkSessionCookie(cookies []*http.Cookie) *http.Cookie {
 	for _, cookie := range cookies {
 		if cookie.Name == "dingtalk_session" {
-			return cookie
-		}
-	}
-	return nil
-}
-
-func findDingTalkStateCookie(cookies []*http.Cookie) *http.Cookie {
-	for _, cookie := range cookies {
-		if cookie.Name == "dingtalk_oauth_state" {
 			return cookie
 		}
 	}

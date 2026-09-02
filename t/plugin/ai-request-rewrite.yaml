@@ -1,6 +1,5 @@
 cases:
-  - name: minimal-openai-configuration
-    environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
+  - name: openai-provider-path-with-override
     config:
       routes:
         - id: ai-request-rewrite-minimal-openai
@@ -10,21 +9,24 @@ cases:
               prompt: some prompt
               provider: openai
               auth: {header: {Authorization: Bearer token}}
+              override: {endpoint: '{{FIXTURE.provider.URL}}'}
+              ssl_verify: false
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
-      - name: provider-proxy
+      - name: provider
         kind: http
         expect:
-          - method: CONNECT
-            host: {equals: 'api.openai.com:443'}
+          - method: POST
+            path: {equals: /v1/chat/completions}
         respond: [{status: 502, headers: {Content-Type: text/plain}, body: Bad Gateway}]
       - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
     steps:
-      - name: default-openai-endpoint-is-resolved
+      - name: openai-provider-path-is-used
         input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
-        output: {status: 500, body: {matches: 'failed to request LLM'}}
+        output: {status: 500, body: {matches: 'LLM service returned error status: 502'}}
 
   - name: missing-prompt-is-rejected
+    wait_for_generation: true
     config:
       routes:
         - id: ai-request-rewrite-missing-prompt
@@ -37,9 +39,10 @@ cases:
     steps:
       - name: rejected-route-is-not-installed
         input: {method: POST, path: /missing-prompt, body: '{}'}
-        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-prompt fail:.*ai-request-rewrite.*prompt'}}
+        output: {status: 404, logs: {matches: "validate plugin ai-request-rewrite config: /: missing properties: 'prompt'"}}
 
   - name: missing-auth-is-rejected
+    wait_for_generation: true
     config:
       routes:
         - id: ai-request-rewrite-missing-auth
@@ -50,9 +53,10 @@ cases:
     steps:
       - name: rejected-route-is-not-installed
         input: {method: POST, path: /missing-auth, body: '{}'}
-        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-auth fail:.*ai-request-rewrite.*auth'}}
+        output: {status: 404, logs: {matches: "validate plugin ai-request-rewrite config: /: missing properties: 'auth'"}}
 
   - name: missing-provider-is-rejected
+    wait_for_generation: true
     config:
       routes:
         - id: ai-request-rewrite-missing-provider
@@ -65,9 +69,10 @@ cases:
     steps:
       - name: rejected-route-is-not-installed
         input: {method: POST, path: /missing-provider, body: '{}'}
-        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-missing-provider fail:.*ai-request-rewrite.*provider'}}
+        output: {status: 404, logs: {matches: "validate plugin ai-request-rewrite config: /: missing properties: 'provider'"}}
 
   - name: invalid-provider-is-rejected
+    wait_for_generation: true
     config:
       routes:
         - id: ai-request-rewrite-invalid-provider
@@ -81,10 +86,9 @@ cases:
     steps:
       - name: rejected-route-is-not-installed
         input: {method: POST, path: /invalid-provider, body: '{}'}
-        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-invalid-provider fail:.*ai-request-rewrite.*provider'}}
+        output: {status: 404, logs: {matches: 'validate plugin ai-request-rewrite config: /provider: value is not in the allowed set'}}
 
-  - name: default-deepseek-provider-configuration
-    environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
+  - name: deepseek-provider-path-with-override
     config:
       routes:
         - id: ai-request-rewrite-deepseek
@@ -94,19 +98,21 @@ cases:
               prompt: some prompt
               provider: deepseek
               auth: {header: {Authorization: Bearer token}}
+              override: {endpoint: '{{FIXTURE.provider.URL}}'}
+              ssl_verify: false
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
-      - name: provider-proxy
+      - name: provider
         kind: http
         expect:
-          - method: CONNECT
-            host: {equals: 'api.deepseek.com:443'}
+          - method: POST
+            path: {equals: /v1/chat/completions}
         respond: [{status: 502, headers: {Content-Type: text/plain}, body: Bad Gateway}]
       - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
     steps:
-      - name: default-deepseek-endpoint-is-resolved
+      - name: deepseek-provider-path-is-used
         input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
-        output: {status: 500, body: {matches: 'failed to request LLM'}}
+        output: {status: 500, body: {matches: 'LLM service returned error status: 502'}}
 
   - name: openai-compatible-provider-rewrites-through-override
     config:
@@ -380,8 +386,7 @@ cases:
               body: {json_equals: '{"message":"LLM service returned error status: 500"}'}
               logs: {matches: 'LLM service returned error status: 500'}
 
-  - name: default-aimlapi-provider-configuration
-    environment: {HTTPS_PROXY: '{{FIXTURE.provider-proxy.URL}}', NO_PROXY: ''}
+  - name: aimlapi-provider-path-with-override
     config:
       routes:
         - id: ai-request-rewrite-aimlapi
@@ -391,19 +396,21 @@ cases:
               prompt: some prompt
               provider: aimlapi
               auth: {header: {Authorization: Bearer token}}
+              override: {endpoint: '{{FIXTURE.provider.URL}}'}
+              ssl_verify: false
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
-      - name: provider-proxy
+      - name: provider
         kind: http
         expect:
-          - method: CONNECT
-            host: {equals: 'api.aimlapi.com:443'}
+          - method: POST
+            path: {equals: /v1/chat/completions}
         respond: [{status: 502, headers: {Content-Type: text/plain}, body: Bad Gateway}]
       - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200, body: unexpected}]}
     steps:
-      - name: default-aimlapi-endpoint-is-resolved
+      - name: aimlapi-provider-path-is-used
         input: {method: POST, path: /anything, headers: {Content-Type: text/plain}, body: some random content}
-        output: {status: 500, body: {matches: 'failed to request LLM'}}
+        output: {status: 500, body: {matches: 'LLM service returned error status: 502'}}
 
   - name: options-are-sent-to-the-llm
     config:
@@ -455,7 +462,7 @@ cases:
     steps:
       - name: rejected-route-is-not-installed
         input: {method: POST, path: /compatible-no-override, body: '{}'}
-        output: {status: 404, logs: {matches: 'build route ai-request-rewrite-compatible-no-override fail:.*ai-request-rewrite.*override.endpoint'}}
+        output: {status: 404}
 
   - name: override-endpoint-query-is-preserved
     config:

@@ -24,6 +24,7 @@ cases:
           body:
             equals: invoked
       - name: missing-access-key
+        wait_for_generation: true
         config:
           routes:
             - id: aws-lambda-missing-access-key
@@ -37,9 +38,9 @@ cases:
         input:
           path: /aws
         output:
-          status: 503
+          status: 404
           logs:
-            matches: 'worker generation preparation failed'
+            matches: "validate plugin aws-lambda config:.*missing properties: 'accesskey'"
 
   - name: invoke-endpoint
     config:
@@ -56,7 +57,7 @@ cases:
     upstream:
       expect:
         path:
-          equals: /httptrigger
+          equals: /httptrigger?
       respond:
         status: 200
         headers:

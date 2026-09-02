@@ -160,6 +160,26 @@ func TestDefinitionsCoverEveryFactoryInStableOrder(t *testing.T) {
 	}
 }
 
+func TestSkywalkingRunsBeforeAuthentication(t *testing.T) {
+	definition, ok := DefinitionForFactory("skywalking")
+	if !ok {
+		t.Fatal("skywalking definition is missing")
+	}
+	if !definition.PreAuthentication {
+		t.Fatal("skywalking must run before authentication so rejected requests are traced")
+	}
+}
+
+func TestRealIPRunsBeforeAuthentication(t *testing.T) {
+	definition, ok := DefinitionForFactory("real-ip")
+	if !ok {
+		t.Fatal("real-ip definition is missing")
+	}
+	if !definition.PreAuthentication {
+		t.Fatal("real-ip must run before authentication so authentication observes the effective client address")
+	}
+}
+
 func TestRegistryMatchesPluginOwnedRuntimeFacts(t *testing.T) {
 	for key, registered := range pluginRegistry {
 		if registered.create == nil {

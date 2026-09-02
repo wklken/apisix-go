@@ -12,7 +12,7 @@ cases:
                   denylist: [my-bot1, my-bot2]
         output: &schema_error
           logs:
-            matches: 'build route ua-schema-.*fail:.*ua-restriction'
+            matches: 'validate plugin ua-restriction config:'
       - name: bypass-missing-not-boolean
         config:
           routes:
@@ -245,7 +245,7 @@ cases:
         output:
           status: 403
           body:
-            equals: '{"message":"Do you want to do something bad?"}'
+            equals: "{\"message\":\"Do you want to do something bad?\"}\n"
 
   - name: remove-plugin
     config:

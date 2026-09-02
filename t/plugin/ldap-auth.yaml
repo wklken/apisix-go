@@ -108,31 +108,31 @@ cases:
         output:
           status: 401
           headers: {WWW-Authenticate: {equals: 'Basic realm="ldap"'}}
-          body: {equals: '{"message":"Missing authorization in request"}'}
+          body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}
       - name: malformed-scheme
         input: {path: /hello, headers: {Authorization: 'Bad_header Zm9vOmZvbwo='}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {matches: 'Invalid authorization header format'}
       - name: invalid-base64
         input: {path: /hello, headers: {Authorization: 'Basic aca_a'}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {matches: 'Failed to decode authentication header'}
       - name: missing-password
         input: {path: /hello, headers: {Authorization: 'Basic Zm9v'}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {matches: 'Split authorization err: invalid decoded data'}
       - name: wrong-password
         input: {path: /hello, headers: {Authorization: 'Basic Zm9vOmZvbwo='}}
         output:
           status: 401
           headers: {WWW-Authenticate: {equals: 'Basic realm="ldap"'}}
-          body: {equals: '{"message":"Invalid user authorization"}'}
+          body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}
           logs: {matches: 'The supplied credential is invalid'}
       - name: valid-credentials
         input: {path: /hello, headers: {Authorization: 'Basic dXNlcjAxOnBhc3N3b3JkMQ=='}}
@@ -190,8 +190,8 @@ cases:
         input: {path: /hello}
         output:
           status: 401
-          body: {equals: '{"message":"Missing authorization in request"}'}
-          logs: {matches: "ldap-auth consumer configuration:.*missing properties: 'user_dn'"}
+          body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}
+          logs: {matches: "validate consumer plugin ldap-auth config: /: missing properties: 'user_dn'"}
       - name: non-object-consumer-config
         config:
           consumers:
@@ -206,8 +206,8 @@ cases:
         input: {path: /hello}
         output:
           status: 401
-          body: {equals: '{"message":"Missing authorization in request"}'}
-          logs: {matches: 'ldap-auth consumer configuration:.*expected object'}
+          body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}
+          logs: {matches: 'validate consumer plugin ldap-auth config: /: expected object'}
 
   - name: schema-surfaces
     variants:
@@ -347,7 +347,7 @@ cases:
             input: {path: /hello, headers: {Authorization: 'Basic dXNlcjAxOnBhc3N3b3JkMQ=='}}
             output:
               status: 401
-              body: {equals: '{"message":"Invalid user authorization"}'}
+              body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}
               logs: {matches: 'ldap-auth failed:.*(x509|certificate)'}
       - name: trusted-certificate-authenticates
         environment:
@@ -531,7 +531,7 @@ cases:
     output:
       status: 401
       headers: {WWW-Authenticate: {equals: 'Basic realm="ldap"'}}
-      body: {equals: '{"message":"Missing authorization in request"}'}
+      body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}
 
   - name: custom-realm
     config:
@@ -550,13 +550,13 @@ cases:
         output:
           status: 401
           headers: {WWW-Authenticate: {equals: 'Basic realm="my-ldap-realm"'}}
-          body: {equals: '{"message":"Missing authorization in request"}'}
+          body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}
       - name: custom-realm-repeats-on-auth-failure
         input: {path: /hello}
         output:
           status: 401
           headers: {WWW-Authenticate: {equals: 'Basic realm="my-ldap-realm"'}}
-          body: {equals: '{"message":"Missing authorization in request"}'}
+          body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}
 
   - name: custom-realm-invalid-credentials
     config:
@@ -582,5 +582,5 @@ cases:
         output:
           status: 401
           headers: {WWW-Authenticate: {equals: 'Basic realm="my-ldap-realm"'}}
-          body: {equals: '{"message":"Invalid user authorization"}'}
+          body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}
           logs: {matches: 'ldap-auth failed:.*The supplied credential is invalid'}

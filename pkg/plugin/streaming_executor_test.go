@@ -1770,6 +1770,31 @@ func TestStreamingExecutorRejectsDynamicConsumerBodyFilter(t *testing.T) {
 	}
 }
 
+func TestStreamingExecutorAllowsDynamicConsumerBodyFilterWithBufferedFallback(t *testing.T) {
+	executor, err := NewStreamingResponseExecutor(nil)
+	if err != nil {
+		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
+	}
+	body := newResponseTestPlugin(
+		"body-transformer",
+		1,
+		responseTestConfig{stage: "none", body: true},
+	)
+	binding := checkedResponseBinding(t, "body-transformer", body, ScopeConsumer, "consumer-body")
+	binding.Provenance.Kind = ResourceConsumer
+
+	replacement, err := executor.withBufferedDynamicFallback().PostResolutionHook(
+		httptest.NewRequest(http.MethodGet, "/", nil),
+		EffectiveBindingSet{merged: []Binding{binding}},
+	)
+	if err != nil {
+		t.Fatalf("PostResolutionHook() error = %v", err)
+	}
+	if dynamic := dynamicStreamingBindings(replacement); len(dynamic) != 0 {
+		t.Fatalf("dynamic streaming bindings = %#v, want buffered fallback ownership", dynamic)
+	}
+}
+
 func TestStreamingExecutorAllowsDynamicConsumerDualModeBodyFilter(t *testing.T) {
 	executor, err := NewStreamingResponseExecutor(nil)
 	if err != nil {

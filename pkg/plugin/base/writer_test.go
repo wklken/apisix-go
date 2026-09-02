@@ -159,6 +159,33 @@ func TestBufferedResponseWriterCommitReplaysToDestination(t *testing.T) {
 	}
 }
 
+func TestBufferedResponseWriterCommitPreservesNilHeaderMarkers(t *testing.T) {
+	w := NewBufferedResponseWriter()
+	w.Header()["Content-Type"] = nil
+	w.Header()["Content-Length"] = nil
+	_, _ = w.Write([]byte("payload"))
+
+	nested := NewBufferedResponseWriter()
+	w.Commit(nested)
+	for _, field := range []string{"Content-Type", "Content-Length"} {
+		values, ok := nested.Header()[field]
+		if !ok || values != nil {
+			t.Fatalf("nested %s = %#v, present %t; want present nil marker", field, values, ok)
+		}
+	}
+
+	rr := httptest.NewRecorder()
+	nested.Commit(rr)
+
+	result := rr.Result()
+	if got := result.Header.Get("Content-Type"); got != "" {
+		t.Fatalf("committed Content-Type = %q, want suppressed", got)
+	}
+	if got := result.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("committed Content-Length = %q, want suppressed", got)
+	}
+}
+
 func TestBufferedResponseWriterCommitReplaysInformationalBeforeFinal(t *testing.T) {
 	w := NewBufferedResponseWriter()
 	w.Header().Set("Link", "</early>; rel=preload")

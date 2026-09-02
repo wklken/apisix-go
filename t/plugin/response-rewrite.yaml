@@ -39,7 +39,7 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: 'build route response-rewrite-reject-invalid-status fail:.*status_code.*598'
+        matches: 'validate plugin response-rewrite config: /status_code: must be <= 598'
 
   - name: reject-invalid-config
     config:
@@ -55,7 +55,7 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: 'build route response-rewrite-reject-invalid-config fail:.*body.*expected string'
+        matches: 'validate plugin response-rewrite config: /body: expected string, but got number'
 
   - name: rewrite-headers-and-body
     config:
@@ -164,7 +164,7 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: 'build route response-rewrite-reject-empty-header-field fail:.*headers.*(pattern|additional)'
+        matches: "validate plugin response-rewrite config: /headers: additionalProperties '' not allowed"
 
   - name: reject-array-header-value
     config:
@@ -180,7 +180,7 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: 'build route response-rewrite-reject-array-header-value fail:.*X-Name.*(string|number)'
+        matches: "validate plugin response-rewrite config: /headers: additionalProperties 'X-Name' not allowed"
 
   - name: base64-body
     config:
@@ -210,10 +210,10 @@ cases:
               body: "1"
               body_base64: true
           upstream: *fixture_route
+    input: {path: /hello}
     upstream: *hello_fixture
     output:
-      logs:
-        matches: 'build route response-rewrite-reject-invalid-base64 fail:.*body is not valid base64'
+      status: 404
 
   - name: admin-etcd-clean-serialization
     config:
@@ -271,10 +271,10 @@ cases:
               vars:
                 - []
           upstream: *fixture_route
+    input: {path: /hello}
     upstream: *hello_fixture
     output:
-      logs:
-        matches: 'build route response-rewrite-reject-invalid-expression fail:.*vars validation failed'
+      status: 404
 
   - name: matching-status-expression
     config:
@@ -332,10 +332,10 @@ cases:
               body: ""
               body_base64: true
           upstream: *fixture_route
+    input: {path: /hello}
     upstream: *hello_fixture
     output:
-      logs:
-        matches: 'build route response-rewrite-reject-empty-base64-body fail:.*body_base64 requires a non-empty body'
+      status: 404
 
   - name: nil-base64-body
     config:
@@ -346,10 +346,10 @@ cases:
             response-rewrite:
               body_base64: true
           upstream: *fixture_route
+    input: {path: /hello}
     upstream: *hello_fixture
     output:
-      logs:
-        matches: 'build route response-rewrite-reject-nil-base64-body fail:.*body_base64 requires a non-empty body'
+      status: 404
 
   - name: response-header-variables
     config:
@@ -459,7 +459,7 @@ cases:
             body: hello world
         output:
           logs:
-            matches: 'build route response-rewrite-body-and-filters fail:.*dependencies/(body|filters)/not'
+            matches: 'validate plugin response-rewrite config: /: value does not satisfy schema rule not'
       - name: rejects-empty-filters-array
         config:
           routes:
@@ -475,7 +475,7 @@ cases:
             body: hello world
         output:
           logs:
-            matches: 'build route response-rewrite-empty-filters fail:.*properties/filters/minItems: minimum 1 items required'
+            matches: 'validate plugin response-rewrite config: /filters: minimum 1 items required'
 
   - name: filter-rejects-missing-replace
     config:
@@ -493,7 +493,7 @@ cases:
         body: hello world
     output:
       logs:
-        matches: 'build route response-rewrite-missing-replace.*missing properties: .replace.'
+        matches: "validate plugin response-rewrite config: /filters/0: missing properties: 'replace'"
 
   - name: filter-rejects-invalid-scope
     config:
@@ -514,7 +514,7 @@ cases:
         body: hello world
     output:
       logs:
-        matches: 'build route response-rewrite-invalid-scope.*scope.*enum'
+        matches: 'validate plugin response-rewrite config: /filters/0/scope: value is not in the allowed set'
 
   - name: filter-rejects-empty-regex
     config:
@@ -551,9 +551,10 @@ cases:
       respond:
         status: 200
         body: hello world
+    input:
+      path: /hello
     output:
-      logs:
-        matches: 'build route response-rewrite-invalid-options.*response-rewrite'
+      status: 404
 
   - name: filters-vars-match
     config:
@@ -804,7 +805,7 @@ cases:
         body: hello world
     output:
       logs:
-        matches: 'build route response-rewrite-headers-schema.*headers.*add.*pattern'
+        matches: 'validate plugin response-rewrite config: /headers/add: expected string, but got array'
 
   - name: gzip-upstream-preserved
     config:

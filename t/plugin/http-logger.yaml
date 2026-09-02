@@ -11,7 +11,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, expect: [{method: POST, path: {equals: /body-request}, body: {equals: request-body}}], respond: [{status: 200, body: response-body}]}
-          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /logs}, body: {json_equals: '{"case":"request","request":{"body":"request-body"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /logs}, body: {json_equals: '{"case":"request","request":{"body":"request-body"},"route_id":"body-request"}'}}], respond: [{status: 200}]}
         steps:
           - {name: request-body-is-logged, input: {method: POST, path: /body-request, body: request-body}, output: {status: 200, body: {equals: response-body}}}
       - name: response-body
@@ -24,7 +24,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, expect: [{method: POST, path: {equals: /body-response}, body: {equals: request-body}}], respond: [{status: 200, body: response-body}]}
-          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /logs}, body: {json_equals: '{"case":"response","response":{"body":"response-body"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /logs}, body: {json_equals: '{"case":"response","response":{"body":"response-body"},"route_id":"body-response"}'}}], respond: [{status: 200}]}
         steps:
           - {name: response-body-is-logged, input: {method: POST, path: /body-response, body: request-body}, output: {status: 200, body: {equals: response-body}}}
       - name: response-expression-hit
@@ -37,7 +37,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-hit","response":{"body":"response-body"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-hit","response":{"body":"response-body"},"route_id":"response-expression-hit"}'}}], respond: [{status: 200}]}
         steps:
           - {name: matching-response-expression, input: {path: '/response-expression-hit?bar=baz'}, output: {status: 200, body: {equals: response-body}}}
       - name: response-expression-miss
@@ -50,7 +50,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-miss"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-miss","route_id":"response-expression-miss"}'}}], respond: [{status: 200}]}
         steps:
           - {name: nonmatching-response-expression, input: {path: '/response-expression-miss?bar=no'}, output: {status: 200, body: {equals: response-body}}}
       - name: both-bodies
@@ -63,7 +63,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"both","request":{"body":"request-body"},"response":{"body":"response-body"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"both","request":{"body":"request-body"},"response":{"body":"response-body"},"route_id":"both-bodies"}'}}], respond: [{status: 200}]}
         steps:
           - {name: both-bodies-logged, input: {method: POST, path: /both-bodies, body: request-body}, output: {status: 200, body: {equals: response-body}}}
       - name: neither-body
@@ -76,7 +76,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: response-body}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"neither"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"neither","route_id":"neither-body"}'}}], respond: [{status: 200}]}
         steps:
           - {name: neither-body-logged, input: {method: POST, path: /neither-body, body: request-body}, output: {status: 200, body: {equals: response-body}}}
       - name: request-expression-hit
@@ -89,7 +89,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-hit","request":{"body":"request-body"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-hit","request":{"body":"request-body"},"route_id":"request-expression-hit"}'}}], respond: [{status: 200}]}
         steps:
           - {name: matching-request-expression, input: {method: POST, path: '/request-expression-hit?bar=baz', body: request-body}, output: {status: 200, body: {equals: ok}}}
       - name: request-expression-miss
@@ -102,7 +102,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-miss"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-miss","route_id":"request-expression-miss"}'}}], respond: [{status: 200}]}
         steps:
           - {name: nonmatching-request-expression, input: {method: POST, path: '/request-expression-miss?bar=no', body: request-body}, output: {status: 200, body: {equals: ok}}}
 
@@ -118,7 +118,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-only","request":{"body":"abcde"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"request-only","request":{"body":"abcde"},"route_id":"truncate-request"}'}}], respond: [{status: 200}]}
         steps:
           - {name: request-truncated, input: {method: POST, path: /truncate-request, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
       - name: response-only
@@ -131,7 +131,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-only","response":{"body":"abcde"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"response-only","response":{"body":"abcde"},"route_id":"truncate-response"}'}}], respond: [{status: 200}]}
         steps:
           - {name: response-truncated, input: {method: POST, path: /truncate-response, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
       - name: both
@@ -144,7 +144,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"both","request":{"body":"abcde"},"response":{"body":"abcde"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"both","request":{"body":"abcde"},"response":{"body":"abcde"},"route_id":"truncate-both"}'}}], respond: [{status: 200}]}
         steps:
           - {name: both-truncated, input: {method: POST, path: /truncate-both, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
       - name: neither
@@ -157,7 +157,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: abcdef}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"neither"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"neither","route_id":"truncate-neither"}'}}], respond: [{status: 200}]}
         steps:
           - {name: neither-captured, input: {method: POST, path: /truncate-neither, body: abcdef}, output: {status: 200, body: {equals: abcdef}}}
 
@@ -238,7 +238,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"empty"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"case":"empty","route_id":"empty-request"}'}}], respond: [{status: 200}]}
         steps:
           - {name: empty-request-does-not-add-body, input: {path: '/empty-request?ab=cd'}, output: {status: 200, body: {equals: ok}}}
 
@@ -263,7 +263,7 @@ cases:
       - name: sink
         kind: http
         expect:
-          - {method: POST, body: {json_equals: '{"request_body":"abcde"}'}}
+          - {method: POST, body: {json_equals: '{"request_body":"abcde","route_id":"metadata-format-route"}'}}
           - {method: POST, body: {matches: '"request".*"body":"abcde".*"request_body":"abcde"|"request_body":"abcde".*"request".*"body":"abcde"'}}
         respond: [{status: 200}]
     steps:
@@ -282,7 +282,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: text/plain}}, body: {matches: '^\{"kind":"request","request":\{"body":"test_"\}\}\n\{"kind":"request","request":\{"body":"test_"\}\}$'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: text/plain}}, body: {matches: '^\{"kind":"request","request":\{"body":"test_"\},"route_id":"newline-request"\}\n\{"kind":"request","request":\{"body":"test_"\},"route_id":"newline-request"\}$'}}], respond: [{status: 200}]}
         steps:
           - {name: two-request-bodies-form-one-newline-batch, repeat: 2, input: {method: POST, path: /newline-request, body: test_body}, output: {status: 200, body: {equals: ok}}}
       - name: response-batch
@@ -295,7 +295,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: hello world}]}
-          - {name: sink, kind: http, expect: [{body: {matches: '^\{"kind":"response","response":\{"body":"hello "\}\}\n\{"kind":"response","response":\{"body":"hello "\}\}$'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '^\{"kind":"response","response":\{"body":"hello "\},"route_id":"newline-response"\}\n\{"kind":"response","response":\{"body":"hello "\},"route_id":"newline-response"\}$'}}], respond: [{status: 200}]}
         steps:
           - {name: two-response-bodies-form-one-newline-batch, repeat: 2, input: {path: /newline-response}, output: {status: 200, body: {equals: hello world}}}
 
@@ -313,7 +313,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: text/plain}}, body: {matches: '^\{"@timestamp":"[^"]+","client_ip":"[^"]+","host":"example.com"\}$'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: text/plain}}, body: {matches: '^\{"@timestamp":"[^"]+","client_ip":"[^"]+","host":"example.com","route_id":"newline-single"\}$'}}], respond: [{status: 200}]}
         steps:
           - {name: newline-single-object, input: {path: /newline-single, headers: {Host: example.com}}, output: {status: 200, body: {equals: ok}}}
       - name: newline-two
@@ -326,7 +326,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {matches: '^\{"path":"/newline-two"\}\n\{"path":"/newline-two"\}$'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {matches: '^\{"path":"/newline-two","route_id":"newline-two"\}\n\{"path":"/newline-two","route_id":"newline-two"\}$'}}], respond: [{status: 200}]}
         steps:
           - {name: newline-two-objects, repeat: 2, input: {path: /newline-two}, output: {status: 200, body: {equals: ok}}}
       - name: json-single
@@ -339,7 +339,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: application/json}}, body: {json_equals: '{"path":"/json-single"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{headers: {Content-Type: {equals: application/json}}, body: {json_equals: '{"path":"/json-single","route_id":"json-single"}'}}], respond: [{status: 200}]}
         steps:
           - {name: json-single-object, input: {path: /json-single}, output: {status: 200, body: {equals: ok}}}
       - name: json-two
@@ -352,7 +352,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"path":"/json-two"},{"path":"/json-two"}]'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"path":"/json-two","route_id":"json-two"},{"path":"/json-two","route_id":"json-two"}]'}}], respond: [{status: 200}]}
         steps:
           - {name: json-array-of-two, repeat: 2, input: {path: /json-two}, output: {status: 200, body: {equals: ok}}}
 
@@ -431,10 +431,10 @@ cases:
       - name: sink
         kind: http
         expect:
-          - {body: {json_equals: '{"source":"nested-expression","response":{"body":"ok"}}'}}
-          - {body: {matches: '^\{"client_ip":"[^"]+","host":"example.com","labels":\{"key":"testvalue"\}\}$'}}
-          - {body: {matches: '^\{"x_ip":"[^"]+"\}$'}}
-          - {body: {matches: '^\{"client_ip":"[^"]+","host":"nested.example.com","request":\{"headers":\{"user_agent":"http-logger-nested"\},"method":"GET","uri":"/nested-log-format\?ab=cd"\},"response":\{"status":200\}\}$'}}
+          - {body: {json_equals: '{"source":"nested-expression","response":{"body":"ok"},"route_id":"nested-expression"}'}}
+          - {body: {matches: '^\{"client_ip":"[^"]+","host":"example.com","labels":\{"key":"testvalue"\},"route_id":"route-label-variable"\}$'}}
+          - {body: {matches: '^\{"route_id":"plugin-log-format","x_ip":"[^"]+"\}$'}}
+          - {body: {matches: '^\{"client_ip":"[^"]+","host":"nested.example.com","request":\{"headers":\{"user_agent":"http-logger-nested"\},"method":"GET","uri":"/nested-log-format\?ab=cd"\},"response":\{"status":200\},"route_id":"nested-log-format"\}$'}}
         respond: [{status: 200}]
     steps:
       - {name: official-nested-in-expression-captures-response, input: {method: POST, path: /nested-expression, headers: {Content-Length: '4', Content-Type: text/plain}, body: tiny}, output: {status: 200, body: {equals: ok}}}
@@ -455,7 +455,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-      - {name: sink, kind: http, expect: [{body: {json_equals: '{"a":{"b":{"c":{"d":{"e":{}}}}}}'}}], respond: [{status: 200}]}
+      - {name: sink, kind: http, expect: [{body: {json_equals: '{"a":{"b":{"c":{"d":{"e":{}}}}},"route_id":"depth-five"}'}}], respond: [{status: 200}]}
     steps:
       - {name: depth-five-object-is-empty, input: {path: /depth-five}, output: {status: 200, body: {equals: ok}, logs: {matches: 'log_format nesting exceeds max depth 5, truncating'}}}
 
@@ -471,7 +471,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"sequence":"one"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"sequence":"one","route_id":"newline-batch-one"}'}}], respond: [{status: 200}]}
         steps:
           - {name: batch-size-one-flushes-immediately, input: {path: /newline-batch-one}, output: {status: 200, body: {equals: ok}}}
       - name: full-batches
@@ -487,8 +487,8 @@ cases:
           - name: sink
             kind: http
             expect:
-              - {body: {matches: '^(\{"path":"/newline-full-batches"\}\n){2}\{"path":"/newline-full-batches"\}$'}}
-              - {body: {matches: '^(\{"path":"/newline-full-batches"\}\n){2}\{"path":"/newline-full-batches"\}$'}}
+              - {body: {matches: '^(\{"path":"/newline-full-batches","route_id":"newline-full-batches"\}\n){2}\{"path":"/newline-full-batches","route_id":"newline-full-batches"\}$'}}
+              - {body: {matches: '^(\{"path":"/newline-full-batches","route_id":"newline-full-batches"\}\n){2}\{"path":"/newline-full-batches","route_id":"newline-full-batches"\}$'}}
             respond: [{status: 200}]
         steps:
           - {name: first-entry-stays-buffered, input: {path: /newline-full-batches}, output: {status: 200, body: {equals: ok}}}
@@ -506,8 +506,8 @@ cases:
           - name: sink
             kind: http
             expect:
-              - {body: {matches: '^(\{"path":"/newline-inactive"\}\n){2}\{"path":"/newline-inactive"\}$'}}
-              - {body: {matches: '^\{"path":"/newline-inactive"\}\n\{"path":"/newline-inactive"\}$'}}
+              - {body: {matches: '^(\{"path":"/newline-inactive","route_id":"newline-inactive"\}\n){2}\{"path":"/newline-inactive","route_id":"newline-inactive"\}$'}}
+              - {body: {matches: '^\{"path":"/newline-inactive","route_id":"newline-inactive"\}\n\{"path":"/newline-inactive","route_id":"newline-inactive"\}$'}}
             respond: [{status: 200}]
         steps:
           - {name: full-batch-of-three, repeat: 3, input: {path: /newline-inactive}, output: {status: 200, body: {equals: ok}}}
@@ -559,7 +559,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: complete-response}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /complete}, headers: {Authorization: {equals: Bearer complete}, Content-Type: {equals: application/json}}, body: {json_equals: '{"case":"complete","request":{"body":"complete-request"},"response":{"body":"complete-response"}}'}}], respond: [{status: 200}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /complete}, headers: {Authorization: {equals: Bearer complete}, Content-Type: {equals: application/json}}, body: {json_equals: '{"case":"complete","request":{"body":"complete-request"},"response":{"body":"complete-response"},"route_id":"complete-http-logger"}'}}], respond: [{status: 200}]}
     steps:
       - {name: full-schema-config-delivers, input: {method: POST, path: '/complete?log=yes', body: complete-request}, output: {status: 200, body: {equals: complete-response}}}
 
@@ -578,8 +578,8 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: /normal-delivery}}, {method: GET, path: {equals: /external-delivery}}], respond: [{status: 200, body: hello world}]}
-      - {name: localSink, kind: http, expect: [{method: POST, path: {equals: /hello}, body: {json_equals: '{"case":"local"}'}}], respond: [{status: 200}]}
-      - {name: externalSink, kind: http, expect: [{method: POST, path: {equals: /anything}, body: {json_equals: '{"case":"external"}'}}], respond: [{status: 200}]}
+      - {name: localSink, kind: http, expect: [{method: POST, path: {equals: /hello}, body: {json_equals: '{"case":"local","route_id":"normal-http-delivery"}'}}], respond: [{status: 200}]}
+      - {name: externalSink, kind: http, expect: [{method: POST, path: {equals: /anything}, body: {json_equals: '{"case":"external","route_id":"external-http-delivery"}'}}], respond: [{status: 200}]}
     steps:
       - {name: local-http-post-delivery, input: {path: /normal-delivery}, output: {status: 200, body: {equals: hello world}}}
       - {name: second-endpoint-http-post-delivery, input: {path: /external-delivery}, output: {status: 200, body: {equals: hello world}}}
@@ -609,7 +609,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: https, expect: [{body: {json_equals: '{"case":"tls-default"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: https, expect: [{body: {json_equals: '{"case":"tls-default","route_id":"tls-default-false"}'}}], respond: [{status: 200}]}
         steps:
           - {name: default-ssl-verify-false-accepts-self-signed, input: {path: /tls-default-false}, output: {status: 200, body: {equals: ok}}}
       - name: self-signed-explicit-false
@@ -622,7 +622,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: https, expect: [{body: {json_equals: '{"case":"tls-false"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: https, expect: [{body: {json_equals: '{"case":"tls-false","route_id":"tls-explicit-false"}'}}], respond: [{status: 200}]}
         steps:
           - {name: explicit-false-accepts-self-signed, input: {path: /tls-explicit-false}, output: {status: 200, body: {equals: ok}}}
       - name: self-signed-explicit-true
@@ -651,7 +651,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"path":"/batch-two"},{"path":"/batch-two"}]'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"path":"/batch-two","route_id":"batch-two"},{"path":"/batch-two","route_id":"batch-two"}]'}}], respond: [{status: 200}]}
         steps:
           - {name: two-entries-one-json-array, repeat: 2, input: {path: /batch-two}, output: {status: 200, body: {equals: ok}}}
       - name: refused
@@ -677,8 +677,8 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-      - {name: old, kind: http, expect: [{body: {matches: '^\[?\{"sink":"old"\}\]?$'}}], respond: [{status: 200}]}
-      - {name: new, kind: http, expect: [{body: {json_equals: '{"sink":"new"}'}}], respond: [{status: 200}]}
+      - {name: old, kind: http, expect: [{body: {matches: '^\[?\{"route_id":"live-update","sink":"old"\}\]?$'}}], respond: [{status: 200}]}
+      - {name: new, kind: http, expect: [{body: {json_equals: '{"sink":"new","route_id":"live-update"}'}}], respond: [{status: 200}]}
     steps:
       - {name: old-config-buffers-one-entry, input: {path: /live-update}, output: {status: 200, body: {equals: ok}}}
       - name: replacement-flushes-old-and-delivers-to-new
@@ -708,7 +708,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: hello response}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"http-body","response":{"body":"hello response"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"http-body","response":{"body":"hello response"},"route_id":"http-response-body"}'}}], respond: [{status: 200}]}
         steps:
           - {name: route-http-includes-response, input: {path: /http-response-body}, output: {status: 200, body: {equals: hello response}}}
       - name: route-http-excludes-response-file-includes-response
@@ -722,7 +722,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: hello response}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"http"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"http","route_id":"logger-interaction"}'}}], respond: [{status: 200}]}
         steps:
           - name: route-http-excludes-response-while-file-includes-it
             input: {path: /logger-interaction}
@@ -745,7 +745,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: hello response}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"global-http","response":{"body":"hello response"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"source":"global-http","response":{"body":"hello response"},"route_id":"global-and-route-file"}'}}], respond: [{status: 200}]}
         steps:
           - name: global-http-keeps-response-with-both-file-loggers
             input: {path: /global-and-route-file}
@@ -770,9 +770,9 @@ cases:
           - name: sink
             kind: http
             expect:
-              - {body: {json_equals: '{"generation":"current"}'}}
-              - {body: {json_equals: '{"generation":"current"}'}}
-              - {body: {json_equals: '{"generation":"current"}'}}
+              - {body: {json_equals: '{"generation":"current","route_id":"processor-lifecycle"}'}}
+              - {body: {json_equals: '{"generation":"current","route_id":"processor-lifecycle"}'}}
+              - {body: {json_equals: '{"generation":"current","route_id":"processor-lifecycle"}'}}
             respond: [{status: 200}, {status: 200}, {status: 200}]
         steps:
           - {name: create-and-use-current-processor, input: {path: /processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
@@ -788,7 +788,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"generation":"buffered"},{"generation":"buffered"}]'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '[{"generation":"buffered","route_id":"buffered-processor-lifecycle"},{"generation":"buffered","route_id":"buffered-processor-lifecycle"}]'}}], respond: [{status: 200}]}
         steps:
           - {name: first-entry-keeps-processor-in-use-past-one-and-a-half-seconds, wait: 1500ms, input: {path: /buffered-processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
           - {name: second-entry-flushes-the-preserved-buffer, input: {path: /buffered-processor-lifecycle}, output: {status: 200, body: {equals: ok}}}
@@ -820,7 +820,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: gzip hello world, headers: {Content-Type: text/plain}}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"encoding":"gzip","response":{"body":"gzip hello world"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"encoding":"gzip","response":{"body":"gzip hello world"},"route_id":"gzip-response-log"}'}}], respond: [{status: 200}]}
         steps:
           - {name: gzip-wire-body-is-decoded-for-log, input: {path: /gzip-response-log, headers: {Accept-Encoding: gzip}}, output: {status: 200, gzip_body: {equals: gzip hello world}}}
       - name: brotli
@@ -834,7 +834,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: brotli hello world, headers: {Content-Type: text/plain}}]}
-          - {name: sink, kind: http, expect: [{body: {json_equals: '{"encoding":"brotli","response":{"body":"brotli hello world"}}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{body: {json_equals: '{"encoding":"brotli","response":{"body":"brotli hello world"},"route_id":"brotli-response-log"}'}}], respond: [{status: 200}]}
         steps:
           - {name: brotli-wire-body-is-decoded-for-log, input: {path: /brotli-response-log, headers: {Accept-Encoding: br}}, output: {status: 200, brotli_body: {equals: brotli hello world}}}
 
@@ -850,7 +850,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{path: {equals: /authorization}, headers: {Authorization: {absent: true}}, body: {json_equals: '{"case":"no-auth"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{path: {equals: /authorization}, headers: {Authorization: {absent: true}}, body: {json_equals: '{"case":"no-auth","route_id":"auth-absent"}'}}], respond: [{status: 200}]}
         steps:
           - {name: authorization-header-is-absent-by-default, input: {path: /auth-absent}, output: {status: 200, body: {equals: ok}}}
       - name: root-path
@@ -863,7 +863,7 @@ cases:
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
-          - {name: sink, kind: http, expect: [{path: {equals: /}, body: {json_equals: '{"case":"root"}'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{path: {equals: /}, body: {json_equals: '{"case":"root","route_id":"root-path"}'}}], respond: [{status: 200}]}
         steps:
           - {name: empty-uri-path-posts-to-root, input: {path: /root-path}, output: {status: 200, body: {equals: ok}}}
 
@@ -882,7 +882,7 @@ cases:
       - name: firstSink
         kind: http
         expect:
-          - {body: {json_equals: '{"generation":"first"}'}}
+          - {body: {json_equals: '{"generation":"first","route_id":"pending-overflow"}'}}
         respond:
           - {status: 200, delay: 1s}
     steps:

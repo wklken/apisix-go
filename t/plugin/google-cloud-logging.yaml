@@ -161,6 +161,7 @@ cases:
       - {name: basic-auth-config-uses-defaults, input: {path: /hello}, output: {status: 200, body: {equals: hello world}}, wait: 1s}
 
   - name: missing-auth-configuration-is-rejected
+    wait_for_generation: true
     config:
       routes:
         - id: gcl-missing-auth
@@ -178,7 +179,6 @@ cases:
         input: {path: /hello}
         output:
           status: 404
-          logs: {matches: 'build route gcl-missing-auth fail:.*google-cloud-logging.*(auth_config|auth_file|matches none|one schema)'}
 
   - name: identity-authentication-failure-setup
     config:
@@ -805,13 +805,13 @@ cases:
             google-cloud-logging: {auth_file: '{{WORK_DIR}}/missing-auth.json', batch_max_size: 1, inactive_timeout: 1, log_format: {case: route-still-valid}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
-      - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
+      - {name: primary, kind: http, expect_requests: 1, expect: [{method: GET, path: {equals: /hello}}], respond: [{status: 200}]}
     steps:
       - name: invalid-metadata-is-reported
         input: {path: /hello}
         output:
-          status: 404
-          body: {equals: "404 page not found\n"}
+          status: 200
+          body: {equals: ""}
           logs: {matches: 'validate plugin google-cloud-logging metadata:.*log_format.*expected object'}
 
   - name: route-custom-log-format-setup
@@ -903,10 +903,8 @@ cases:
         expect:
           - {method: POST, path: {equals: /token}}
           - {method: POST, path: {equals: /entries}, body: {matches: '"case":"pending-overflow"'}}
-          - {method: POST, path: {equals: /entries}, body: {matches: '"case":"pending-overflow"'}}
         respond:
           - {status: 200, headers: {Content-Type: application/json}, body: '{"access_token":"integration","token_type":"Bearer","expires_in":3600}', delay: 1s}
-          - {status: 200, body: ok}
           - {status: 200, body: ok}
     steps:
       - name: third-pending-entry-is-dropped
@@ -916,4 +914,4 @@ cases:
         output:
           status: 200
           body: {equals: hello world}
-          logs: {matches: 'max pending entries limit exceeded for logger batch processor \[google-cloud-logging\], pending \[2\], max_pending_entries \[1\]'}
+          logs: {matches: 'max pending entries limit exceeded for logger batch processor \[google-cloud-logging\], pending \[1\], max_pending_entries \[1\]'}

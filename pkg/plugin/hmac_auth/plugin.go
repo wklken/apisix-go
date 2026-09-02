@@ -251,51 +251,48 @@ func (p *Plugin) authenticate(r *http.Request) (resource.Consumer, int, error) {
 		return resource.Consumer{}, http.StatusUnauthorized, errors.New("algorithm missing")
 	}
 
-	consumer, ok := p.consumerByPluginKey(params.KeyID)
-	if !ok {
-		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
-	}
 	if !p.algorithmAllowed(params.Algorithm) {
 		return resource.Consumer{}, http.StatusUnauthorized, errInvalidAlgorithm
 	}
-
-	consumerPluginConfig, exists := consumer.Plugins[name]
-	if !exists {
-		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
-	}
-
-	var cfg consumerConfig
-	if err := util.Parse(consumerPluginConfig, &cfg); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
-	}
-
-	if err := p.validateClockSkew(params.Date); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, err
-	}
-	if err := p.validateSignedHeaders(r, params.Headers); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, err
-	}
-	if err := validateSignature(r, cfg.SecretKey, params); err != nil {
-		return resource.Consumer{}, http.StatusUnauthorized, err
-	}
-	if p.config.ValidateRequestBody {
-		if err := p.validateBodyDigest(r, params.BodyDigest); err != nil {
-			if errors.Is(err, errBodyTooLarge) {
-				return resource.Consumer{}, http.StatusRequestEntityTooLarge, err
+	var consumer resource.Consumer
+	found, credentialErr := base.UseConsumerCredential(
+		r.Context(), p.ConsumerLookup(), name, params.KeyID,
+		func(candidate resource.Consumer, config resource.PluginConfig) error {
+			var cfg consumerConfig
+			if err := util.Parse(config, &cfg); err != nil {
+				return errInvalidKeyID
 			}
-			return resource.Consumer{}, http.StatusUnauthorized, errInvalidDigest
+			if err := p.validateClockSkew(params.Date); err != nil {
+				return err
+			}
+			if err := p.validateSignedHeaders(r, params.Headers); err != nil {
+				return err
+			}
+			if err := validateSignature(r, cfg.SecretKey, params); err != nil {
+				return err
+			}
+			if p.config.ValidateRequestBody {
+				if err := p.validateBodyDigest(r, params.BodyDigest); err != nil {
+					if errors.Is(err, errBodyTooLarge) {
+						return errBodyTooLarge
+					}
+					return errInvalidDigest
+				}
+			}
+			consumer = candidate
+			return nil
+		},
+	)
+	if !found {
+		return resource.Consumer{}, http.StatusUnauthorized, errInvalidKeyID
+	}
+	if credentialErr != nil {
+		if errors.Is(credentialErr, errBodyTooLarge) {
+			return resource.Consumer{}, http.StatusRequestEntityTooLarge, credentialErr
 		}
+		return resource.Consumer{}, http.StatusUnauthorized, credentialErr
 	}
-
 	return consumer, 0, nil
-}
-
-func (p *Plugin) consumerByPluginKey(key string) (resource.Consumer, bool) {
-	lookup := p.ConsumerLookup()
-	if lookup == nil {
-		return resource.Consumer{}, false
-	}
-	return lookup.ConsumerByPluginKey(name, key)
 }
 
 func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {

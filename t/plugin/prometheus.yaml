@@ -1,5 +1,6 @@
 cases:
   - name: invalid-prefer-name
+    wait_for_generation: true
     config:
       routes:
         - id: prometheus-invalid
@@ -9,8 +10,8 @@ cases:
       - name: invalid-config-fails-closed
         input: {path: /invalid}
         output:
-          status: 503
-          logs: {matches: 'worker generation preparation failed'}
+          status: 404
+          logs: {matches: 'validate plugin prometheus config:'}
         wait: 100ms
 
   - name: profile-metrics-scrape

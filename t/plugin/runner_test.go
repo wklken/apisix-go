@@ -72,7 +72,7 @@ const integrationFallbackRootsEnv = "APISIX_GO_INTEGRATION_FALLBACK_ROOTS"
 
 const pluginSmokeCaseEnv = "APISIX_GO_PLUGIN_SMOKE_CASE"
 
-const samlRSASHA256Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+const samlRSASHA512Method = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"
 
 const maxParallelPluginCases = 6
 
@@ -736,6 +736,16 @@ func TestStandaloneConfigAddsHarnessRouteOnlyForConfigRejection(t *testing.T) {
 	}
 	if added || len(configured["routes"].([]any)) != 1 {
 		t.Fatalf("ordinary 404 config = %#v, added = %t; want unchanged", configured, added)
+	}
+
+	spec.WaitForGeneration = true
+	spec.Steps = []CaseStep{{Name: "rejected-route", Output: HTTPOutput{Status: http.StatusNotFound}}}
+	configured, added, err = standaloneConfigWithHarnessReadyRoute(spec)
+	if err != nil {
+		t.Fatalf("standaloneConfigWithHarnessReadyRoute() explicit readiness error = %v", err)
+	}
+	if !added || len(configured["routes"].([]any)) != 2 {
+		t.Fatalf("explicit readiness config = %#v, added = %t; want harness route", configured, added)
 	}
 }
 
@@ -2061,6 +2071,10 @@ func TestSAMLRedirectFixtureSignatureRejectsRelayStateTampering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign Redirect request: %v", err)
 	}
+	const wantSignatureMethod = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"
+	if got := redirect.Query().Get("SigAlg"); got != wantSignatureMethod {
+		t.Fatalf("Redirect SigAlg = %q, want APISIX 3.17 RSA-SHA512", got)
+	}
 	if err := validateSAMLRedirectFixtureSignature(
 		redirect.RawQuery,
 		"SAMLRequest",
@@ -2314,6 +2328,7 @@ type capturedRequest struct {
 	host     string
 	protocol string
 	headers  http.Header
+	t1kExtra map[string]string
 	body     string
 }
 
@@ -2428,6 +2443,9 @@ func startFixture(spec *UpstreamSpec) *fixtureServer {
 func startNamedFixture(spec FixtureSpec) (namedFixture, error) {
 	if spec.Kind == "https-connect" {
 		return startHTTPSConnectFixture(spec)
+	}
+	if spec.Kind == "t1k" {
+		return startT1KFixture(spec)
 	}
 	if spec.Kind != "http" && spec.Kind != "https" && spec.Kind != "h2c" {
 		return startNetworkFixture(spec)
@@ -3248,7 +3266,8 @@ func renderStandaloneConfig(config map[string]any, replacements map[string]strin
 
 func standaloneConfigWithHarnessReadyRoute(spec Case) (map[string]any, bool, error) {
 	configRejectionStatus := spec.Output.Status == 0 || spec.Output.Status == http.StatusNotFound
-	if !configRejectionStatus || spec.Output.Logs == nil || len(spec.Steps) != 0 {
+	implicitLogRejection := spec.Output.Logs != nil && len(spec.Steps) == 0
+	if !configRejectionStatus || (!spec.WaitForGeneration && !implicitLogRejection) {
 		return spec.Config, false, nil
 	}
 	config, err := cloneConfigMap(spec.Config)
@@ -4347,7 +4366,7 @@ func samlFixtureSigner(entityID string, certificatePEM string, privateKeyPEM str
 		EntityID:        entityID,
 		Key:             key,
 		Certificate:     certificate,
-		SignatureMethod: samlRSASHA256Method,
+		SignatureMethod: samlRSASHA512Method,
 		IDPMetadata:     &saml.EntityDescriptor{EntityID: "fixture-peer"},
 	}, nil
 }
@@ -4375,9 +4394,9 @@ func signedSAMLFixtureRedirectURL(
 	if relayState != "" {
 		signedQuery += "&RelayState=" + url.QueryEscape(relayState)
 	}
-	signedQuery += "&SigAlg=" + url.QueryEscape(samlRSASHA256Method)
-	digest := sha256.Sum256([]byte(signedQuery))
-	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	signedQuery += "&SigAlg=" + url.QueryEscape(samlRSASHA512Method)
+	digest := sha512.Sum512([]byte(signedQuery))
+	signature, err := signer.Sign(rand.Reader, digest[:], crypto.SHA512)
 	if err != nil {
 		return nil, err
 	}
@@ -4418,8 +4437,8 @@ func validateSAMLRedirectFixtureSignature(rawQuery string, field string, certifi
 		return errors.New("SigAlg is required")
 	}
 	decodedSigAlg, err := url.QueryUnescape(sigAlg)
-	if err != nil || decodedSigAlg != samlRSASHA256Method {
-		return errors.New("Redirect SigAlg must be rsa-sha256")
+	if err != nil || decodedSigAlg != samlRSASHA512Method {
+		return errors.New("Redirect SigAlg must be rsa-sha512")
 	}
 	signatureValue, ok := parameters["Signature"]
 	if !ok {
@@ -4450,8 +4469,8 @@ func validateSAMLRedirectFixtureSignature(rawQuery string, field string, certifi
 	if !ok {
 		return errors.New("SP certificate does not contain an RSA public key")
 	}
-	digest := sha256.Sum256([]byte(signedQuery))
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+	digest := sha512.Sum512([]byte(signedQuery))
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA512, digest[:], signature); err != nil {
 		return fmt.Errorf("verify Redirect signature: %w", err)
 	}
 	return nil
@@ -4518,8 +4537,8 @@ func validateSPAuthenticationRequest(request *http.Request, rawXML []byte, certi
 	}
 	if request.Method == http.MethodGet {
 		signatureValue := request.URL.Query().Get("Signature")
-		if signatureValue == "" || request.URL.Query().Get("SigAlg") != samlRSASHA256Method {
-			return errors.New("Redirect binding requires rsa-sha256 SigAlg and Signature")
+		if signatureValue == "" || request.URL.Query().Get("SigAlg") != samlRSASHA512Method {
+			return errors.New("Redirect binding requires rsa-sha512 SigAlg and Signature")
 		}
 		signature, err := base64.StdEncoding.DecodeString(signatureValue)
 		if err != nil {
@@ -4535,8 +4554,8 @@ func validateSPAuthenticationRequest(request *http.Request, rawXML []byte, certi
 		if !ok {
 			return errors.New("SP certificate does not contain an RSA public key")
 		}
-		digest := sha256.Sum256([]byte(signedQuery))
-		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		digest := sha512.Sum512([]byte(signedQuery))
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA512, digest[:], signature); err != nil {
 			return fmt.Errorf("verify Redirect signature: %w", err)
 		}
 		return nil
@@ -5727,6 +5746,12 @@ func assertUpstreamRequest(t *testing.T, expected HTTPAssertion, received captur
 		}
 	}
 	assertHeaders(t, "upstream", expected.Headers, received.headers)
+	for name, matcher := range expected.T1KExtra {
+		value, present := received.t1kExtra[name]
+		if err := matcher.match(value, present); err != nil {
+			t.Errorf("T1K EXTRA field %q: %v", name, err)
+		}
+	}
 	if expected.Body != nil {
 		if err := expected.Body.match(received.body, true); err != nil {
 			t.Errorf("upstream body: %v", err)

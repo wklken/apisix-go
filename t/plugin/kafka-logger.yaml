@@ -1,8 +1,9 @@
 cases:
 
   - name: max-body-bytes-string-is-rejected
+    wait_for_generation: true
     config: {routes: [{id: kafka-001, uri: /kafka-001, plugins: {kafka-logger: {broker_list: {'127.0.0.1': 9092}, kafka_topic: integration, max_req_body_bytes: invalid}}}]}
-    steps: [{name: max-body-bytes-string-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-001}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+    steps: [{name: max-body-bytes-string-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-001}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
 
   - name: origin-request-body-config-produces-raw-request
     config:
@@ -324,12 +325,14 @@ cases:
     steps: [{name: schema-sanity-accepts-minimal-config-real-request-produces-asserted-record, input: {method: GET, path: /kafka-034}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: missing-broker-list-is-rejected
+    wait_for_generation: true
     config: {routes: [{id: kafka-035, uri: /kafka-035, plugins: {kafka-logger: {kafka_topic: integration}}}]}
-    steps: [{name: missing-broker-list-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-035}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+    steps: [{name: missing-broker-list-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-035}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
 
   - name: string-timeout-is-rejected
+    wait_for_generation: true
     config: {routes: [{id: kafka-036, uri: /kafka-036, plugins: {kafka-logger: {broker_list: {'127.0.0.1': 3000}, kafka_topic: integration, key: key1, timeout: "10"}}}]}
-    steps: [{name: string-timeout-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-036}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+    steps: [{name: string-timeout-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-036}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
 
   - name: broker-list-route-is-accepted
     config:
@@ -594,8 +597,9 @@ cases:
       - {name: third-service-route-produces-record, input: {path: /kafka-060-c}, output: {status: 200, body: {equals: upstream-ok}}}
 
   - name: required-acks-outside-enum-is-rejected
+    wait_for_generation: true
     config: {routes: [{id: kafka-063, uri: /kafka-063, plugins: {kafka-logger: {broker_list: {'127.0.0.1': 9092}, kafka_topic: integration, required_acks: 2}}}]}
-    steps: [{name: required-acks-outside-enum-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-063}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+    steps: [{name: required-acks-outside-enum-is-rejected-invalid-config-keeps-route-unavailable, input: {path: /kafka-063}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
 
   - name: required-acks-one-and-all-produce-records
     config:
@@ -641,44 +645,57 @@ cases:
   - name: broker-list-port-schema-is-enforced
     variants:
       - name: empty-broker-list
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-a, uri: /kafka-067-a, plugins: {kafka-logger: {broker_list: {}, kafka_topic: integration}}}]}
-        steps: [{name: empty-broker-list-is-rejected, input: {path: /kafka-067-a}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: empty-broker-list-is-rejected, input: {path: /kafka-067-a}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: string-broker-port
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-b, uri: /kafka-067-b, plugins: {kafka-logger: {broker_list: {'127.0.0.1': "9092"}, kafka_topic: integration}}}]}
-        steps: [{name: string-broker-port-is-rejected, input: {path: /kafka-067-b}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: string-broker-port-is-rejected, input: {path: /kafka-067-b}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: zero-broker-port
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-c, uri: /kafka-067-c, plugins: {kafka-logger: {broker_list: {'127.0.0.1': 0}, kafka_topic: integration}}}]}
-        steps: [{name: zero-broker-port-is-rejected, input: {path: /kafka-067-c}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: zero-broker-port-is-rejected, input: {path: /kafka-067-c}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: oversized-broker-port
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-d, uri: /kafka-067-d, plugins: {kafka-logger: {broker_list: {'127.0.0.1': 65536}, kafka_topic: integration}}}]}
-        steps: [{name: oversized-broker-port-is-rejected, input: {path: /kafka-067-d}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: oversized-broker-port-is-rejected, input: {path: /kafka-067-d}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: empty-brokers
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-e, uri: /kafka-067-e, plugins: {kafka-logger: {brokers: [], kafka_topic: integration}}}]}
-        steps: [{name: empty-brokers-is-rejected, input: {path: /kafka-067-e}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: empty-brokers-is-rejected, input: {path: /kafka-067-e}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: broker-without-port
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-f, uri: /kafka-067-f, plugins: {kafka-logger: {brokers: [{host: 127.0.0.1}], kafka_topic: integration}}}]}
-        steps: [{name: broker-without-port-is-rejected, input: {path: /kafka-067-f}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: broker-without-port-is-rejected, input: {path: /kafka-067-f}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: broker-without-host
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-g, uri: /kafka-067-g, plugins: {kafka-logger: {brokers: [{port: 9092}], kafka_topic: integration}}}]}
-        steps: [{name: broker-without-host-is-rejected, input: {path: /kafka-067-g}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: broker-without-host-is-rejected, input: {path: /kafka-067-g}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: broker-with-string-port
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-h, uri: /kafka-067-h, plugins: {kafka-logger: {brokers: [{host: 127.0.0.1, port: "9093"}], kafka_topic: integration}}}]}
-        steps: [{name: broker-with-string-port-is-rejected, input: {path: /kafka-067-h}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: broker-with-string-port-is-rejected, input: {path: /kafka-067-h}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: broker-with-zero-port
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-i, uri: /kafka-067-i, plugins: {kafka-logger: {brokers: [{host: 127.0.0.1, port: 0}], kafka_topic: integration}}}]}
-        steps: [{name: broker-with-zero-port-is-rejected, input: {path: /kafka-067-i}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: broker-with-zero-port-is-rejected, input: {path: /kafka-067-i}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: broker-with-oversized-port
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-j, uri: /kafka-067-j, plugins: {kafka-logger: {brokers: [{host: 127.0.0.1, port: 65536}], kafka_topic: integration}}}]}
-        steps: [{name: broker-with-oversized-port-is-rejected, input: {path: /kafka-067-j}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: broker-with-oversized-port-is-rejected, input: {path: /kafka-067-j}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: invalid-sasl-mechanism
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-k, uri: /kafka-067-k, plugins: {kafka-logger: {brokers: [{host: 127.0.0.1, port: 9093, sasl_config: {mechanism: INVALID, user: admin, password: admin-secret}}], kafka_topic: integration}}}]}
-        steps: [{name: invalid-sasl-mechanism-is-rejected, input: {path: /kafka-067-k}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: invalid-sasl-mechanism-is-rejected, input: {path: /kafka-067-k}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: sasl-without-password
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-l, uri: /kafka-067-l, plugins: {kafka-logger: {brokers: [{host: 127.0.0.1, port: 9093, sasl_config: {user: admin}}], kafka_topic: integration}}}]}
-        steps: [{name: sasl-without-password-is-rejected, input: {path: /kafka-067-l}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: sasl-without-password-is-rejected, input: {path: /kafka-067-l}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
       - name: sasl-without-user
+        wait_for_generation: true
         config: {routes: [{id: kafka-067-m, uri: /kafka-067-m, plugins: {kafka-logger: {brokers: [{host: 127.0.0.1, port: 9093, sasl_config: {password: admin-secret}}], kafka_topic: integration}}}]}
-        steps: [{name: sasl-without-user-is-rejected, input: {path: /kafka-067-m}, output: {status: 503, logs: {matches: 'generation preparation failed'}}}]
+        steps: [{name: sasl-without-user-is-rejected, input: {path: /kafka-067-m}, output: {status: 404, logs: {matches: 'validate plugin kafka-logger config:'}}}]
 
   - name: configured-broker-address-appears-in-delivery-error
     config:

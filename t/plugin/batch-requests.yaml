@@ -81,7 +81,7 @@ cases:
     steps:
       - name: missing-pipeline
         input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline1":[{"path":"/b"}]}'}
-        output: {status: 400, body: {matches: 'pipeline is required'}}
+        output: {status: 400, body: {equals: "{\"error_msg\":\"bad request body: object matches none of the required: [\\\"pipeline\\\"]\"}\n"}}
       - name: top-level-extension-is-allowed
         input: {method: POST, path: /apisix/batch-requests, body: '{"extension":{"trace":true},"pipeline":[{"path":"/missing"}]}'}
         output: {status: 200, body: {matches: '"status":404'}}

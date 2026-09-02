@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
 	"github.com/wklken/apisix-go/pkg/capability"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	consumerregistry "github.com/wklken/apisix-go/pkg/consumer"
@@ -545,7 +546,16 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 			return plugin.Binding{}, nil, err
 		}
 		if err := operations.validateConfig(instance, selected.spec.config); err != nil {
-			return plugin.Binding{}, nil, err
+			if !admitDeclaredSecretEnvelope(
+				instance,
+				selected.spec.factory,
+				selected.spec.source.source,
+				selected.spec.config,
+				prepared.catalog,
+				err,
+			) {
+				return plugin.Binding{}, nil, err
+			}
 		}
 		configuration := instance.Config()
 		if configuration == nil {
@@ -615,6 +625,30 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 		}
 		return binding, slot.registryRelease, nil
 	})
+}
+
+func admitDeclaredSecretEnvelope(
+	instance plugin.Plugin,
+	factory string,
+	source capability.SecretDeclarationSource,
+	config resource.PluginConfig,
+	catalog *capability.SecretDeclarationCatalog,
+	validationErr error,
+) bool {
+	if instance == nil || factory == "" || catalog == nil || validationErr == nil ||
+		(source != capability.SecretPluginConfig && source != capability.SecretConsumerConfig) {
+		return false
+	}
+	var schemaErr *jsonschema.ValidationError
+	if !errors.As(validationErr, &schemaErr) {
+		return false
+	}
+	compiled, err := util.CompileSchema(instance.GetSchema())
+	if err != nil {
+		return false
+	}
+	accepted, _ := schemaAdmission(compiled, catalog, factory, source, config)
+	return accepted
 }
 
 func (slot *effectiveBindingAcquisitionSlot) adoptPlugin(instance plugin.Plugin) {

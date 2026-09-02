@@ -149,6 +149,9 @@ func validateRawSchemas(
 		}
 	case "consumers":
 		for factory, config := range resource.view.plugins {
+			if pluginConfigDisabled(config) {
+				continue
+			}
 			entry, exists := schemas.factories[factory]
 			if !exists {
 				continue
@@ -160,6 +163,13 @@ func validateRawSchemas(
 			valid, diagnostic := schemaAdmission(
 				consumerSchema, schemas.catalog, factory, capability.SecretConsumerConfig, config,
 			)
+			if valid && consumer.Supports(factory) &&
+				!hasMaterializableConsumerSecretEnvelope(schemas.catalog, factory, config) {
+				if err := consumer.ValidateResolved(factory, config); err != nil {
+					valid = false
+					diagnostic = safeConsumerSemanticDiagnostic(err)
+				}
+			}
 			if !valid {
 				issue := newIssue(
 					resource.key, consumerSchemaInvalidCode, "consumer schema validation failed",
@@ -175,6 +185,9 @@ func validateRawSchemas(
 		}
 		resourceDomains := generation.DomainsForResourceKind(resource.key.Kind)
 		for factory, config := range resource.view.plugins {
+			if pluginConfigDisabled(config) {
+				continue
+			}
 			entry, exists := schemas.factories[factory]
 			if !exists {
 				continue
@@ -194,6 +207,53 @@ func validateRawSchemas(
 			}
 		}
 	}
+}
+
+func hasMaterializableConsumerSecretEnvelope(
+	catalog *capability.SecretDeclarationCatalog,
+	factory string,
+	config any,
+) bool {
+	found := false
+	_ = catalog.TransformDeclaredFields(
+		factory,
+		capability.SecretConsumerConfig,
+		config,
+		func(_ capability.SecretDeclaration, _ string, value any) (any, error) {
+			text, ok := value.(string)
+			if ok && capability.IsMaterializableSecretEnvelope(text) {
+				found = true
+			}
+			return value, nil
+		},
+	)
+	return found
+}
+
+func safeConsumerSemanticDiagnostic(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch err.Error() {
+	case "the secret length should be 32 chars",
+		"the secret length after base64 decode should be 32 chars":
+		return err.Error()
+	default:
+		return ""
+	}
+}
+
+func pluginConfigDisabled(config any) bool {
+	values, ok := config.(map[string]any)
+	if !ok {
+		return false
+	}
+	metadata, ok := values["_meta"].(map[string]any)
+	if !ok {
+		return false
+	}
+	disabled, _ := metadata["disable"].(bool)
+	return disabled
 }
 
 func regularPluginResourceKind(kind string) bool {

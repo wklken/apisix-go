@@ -328,6 +328,50 @@ func TestHandlerPrefersLiteralPathOverPathParameter(t *testing.T) {
 	}
 }
 
+func TestCompileSpecSupportsOpenAPI31PathItemsAndJSONSchemaKeywords(t *testing.T) {
+	const spec = `{"openapi":"3.1.0","info":{"title":"APISIX oas-validator integration gaps","version":"1.0.0"},"servers":[{"url":"/api/v31gap"}],"paths":{"/widget":{"$ref":"#/components/pathItems/WidgetPath"},"/item":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ItemNotTest"}}}}}},"/pattern":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/PatternTest"}}}}}},"/dynref":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/DynRefTest"}}}}}},"/content-annotation":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ContentAnnotationTest"}}}}}},"/prefixitems":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/PrefixItemsTest"}}}}}}},"components":{"pathItems":{"WidgetPath":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Widget"}}}}}}},"schemas":{"Widget":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}},"ItemNotTest":{"type":"object","required":["value"],"properties":{"value":{"not":{"type":"integer"}}}},"PatternTest":{"type":"object","patternProperties":{"^S_":{"type":"string"},"^I_":{"type":"integer"}},"additionalProperties":false},"DynRefTest":{"type":"object","required":["items"],"properties":{"items":{"type":"array","items":{"$dynamicRef":"#items"}}},"$defs":{"defaultItem":{"$dynamicAnchor":"items","type":"string"}}},"ContentAnnotationTest":{"type":"object","required":["data"],"properties":{"data":{"type":"string","contentMediaType":"application/json","contentEncoding":"base64"}}},"PrefixItemsTest":{"type":"array","prefixItems":[{"type":"string"},{"type":"integer"}],"items":{"type":"boolean"}}}}}`
+
+	compiled, err := compileSpec(context.Background(), []byte(spec), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("compileSpec() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		path string
+		body string
+		want bool
+	}{
+		{name: "path item valid", path: "/api/v31gap/widget", body: `{"name":"foo"}`, want: true},
+		{name: "path item invalid", path: "/api/v31gap/widget", body: `{"notaname":"foo"}`},
+		{name: "not valid", path: "/api/v31gap/item", body: `{"value":"not-an-integer"}`, want: true},
+		{name: "not invalid", path: "/api/v31gap/item", body: `{"value":42}`},
+		{name: "pattern properties valid", path: "/api/v31gap/pattern", body: `{"S_name":"hello"}`, want: true},
+		{name: "pattern properties wrong type", path: "/api/v31gap/pattern", body: `{"S_name":123}`},
+		{name: "pattern properties additional property", path: "/api/v31gap/pattern", body: `{"extra":"not-allowed"}`},
+		{name: "dynamic reference valid", path: "/api/v31gap/dynref", body: `{"items":["hello","world"]}`, want: true},
+		{name: "dynamic reference invalid", path: "/api/v31gap/dynref", body: `{"items":[1,2,3]}`},
+		{
+			name: "content annotations",
+			path: "/api/v31gap/content-annotation",
+			body: `{"data":"not base64 or JSON"}`,
+			want: true,
+		},
+		{name: "prefix items valid", path: "/api/v31gap/prefixitems", body: `["hello",42,true]`, want: true},
+		{name: "prefix items first invalid", path: "/api/v31gap/prefixitems", body: `[123,42,true]`},
+		{name: "prefix items extra invalid", path: "/api/v31gap/prefixitems", body: `["hello",42,"not-a-boolean"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			err := validateRequest(req.Context(), req, compiled, Config{})
+			if got := err == nil; got != tt.want {
+				t.Fatalf("validateRequest() error = %v, valid = %t, want %t", err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMetadataSchemaRejectsNonpositiveSpecURLTTL(t *testing.T) {
 	p := newTestPlugin(t, Config{Spec: testSpec()})
 	metadataSchema := p.GetMetadataSchema()

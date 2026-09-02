@@ -80,7 +80,7 @@ cases:
         output:
           status: 402
           body:
-            equals: '{"message":"Invalid API key in request"}'
+            equals: "{\"message\":\"Invalid API key in request\"}\n"
 
   - name: remap-rate-limit-status-and-body
     runtime: *runtime
@@ -245,7 +245,7 @@ cases:
             Content-Type:
               equals: application/json
           body:
-            equals: '{"message":"authentication Failed"}'
+            equals: "{\"message\":\"authentication Failed\"}\n"
       - name: invalid-consumer
         input:
           path: /hello
@@ -257,4 +257,4 @@ cases:
             Content-Type:
               equals: text/plain
           body:
-            equals: '{"message":"Invalid API key in request"}'
+            equals: "{\"message\":\"Invalid API key in request\"}\n"

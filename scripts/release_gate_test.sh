@@ -79,6 +79,7 @@ done
 require_job_fixed "$unit_workflow" build-and-unit 'run: bash scripts/release_gate_test.sh'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test'
 require_job_fixed "$unit_workflow" build-and-unit 'run: make test-plugin-harness'
+require_job_fixed "$unit_workflow" build-and-unit 'run: make test-integration'
 
 # Local, container, and candidate builds must retain immutable build metadata.
 require_fixed 'GO_CACHE_RUNNER ?= bash scripts/go_cache.sh run --' "$makefile"

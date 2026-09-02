@@ -107,7 +107,7 @@ cases:
                   whitelist: ['x.*']
         output:
           logs:
-            matches: 'build route referer-invalid-x-pattern fail:.*referer-restriction'
+            matches: "validate plugin referer-restriction config: /whitelist/0: does not match pattern"
       - name: tilde-prefix
         config:
           routes:
@@ -118,7 +118,7 @@ cases:
                   whitelist: ['~y.xn']
         output:
           logs:
-            matches: 'build route referer-invalid-tilde-pattern fail:.*referer-restriction'
+            matches: "validate plugin referer-restriction config: /whitelist/0: does not match pattern"
 
   - name: blacklist-reject-message
     config:
@@ -138,7 +138,7 @@ cases:
     output:
       status: 403
       body:
-        equals: '{"message":"Your referer host is deny"}'
+        equals: "{\"message\":\"Your referer host is deny\"}\n"
 
   - name: blacklist-allows-other-host
     config:
@@ -165,4 +165,4 @@ cases:
               blacklist: [yy.com]
     output:
       logs:
-        matches: 'build route referer-reject-mutually-exclusive-lists fail:.*referer-restriction'
+        matches: 'validate plugin referer-restriction config: /: value does not satisfy schema rule oneOf'

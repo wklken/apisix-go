@@ -526,7 +526,8 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) err
 		resp.SetStatusCode(p.config.StatusCode)
 	}
 	responseEncoding := ""
-	if p.config.Body != nil || len(p.config.Filters) > 0 {
+	bodyRewriteConfigured := p.config.Body != nil || len(p.config.Filters) > 0
+	if bodyRewriteConfigured {
 		responseEncoding = resp.Header().Get("Content-Encoding")
 		clearHeadersAsBodyModified(resp.Header())
 	}
@@ -581,6 +582,13 @@ func (p *Plugin) rewrite(r *http.Request, resp *base.BufferedResponseWriter) err
 		}
 	}
 
+	if bodyRewriteConfigured {
+		// ReplaceBody also invalidates representation headers. Restore the
+		// explicit nil marker after replacement so net/http does not infer a
+		// Content-Length for the new representation. Configured header rewrites
+		// below can still set an intentional replacement value.
+		resp.Header()["Content-Length"] = nil
+	}
 	p.config.Headers.apply(r, resp)
 	return nil
 }

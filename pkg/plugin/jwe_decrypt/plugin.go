@@ -120,14 +120,25 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		consumer, ok := p.consumerByKey(token.header.Kid)
-		if !ok {
+		var consumer resource.Consumer
+		var plaintext []byte
+		found, credentialErr := base.UseConsumerCredential(
+			r.Context(), p.ConsumerLookup(), name, token.header.Kid,
+			func(candidate resource.Consumer, config resource.PluginConfig) error {
+				decrypted, err := decryptJWE(token, config)
+				if err != nil {
+					return err
+				}
+				consumer = candidate
+				plaintext = decrypted
+				return nil
+			},
+		)
+		if !found {
 			http.Error(w, util.BuildMessageResponse("invalid kid in JWE token"), http.StatusBadRequest)
 			return
 		}
-
-		plaintext, err := decryptJWE(token, consumer.Plugins[name])
-		if err != nil {
+		if credentialErr != nil {
 			http.Error(w, util.BuildMessageResponse("failed to decrypt JWE token"), http.StatusBadRequest)
 			return
 		}
@@ -136,14 +147,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		next.ServeHTTP(w, ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
 	}
 	return http.HandlerFunc(fn)
-}
-
-func (p *Plugin) consumerByKey(key string) (resource.Consumer, bool) {
-	lookup := p.ConsumerLookup()
-	if lookup == nil {
-		return resource.Consumer{}, false
-	}
-	return lookup.ConsumerByPluginKey(name, key)
 }
 
 func (p *Plugin) fetchToken(r *http.Request) string {

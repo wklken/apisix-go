@@ -27,6 +27,11 @@ type consumerOccurrenceKey struct {
 	factory  string
 }
 
+type staticConsumerCredentialKey struct {
+	plugin string
+	key    string
+}
+
 func newConsumerBindingPreparer(
 	catalog *capability.SecretDeclarationCatalog,
 ) (*consumerBindingPreparer, error) {
@@ -82,6 +87,7 @@ func (preparer *consumerBindingPreparer) PrepareConsumers(
 	consumers := make([]runtime.ConsumerRecord, 0)
 	groups := make([]runtime.ConsumerGroupRecord, 0)
 	credentials := make([]runtime.ConsumerCredentialBinding, 0)
+	credentialIndexes := make(map[staticConsumerCredentialKey]int)
 	consumed := make(map[consumerOccurrenceKey]struct{}, len(occurrences))
 	for _, key := range input.keys() {
 		if err := ctx.Err(); err != nil {
@@ -100,7 +106,15 @@ func (preparer *consumerBindingPreparer) PrepareConsumers(
 				return nil, consumerPreparationError(ctx)
 			}
 			consumers = append(consumers, consumerRecord)
-			credentials = append(credentials, bindings...)
+			for _, binding := range bindings {
+				key := staticConsumerCredentialKey{plugin: binding.Plugin, key: binding.Key}
+				if index, exists := credentialIndexes[key]; exists {
+					credentials[index] = binding
+					continue
+				}
+				credentialIndexes[key] = len(credentials)
+				credentials = append(credentials, binding)
+			}
 			for _, occurrence := range used {
 				consumed[occurrence] = struct{}{}
 			}
@@ -133,8 +147,12 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 	bindings := make([]runtime.ConsumerCredentialBinding, 0, len(normalized.view.plugins))
 	used := make([]consumerOccurrenceKey, 0, len(normalized.view.plugins))
 	for _, factory := range sortedFactories(normalized.view.plugins) {
+		config := normalized.view.plugins[factory]
+		if pluginConfigDisabled(config) {
+			continue
+		}
 		key := consumerOccurrenceKey{resource: normalized.key, factory: factory}
-		occurrence, exists := occurrences[key]
+		_, exists := occurrences[key]
 		if !exists {
 			return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
 		}
@@ -142,38 +160,31 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 		if !consumerregistry.Supports(factory) {
 			continue
 		}
-		config := normalized.view.plugins[factory]
+		declaresSecret := false
 		if err := preparer.catalog.TransformDeclaredFields(
 			factory,
 			capability.SecretConsumerConfig,
 			config,
-			func(declaration capability.SecretDeclaration, _ string, raw any) (any, error) {
-				reference, ok := raw.(string)
-				if !ok {
-					return raw, nil
+			func(_ capability.SecretDeclaration, _ string, raw any) (any, error) {
+				if value, ok := raw.(string); ok && capability.IsMaterializableSecretEnvelope(value) {
+					declaresSecret = true
 				}
-				resolved, err := preparation.MaterializeSecret(ctx, occurrence, declaration.Field, reference)
-				if err != nil {
-					return raw, errConsumerPreparationFailed
-				}
-				var plaintext string
-				if err := resolved.Use(func(value string) error {
-					plaintext = value
-					return nil
-				}); err != nil {
-					return raw, errConsumerPreparationFailed
-				}
-				return plaintext, nil
+				return raw, nil
 			},
 		); err != nil {
-			return runtime.ConsumerRecord{}, nil, nil, err
-		}
-		if err := consumerregistry.ValidateResolved(factory, config); err != nil {
 			return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
+		}
+		if !declaresSecret {
+			if err := consumerregistry.ValidateResolved(factory, config); err != nil {
+				return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
+			}
 		}
 		lookupKey, err := consumerregistry.LookupKey(factory, config)
 		if err != nil {
 			return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
+		}
+		if capability.IsMaterializableSecretEnvelope(lookupKey) {
+			continue
 		}
 		bindings = append(bindings, runtime.ConsumerCredentialBinding{
 			Plugin: factory, Key: lookupKey, ConsumerID: normalized.key.ID,
@@ -221,6 +232,9 @@ func validateConsumerOccurrenceSet(
 			continue
 		}
 		for _, factory := range sortedFactories(input.resources[resourceKey].view.plugins) {
+			if pluginConfigDisabled(input.resources[resourceKey].view.plugins[factory]) {
+				continue
+			}
 			expected[consumerOccurrenceKey{resource: resourceKey, factory: factory}] = struct{}{}
 		}
 	}

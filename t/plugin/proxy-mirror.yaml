@@ -375,7 +375,7 @@ cases:
                 proxy-mirror: {host: "http://127.0.0.1:1999", path: a}
               upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
         input: {path: /hello}
-        output: {status: 404, logs: {matches: "'/path'.*does not match pattern"}}
+        output: {status: 404, logs: {matches: 'validate plugin proxy-mirror config: /path: does not match pattern'}}
       - name: path-must-not-contain-query
         config:
           routes:
@@ -385,7 +385,7 @@ cases:
                 proxy-mirror: {host: "http://127.0.0.1:1999", path: "/a?a=c"}
               upstream: {type: roundrobin, nodes: {"127.0.0.1:1": 1}}
         input: {path: /hello}
-        output: {status: 404, logs: {matches: "'/path'.*does not match pattern"}}
+        output: {status: 404, logs: {matches: 'validate plugin proxy-mirror config: /path: does not match pattern'}}
 
   - name: hostname-dns-delivery
     config:

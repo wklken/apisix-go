@@ -38,7 +38,7 @@ cases:
               key: 123
               secret: "12345678901234567890123456789012"
     output:
-      logs: {matches: 'jwe-decrypt consumer key must be a string'}
+      logs: {matches: 'validate consumer plugin jwe-decrypt config: /key: expected string'}
 
   - name: consumer-secret-type-diagnostic
     config:
@@ -49,7 +49,7 @@ cases:
               key: user-key
               secret: 123
     output:
-      logs: {matches: 'jwe-decrypt consumer secret must be a string'}
+      logs: {matches: 'validate consumer plugin jwe-decrypt config: /secret: expected string'}
 
   - name: raw-secret-length-diagnostic
     config:

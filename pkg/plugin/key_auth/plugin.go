@@ -1,6 +1,7 @@
 package key_auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -198,7 +199,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 
 	// note: here it's  unique key => consumer, it's different from basic-auth
-	consumer, err := p.consumerByKey(key)
+	consumer, err := p.consumerByKey(r.Context(), key)
 	if errors.Is(err, errKeyAuthConsumerNotFound) {
 		if p.config.AnonymousConsumer != "" {
 			p.hideAllCredentials(r)
@@ -253,13 +254,23 @@ func (p *Plugin) anonymousConsumerResult(w http.ResponseWriter, r *http.Request)
 	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer))), true
 }
 
-func (p *Plugin) consumerByKey(key string) (resource.Consumer, error) {
+func (p *Plugin) consumerByKey(ctx context.Context, key string) (resource.Consumer, error) {
 	lookup := p.ConsumerLookup()
 	if lookup == nil {
 		return resource.Consumer{}, errKeyAuthConsumerNotFound
 	}
-	consumer, ok := lookup.ConsumerByPluginKey(name, key)
-	if !ok {
+	var consumer resource.Consumer
+	found, err := base.UseConsumerCredential(
+		ctx, lookup, name, key,
+		func(candidate resource.Consumer, _ resource.PluginConfig) error {
+			consumer = candidate
+			return nil
+		},
+	)
+	if err != nil {
+		return resource.Consumer{}, err
+	}
+	if !found {
 		return resource.Consumer{}, errKeyAuthConsumerNotFound
 	}
 	return consumer, nil

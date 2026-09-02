@@ -153,6 +153,7 @@ cases:
   - name: schema-contract
     variants:
       - name: missing-secret
+        wait_for_generation: true
         config:
           routes:
             - id: cas-missing-secret
@@ -160,7 +161,7 @@ cases:
               plugins:
                 cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {}}
         input: {path: /schema}
-        output: {status: 503}
+        output: {status: 404}
       - name: short-secret
         config:
           routes:
@@ -171,6 +172,7 @@ cases:
         input: {path: /schema}
         output: {status: 404}
       - name: strict-samesite
+        wait_for_generation: true
         config:
           routes:
             - id: cas-strict-samesite
@@ -178,7 +180,7 @@ cases:
               plugins:
                 cas-auth: {idp_uri: 'https://cas.example', cas_callback_uri: /cb, logout_uri: /logout, cookie: {secret: 0123456789abcdef0123456789abcdef, samesite: Strict}}
         input: {path: /schema}
-        output: {status: 503}
+        output: {status: 404}
       - name: none-requires-secure
         config:
           routes:

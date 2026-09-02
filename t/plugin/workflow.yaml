@@ -12,7 +12,7 @@ cases:
     steps:
       - name: created-return-route-rejects
         input: {path: /hello}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: return-route-request
     config:
@@ -27,7 +27,7 @@ cases:
     steps:
       - name: return-body-and-status-match
         input: {path: /hello}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: and-condition-route-created
     config:
@@ -45,7 +45,7 @@ cases:
     steps:
       - name: both-created-conditions-match
         input: {path: '/hello?foo=bar'}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: and-condition-falls-through
     config:
@@ -84,7 +84,7 @@ cases:
     steps:
       - name: matching-argument-is-rejected
         input: {path: '/hello?foo=bar'}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: two-uri-rules-created
     config:
@@ -102,7 +102,7 @@ cases:
     steps:
       - name: both-created-rules-have-distinct-actions
         input: {path: /hello2}
-        output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 401, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: first-uri-rule-matches
     config:
@@ -120,7 +120,7 @@ cases:
     steps:
       - name: first-uri-rule-returns-403
         input: {path: /hello}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: second-uri-rule-matches
     config:
@@ -138,7 +138,7 @@ cases:
     steps:
       - name: second-uri-rule-returns-401
         input: {path: /hello2}
-        output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 401, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: ordered-rules-created
     config:
@@ -156,7 +156,7 @@ cases:
     steps:
       - name: created-order-prefers-first-match
         input: {path: '/hello?foo=bar'}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: first-matching-rule-wins
     config:
@@ -174,7 +174,7 @@ cases:
     steps:
       - name: first-rule-short-circuits-second
         input: {path: '/hello?foo=bar'}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: second-rule-after-first-miss
     config:
@@ -192,7 +192,7 @@ cases:
     steps:
       - name: second-rule-runs-after-first-miss
         input: {path: '/hello?foo=bad'}
-        output: {status: 401, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 401, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: all-rules-miss
     config:
@@ -329,7 +329,7 @@ cases:
     steps:
       - name: uri-side-of-or-matches
         input: {path: /hello}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: or-condition-request
     config:
@@ -347,7 +347,7 @@ cases:
     steps:
       - name: uri-match-returns-exact-response
         input: {path: /hello}
-        output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}
+        output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}
 
   - name: mixed-return-and-count-rules-created
     config:
@@ -386,7 +386,7 @@ cases:
         expect: [{path: {equals: /hello1}}]
         respond: [{status: 200, body: mixed}]
     steps:
-      - {name: return-rule-rejects, input: {path: /hello}, output: {status: 403, body: {equals: '{"error_msg":"rejected by workflow"}'}}}
+      - {name: return-rule-rejects, input: {path: /hello}, output: {status: 403, body: {equals: "{\"error_msg\":\"rejected by workflow\"}\n"}}}
       - {name: count-rule-first-allows, input: {path: /hello1}, output: {status: 200, body: {equals: mixed}}}
       - {name: count-rule-second-rejects, input: {path: /hello1}, output: {status: 503}}
 

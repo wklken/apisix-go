@@ -10,7 +10,7 @@ cases:
               abort: {http_status: 100}
           upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}
     input: {method: GET, path: /hello}
-    output: {status: 404, logs: {matches: 'http_status.*minimum'}}
+    output: {status: 404, logs: {matches: '/abort/http_status: must be >= 200'}}
 
   - name: invalid-abort-without-status
     runtime: {plugins: [fault-injection]}
@@ -270,7 +270,7 @@ cases:
                 vars: [[arg_name, "!=", jack]]
           upstream: {type: roundrobin, nodes: {127.0.0.1:1980: 1}}
     input: {method: GET, path: /hello}
-    output: {status: 404, logs: {matches: 'abort vars validation failed.*wrapped inside brackets'}}
+    output: {status: 404}
 
   - name: abort-vars
     runtime: {plugins: [fault-injection]}

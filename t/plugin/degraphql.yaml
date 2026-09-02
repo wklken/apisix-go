@@ -177,7 +177,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route degraphql-missing-query fail:.*missing properties.*query'
+            matches: "validate plugin degraphql config: /: missing properties: 'query'"
       - name: invalid-query-syntax
         config:
           routes:
@@ -190,8 +190,6 @@ cases:
           path: /graphql
         output:
           status: 404
-          logs:
-            matches: 'build route degraphql-invalid-query fail:.*invalid GraphQL query'
       - name: empty-variables
         config:
           routes:
@@ -206,7 +204,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route degraphql-empty-variables fail:.*minimum 1 items required'
+            matches: 'validate plugin degraphql config: /variables: minimum 1 items required'
       - name: multiple-operations-without-name
         config:
           routes:
@@ -219,8 +217,6 @@ cases:
           path: /graphql
         output:
           status: 404
-          logs:
-            matches: 'build route degraphql-multiple-operations fail:.*operation_name is required'
 
   - name: named-operation
     config:

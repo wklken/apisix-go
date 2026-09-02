@@ -48,7 +48,7 @@ cases:
                     username: user
         output: &schema_error
           logs:
-            matches: 'build route kafka-proxy-.*fail:.*kafka-proxy'
+            matches: 'validate plugin kafka-proxy config:'
       - name: numeric-sasl-password
         config:
           routes:

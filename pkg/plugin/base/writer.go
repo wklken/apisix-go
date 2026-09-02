@@ -272,6 +272,10 @@ func (w *BufferedResponseWriter) Commit(dst http.ResponseWriter) {
 	}
 
 	for field, values := range w.header {
+		if len(values) == 0 {
+			dst.Header()[field] = nil
+			continue
+		}
 		for _, value := range values {
 			dst.Header().Add(field, value)
 		}

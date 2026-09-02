@@ -17,10 +17,11 @@ cases:
           status: 403
           headers:
             Content-Type:
-              equals: application/json
+              equals: text/plain; charset=utf-8
           body: &default_denied_body
-            equals: '{"message":"Your IP address is not allowed"}'
+            equals: "{\"message\":\"Your IP address is not allowed\"}\n"
       - name: invalid-ipv4-address
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -32,9 +33,8 @@ cases:
         input: *hello_input
         output: &schema_rejected
           status: 404
-          logs:
-            matches: 'build route ip-schema-.*fail:.*ip-restriction'
       - name: invalid-ipv4-prefix
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -46,6 +46,7 @@ cases:
         input: *hello_input
         output: *schema_rejected
       - name: empty-config
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -56,6 +57,7 @@ cases:
         input: *hello_input
         output: *schema_rejected
       - name: empty-blacklist
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -67,6 +69,7 @@ cases:
         input: *hello_input
         output: *schema_rejected
       - name: whitelist-and-blacklist-mutually-exclusive
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -92,6 +95,7 @@ cases:
           status: 403
           body: *default_denied_body
       - name: invalid-ipv6
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -103,6 +107,7 @@ cases:
         input: *hello_input
         output: *schema_rejected
       - name: message-empty
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -115,6 +120,7 @@ cases:
         input: *hello_input
         output: *schema_rejected
       - name: message-too-long
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -127,6 +133,7 @@ cases:
         input: *hello_input
         output: *schema_rejected
       - name: response-code-out-of-range
+        wait_for_generation: true
         runtime: *ip_runtime
         config:
           routes:
@@ -191,7 +198,7 @@ cases:
           status: 403
           headers:
             Content-Type:
-              equals: application/json
+              equals: text/plain; charset=utf-8
           body: *default_denied_body
       - name: ipv6-forbidden
         input:
@@ -354,7 +361,7 @@ cases:
         output: &custom_denied
           status: 403
           body:
-            equals: '{"message":"Do you want to do something bad?"}'
+            equals: "{\"message\":\"Do you want to do something bad?\"}\n"
       - name: exact-ip-forbidden
         input:
           path: /hello

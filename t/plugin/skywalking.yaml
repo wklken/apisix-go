@@ -17,7 +17,7 @@ cases:
         kind: http
         expect:
           - path: {equals: /defaults}
-            headers: {sw8: {matches: '^1-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-0-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+$'}}
+            headers: {sw8: {matches: '^1-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-1-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+-[A-Za-z0-9_-]+$'}}
         respond: [{status: 200, body: defaults-ok}]
       - name: sink
         kind: http
@@ -526,7 +526,7 @@ cases:
         input: {path: /protected-rejected}
         output:
           status: 401
-          body: {equals: '{"message":"Missing API key in request"}'}
+          body: {equals: "{\"message\":\"Missing API key in request\"}\n"}
         wait: 1100ms
 
   - name: single-runtime-instance-starts-one-reporter

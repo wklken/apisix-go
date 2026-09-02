@@ -42,6 +42,11 @@ type responseOwnerTestPlugin struct {
 	config responseModeTestConfig
 }
 
+type accessOnlyResponseTestPlugin struct {
+	base.BasePlugin
+	config responseTestConfig
+}
+
 type dualModeResponseTestPlugin struct {
 	base.BasePlugin
 	mode          base.RequestResponseMode
@@ -96,6 +101,13 @@ func (p *responseOwnerTestPlugin) Handler(next http.Handler) http.Handler { retu
 
 func (p *responseOwnerTestPlugin) ResponseCapability() ResponseCapability {
 	return ResponseCapability{StreamingResponseOwner: true, ExclusiveProtocol: ProtocolAI}
+}
+
+func (*accessOnlyResponseTestPlugin) Init() error     { return nil }
+func (*accessOnlyResponseTestPlugin) PostInit() error { return nil }
+func (p *accessOnlyResponseTestPlugin) Config() any   { return p.config }
+func (*accessOnlyResponseTestPlugin) Handler(next http.Handler) http.Handler {
+	return next
 }
 
 type countingResponseTestConfig struct {
@@ -334,6 +346,23 @@ func TestResponseModeDescriptorCannotInventUndeclaredCallbacksOrRemoveProtocolOw
 	}
 }
 
+func TestKafkaProxyAccessBindingDoesNotClaimResponseTerminal(t *testing.T) {
+	access := &accessOnlyResponseTestPlugin{config: responseTestConfig{stage: "pre-resolution"}}
+	access.Name = "kafka-proxy"
+	access.Priority = 2500
+	binding := checkedResponseBinding(t, "kafka-proxy", access, ScopeRoute, "route")
+	plan, err := BuildResponsePlan(ResponsePlanInput{StaticBindings: []Binding{binding}})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	if got := plan.RouteTerminals(); len(got) != 0 {
+		t.Fatalf("Kafka access binding route terminals = %#v, want none", got)
+	}
+	if got := plan.StreamingBindings(); len(got) != 0 {
+		t.Fatalf("Kafka access binding streaming bindings = %#v, want none", got)
+	}
+}
+
 func TestResponsePlanInstallAdmitsDynamicConsumerDualModeBinding(t *testing.T) {
 	body := newDualModeResponseTestPlugin(base.RequestResponseModeBounded)
 	binding := checkedResponseBinding(t, "ai-rate-limiting", body, ScopeConsumer, "consumer-rate")
@@ -371,6 +400,48 @@ func TestResponsePlanInstallAdmitsDynamicConsumerDualModeBinding(t *testing.T) {
 			"response callbacks = buffered:%d streaming:%d, want 1/0",
 			body.bufferedCalls.Load(),
 			body.streamCalls.Load(),
+		)
+	}
+}
+
+func TestResponsePlanInstallAdmitsDynamicConsumerBoundedBinding(t *testing.T) {
+	body := newResponseTestPlugin(
+		"echo",
+		1,
+		responseTestConfig{stage: "none", body: true},
+	)
+	body.body = func(_ *http.Request, state *base.ResponseState) error {
+		state.Body = []byte("consumer body")
+		return nil
+	}
+	binding := checkedResponseBinding(t, "echo", body, ScopeConsumer, "consumer-echo")
+	binding.Provenance.Kind = ResourceConsumer
+	plan, err := BuildResponsePlan(ResponsePlanInput{})
+	if err != nil {
+		t.Fatalf("BuildResponsePlan() error = %v", err)
+	}
+	pipeline := NewRequestPipeline(nil, func(r *http.Request) (ConsumerResolution, error) {
+		return ConsumerResolution{Request: r, Resolved: true, Bindings: []Binding{binding}}, nil
+	})
+	terminalCalls := 0
+	handler := plan.Install(pipeline, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		terminalCalls++
+		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+		_, _ = w.Write([]byte("upstream body"))
+	}))
+	request, _ := apisixctx.EnsureRequestLifecycle(
+		httptest.NewRequest(http.MethodGet, "/echo", nil),
+		time.Now(),
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || response.Body.String() != "consumer body" || terminalCalls != 1 {
+		t.Fatalf(
+			"response = %d/%q, terminal calls %d, want 200/consumer body and one terminal call",
+			response.Code,
+			response.Body.String(),
+			terminalCalls,
 		)
 	}
 }

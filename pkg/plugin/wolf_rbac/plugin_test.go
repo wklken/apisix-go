@@ -26,6 +26,38 @@ type wolfConsumerLookup struct {
 	closed bool
 }
 
+type cancelAwareWolfConsumerLookup struct {
+	entered chan context.Context
+	release chan struct{}
+}
+
+func (*cancelAwareWolfConsumerLookup) ConsumerByPluginKey(string, string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (*cancelAwareWolfConsumerLookup) ConsumerByID(string) (resource.Consumer, bool) {
+	return resource.Consumer{}, false
+}
+
+func (*cancelAwareWolfConsumerLookup) ConsumerGroupByID(string) (resource.ConsumerGroup, bool) {
+	return resource.ConsumerGroup{}, false
+}
+
+func (lookup *cancelAwareWolfConsumerLookup) UseConsumerCredential(
+	requestContext context.Context,
+	_ string,
+	_ string,
+	_ base.ConsumerCredentialUse,
+) (bool, error) {
+	lookup.entered <- requestContext
+	select {
+	case <-requestContext.Done():
+		return false, requestContext.Err()
+	case <-lookup.release:
+		return false, nil
+	}
+}
+
 func (lookup *wolfConsumerLookup) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {
 	lookup.mu.Lock()
 	defer lookup.mu.Unlock()
@@ -346,6 +378,91 @@ func TestHandlerUsesInjectedWolfConsumerLookupAuthoritatively(t *testing.T) {
 	if missResponse.Code != http.StatusUnauthorized ||
 		!strings.Contains(missResponse.Body.String(), "Invalid appid in rbac token") {
 		t.Fatalf("lookup miss response = %d/%q, want invalid-appid 401", missResponse.Code, missResponse.Body.String())
+	}
+}
+
+func TestWolfConsumerLookupStopsWhenRequestIsCanceled(t *testing.T) {
+	tests := []struct {
+		name    string
+		request func(context.Context) *http.Request
+		serve   func(*Plugin, http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "protected request",
+			request: func(requestContext context.Context) *http.Request {
+				request := httptest.NewRequest(http.MethodGet, "http://example.com/orders/1", nil).
+					WithContext(requestContext)
+				request.Header.Set("Authorization", "V1#cancel-app#wolf-token")
+				return request
+			},
+			serve: func(plugin *Plugin, response http.ResponseWriter, request *http.Request) {
+				plugin.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+					ServeHTTP(response, request)
+			},
+		},
+		{
+			name: "login public API",
+			request: func(requestContext context.Context) *http.Request {
+				request := httptest.NewRequest(
+					http.MethodPost,
+					WolfLoginURI,
+					strings.NewReader(`{"appid":"cancel-app","username":"admin","password":"secret"}`),
+				).WithContext(requestContext)
+				request.Header.Set("Content-Type", "application/json")
+				return request
+			},
+			serve: func(plugin *Plugin, response http.ResponseWriter, request *http.Request) {
+				plugin.handleLogin(response, request)
+			},
+		},
+		{
+			name: "token public API",
+			request: func(requestContext context.Context) *http.Request {
+				request := httptest.NewRequest(http.MethodGet, WolfUserInfoURI, nil).WithContext(requestContext)
+				request.Header.Set("Authorization", "V1#cancel-app#wolf-token")
+				return request
+			},
+			serve: func(plugin *Plugin, response http.ResponseWriter, request *http.Request) {
+				plugin.handleUserInfo(response, request)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := &cancelAwareWolfConsumerLookup{
+				entered: make(chan context.Context, 1),
+				release: make(chan struct{}),
+			}
+			t.Cleanup(func() {
+				select {
+				case <-lookup.release:
+				default:
+					close(lookup.release)
+				}
+			})
+			plugin := newLookupTestPlugin(t, Config{}, lookup)
+			requestContext, cancel := context.WithCancel(context.Background())
+			request := test.request(requestContext)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				test.serve(plugin, httptest.NewRecorder(), request)
+			}()
+
+			select {
+			case <-lookup.entered:
+			case <-time.After(time.Second):
+				t.Fatal("consumer lookup did not start")
+			}
+			cancel()
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("consumer lookup did not stop after request cancellation")
+			}
+		})
 	}
 }
 

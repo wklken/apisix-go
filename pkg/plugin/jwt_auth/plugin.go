@@ -198,33 +198,37 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		return resource.Consumer{}, token, "missing user key in JWT token"
 	}
 
-	consumer, ok := p.consumerByPluginKey(userKey)
-	if !ok {
+	var consumer resource.Consumer
+	var claims map[string]any
+	found, credentialErr := base.UseConsumerCredential(
+		r.Context(), p.ConsumerLookup(), name, userKey,
+		func(candidate resource.Consumer, config resource.PluginConfig) error {
+			var authConfig consumerConfig
+			if err := util.Parse(config, &authConfig); err != nil {
+				return err
+			}
+			if authConfig.Algorithm == "" {
+				authConfig.Algorithm = "HS256"
+			}
+			verified, err := verifyToken(
+				rawToken,
+				authConfig,
+				p.now(),
+				time.Duration(authConfig.LifetimeGracePeriod)*time.Second,
+				p.config.ClaimsToVerify,
+			)
+			if err != nil {
+				return err
+			}
+			consumer = candidate
+			claims = verified
+			return nil
+		},
+	)
+	if !found {
 		return resource.Consumer{}, token, "Invalid user key in JWT token"
 	}
-
-	pluginConfig, ok := consumer.Plugins[name]
-	if !ok {
-		return resource.Consumer{}, token, "Missing jwt-auth config in consumer settings"
-	}
-
-	var authConfig consumerConfig
-	if err := util.Parse(pluginConfig, &authConfig); err != nil {
-		return resource.Consumer{}, token, "Invalid jwt-auth config in consumer settings"
-	}
-	if authConfig.Algorithm == "" {
-		authConfig.Algorithm = "HS256"
-	}
-
-	now := p.now()
-	claims, err := verifyToken(
-		rawToken,
-		authConfig,
-		now,
-		time.Duration(authConfig.LifetimeGracePeriod)*time.Second,
-		p.config.ClaimsToVerify,
-	)
-	if err != nil {
+	if credentialErr != nil {
 		return resource.Consumer{}, token, "failed to verify jwt"
 	}
 
@@ -234,14 +238,6 @@ func (p *Plugin) findConsumer(r *http.Request) (resource.Consumer, jwtToken, str
 		Signing:   token.Signing,
 		Signature: token.Signature,
 	}, ""
-}
-
-func (p *Plugin) consumerByPluginKey(key string) (resource.Consumer, bool) {
-	lookup := p.ConsumerLookup()
-	if lookup == nil {
-		return resource.Consumer{}, false
-	}
-	return lookup.ConsumerByPluginKey(name, key)
 }
 
 func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {

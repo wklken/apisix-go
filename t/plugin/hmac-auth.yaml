@@ -56,7 +56,7 @@ cases:
           input: {path: /ready, hmac: *valid_hmac}
           output: {status: 204}
         input: {path: /ready, hmac: *valid_hmac}
-        output: {status: 204, logs: {matches: "hmac-auth consumer configuration:.*missing properties: 'secret_key'"}}
+        output: {status: 204, logs: {matches: "validate consumer plugin hmac-auth config: /: missing properties: 'secret_key'"}}
       - name: reject-missing-key-id
         wait: 100ms
         config:
@@ -73,7 +73,7 @@ cases:
           input: {path: /ready, hmac: *valid_hmac}
           output: {status: 204}
         input: {path: /ready, hmac: *valid_hmac}
-        output: {status: 204, logs: {matches: "hmac-auth consumer configuration:.*missing properties: 'key_id'"}}
+        output: {status: 204, logs: {matches: "validate consumer plugin hmac-auth config: /: missing properties: 'key_id'"}}
       - name: reject-key-id-over-256-bytes
         wait: 100ms
         config:
@@ -93,7 +93,7 @@ cases:
           input: {path: /ready, hmac: *valid_hmac}
           output: {status: 204}
         input: {path: /ready, hmac: *valid_hmac}
-        output: {status: 204, logs: {matches: 'hmac-auth consumer configuration:.*key_id.*length must be <= 256'}}
+        output: {status: 204, logs: {matches: 'validate consumer plugin hmac-auth config: /key_id: length must be <= 256'}}
       - name: reject-secret-key-over-256-bytes
         wait: 100ms
         config:
@@ -113,7 +113,7 @@ cases:
           input: {path: /ready, hmac: *valid_hmac}
           output: {status: 204}
         input: {path: /ready, hmac: *valid_hmac}
-        output: {status: 204, logs: {matches: 'hmac-auth consumer configuration:.*secret_key.*length must be <= 256'}}
+        output: {status: 204, logs: {matches: 'validate consumer plugin hmac-auth config: /secret_key: length must be <= 256'}}
       - name: reject-empty-consumer-plugin
         wait: 100ms
         config:
@@ -130,7 +130,7 @@ cases:
           input: {path: /ready, hmac: *valid_hmac}
           output: {status: 204}
         input: {path: /ready, hmac: *valid_hmac}
-        output: {status: 204, logs: {matches: "hmac-auth consumer configuration:.*missing properties: '(key_id|secret_key)'"}}
+        output: {status: 204, logs: {matches: "validate consumer plugin hmac-auth config: /: missing properties: '(key_id|secret_key)'"}}
 
   - name: authorization-parsing-and-lookup
     config:
@@ -152,7 +152,7 @@ cases:
         input: {path: /hello}
         output:
           status: 401
-          body: {equals: '{"message":"client request can''t be validated: missing Authorization header"}'}
+          body: {equals: "{\"message\":\"client request can't be validated: missing Authorization header\"}\n"}
           logs: {matches: "client request can't be validated: missing Authorization header"}
       - name: missing-algorithm
         input:
@@ -160,19 +160,19 @@ cases:
           headers:
             Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
             Authorization: 'Signature keyId="my-access-key",headers="@request-target date",signature="asdf"'
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'algorithm missing'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'algorithm missing'}}
       - name: invalid-key-id
         input:
           path: /hello
           hmac: {key_id: unknown, secret: irrelevant, algorithm: hmac-sha256, headers: ['@request-target', date]}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid key_id'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid key_id'}}
       - name: invalid-algorithm
         input:
           path: /hello
           headers:
             Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
             Authorization: 'Signature keyId="my-access-key",algorithm="invalid",headers="@request-target date",signature="asdf"'
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid algorithm'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid algorithm'}}
 
   - name: clock-and-date-validation
     config:
@@ -196,17 +196,17 @@ cases:
           headers:
             Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
             Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Clock skew exceeded'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Clock skew exceeded'}}
       - name: missing-date
         input:
           path: /hello
           headers: {Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Date header missing'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Date header missing'}}
       - name: invalid-gmt-date
         input:
           path: /hello
           headers: {Date: adfsdf, Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid GMT format time'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid GMT format time'}}
 
   - name: valid-signature-with-custom-headers
     config:
@@ -280,7 +280,7 @@ cases:
           input: {path: /ready, hmac: *valid_hmac}
           output: {status: 204}
         input: {path: /ready, hmac: *valid_hmac}
-        output: {status: 204, logs: {matches: 'build route hmac-clock-skew-zero fail:.*hmac-auth.*clock_skew.*1'}}
+        output: {status: 204, logs: {matches: 'validate plugin hmac-auth config: /clock_skew: must be >= 1'}}
 
   - name: invalid-signature-with-large-clock-window
     config:
@@ -305,7 +305,7 @@ cases:
           headers:
             Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
             Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date",signature="asdf"'
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid signature'}}
 
   - name: one-second-clock-skew
     config:
@@ -327,12 +327,12 @@ cases:
         input:
           path: /hello
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date], date_offset: -2s}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Clock skew exceeded'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Clock skew exceeded'}}
       - name: clock-skew-rejection-does-not-log-the-secret
         input:
           path: /hello
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date], date_offset: -2s}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {not_matches: 'my-secret-key'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {not_matches: 'my-secret-key'}}
 
   - name: default-clock-skew-put
     config:
@@ -389,7 +389,7 @@ cases:
           path: /hello
           headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-C: 23879fmsldfk}
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-c]}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'x-custom-header-b.*missing in signing'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'x-custom-header-b.*missing in signing'}}
       - name: all-configured-headers-are-signed
         input:
           path: /hello
@@ -428,7 +428,7 @@ cases:
           input: {path: /ready, hmac: *valid_hmac}
           output: {status: 204}
         input: {path: /ready, hmac: *valid_hmac}
-        output: {status: 204, logs: {matches: 'build route hmac-empty-algorithms fail:.*hmac-auth.*allowed_algorithms.*minimum 1 items required'}}
+        output: {status: 204, logs: {matches: 'validate plugin hmac-auth config: /allowed_algorithms: minimum 1 items required'}}
 
   - name: hide-credentials
     config:
@@ -481,7 +481,7 @@ cases:
             Date: 'Thu, 24 Sep 2020 06:39:52 GMT'
             X-Custom-Header-A: 'asld$%dfasf'
             Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="pz9FBA5rcAQuXQMsTH1hmWF840BAIe79gHOTwL0yUkI="'
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid signature'}}
       - name: client-sends-a-header-not-bound-by-signature
         input:
           path: /hello
@@ -490,7 +490,7 @@ cases:
             X-Custom-Header-A: 'asld$%dfasf'
             X-Custom-Header-B: 'asld$%dfasf'
             Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="@request-target date x-custom-header-a x-custom-header-b",signature="Vfu/wid0QUmobexr/8xMJr6FjEnAWeE1lakghCi88c0="'
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid signature'}}
 
   - name: restricted-algorithm
     config:
@@ -512,7 +512,7 @@ cases:
         input:
           path: /hello
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha1, headers: ['@request-target', date]}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid algorithm'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid algorithm'}}
 
   - name: default-date-signed-header
     config:
@@ -534,7 +534,7 @@ cases:
         input:
           path: /hello
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: [], date: now}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'date.*missing in signing'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'date.*missing in signing'}}
       - name: date-bound-into-default-signing-string
         input:
           path: /hello
@@ -570,7 +570,7 @@ cases:
           headers:
             Date: 'Thu, 24 Sep 2020 06:40:52 GMT'
             Authorization: 'Signature keyId="my-access-key",algorithm="hmac-sha256",headers="date",signature="hbA3Tpvi6RtWrEfNaVzWWFBEWkCBniQZW0nc5SD5P2c="'
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid signature'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid signature'}}
 
   - name: opt-out-default-signed-headers
     config:
@@ -604,7 +604,7 @@ cases:
     output:
       status: 401
       headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}
-      body: {equals: '{"message":"client request can''t be validated: missing Authorization header"}'}
+      body: {equals: "{\"message\":\"client request can't be validated: missing Authorization header\"}\n"}
 
   - name: consumer-schema-selection
     config:
@@ -682,7 +682,7 @@ cases:
           body: '{"name": "world"}'
           headers: {X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid digest'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid digest'}}
       - name: invalid-digest
         input:
           method: POST
@@ -690,7 +690,7 @@ cases:
           body: '{"name": "world"}'
           headers: {Digest: hello, X-Custom-Header-A: 'asld$%dfasf', X-Custom-Header-B: 23879fmsldfk}
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date, x-custom-header-a, x-custom-header-b]}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}, logs: {matches: 'Invalid digest'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}, logs: {matches: 'Invalid digest'}}
       - name: valid-digest
         input:
           method: POST
@@ -724,7 +724,7 @@ cases:
           body: '{"name": "this body is well over ten bytes"}'
           headers: {Digest: 'SHA-256=unused'}
           hmac: {key_id: my-access-key, secret: my-secret-key, algorithm: hmac-sha256, headers: ['@request-target', date]}
-        output: {status: 413, body: {equals: '{"message":"request body too large"}'}, logs: {matches: 'request body too large'}}
+        output: {status: 413, body: {equals: "{\"message\":\"request body too large\"}\n"}, logs: {matches: 'request body too large'}}
 
   - name: request-body-within-limit
     config:
@@ -787,7 +787,7 @@ cases:
     steps:
       - name: unresolved-vault-secret-fails-closed
         input: {path: /hello, hmac: *valid_hmac}
-        output: {status: 401, body: {equals: '{"message":"client request can''t be validated"}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"client request can't be validated\"}\n"}}
       - name: late-vault-secret-authenticates-without-reload
         input: {path: /hello, hmac: *valid_hmac}
         output: {status: 200, body: {equals: passed}, logs: {not_matches: '\bmy-secret-key\b'}}
@@ -896,7 +896,7 @@ cases:
     output:
       status: 401
       headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}
-      body: {equals: '{"message":"Invalid user authorization"}'}
+      body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}
       logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
 
   - name: default-realm
@@ -927,5 +927,5 @@ cases:
     output:
       status: 401
       headers: {WWW-Authenticate: {equals: 'hmac realm="hmac"'}}
-      body: {equals: '{"message":"Invalid user authorization"}'}
+      body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}
       logs: {matches: 'failed to get anonymous consumer missing-consumer'}

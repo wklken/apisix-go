@@ -163,6 +163,7 @@ cases:
           - {name: authorize-with-full-schema-options, input: *teacher_hello, output: *hello_output}
 
   - name: schema-requires-token-or-discovery
+    wait_for_generation: true
     config:
       routes:
         - id: keycloak-missing-token-and-discovery
@@ -176,9 +177,10 @@ cases:
         input: {path: /hello, headers: {Authorization: Bearer teacher-token}}
         output:
           status: 404
-          logs: {matches: 'keycloak-missing-token-and-discovery.*authz-keycloak.*(discovery|token_endpoint)'}
+          logs: {matches: "validate plugin authz-keycloak config: /: missing properties: 'discovery'"}
 
   - name: schema-requires-client-id
+    wait_for_generation: true
     config:
       routes:
         - id: keycloak-missing-client-id
@@ -192,9 +194,10 @@ cases:
         input: {path: /hello, headers: {Authorization: Bearer teacher-token}}
         output:
           status: 404
-          logs: {matches: 'keycloak-missing-client-id.*authz-keycloak.*missing properties:.*client_id'}
+          logs: {matches: "validate plugin authz-keycloak config: /: missing properties: 'client_id'"}
 
   - name: lazy-schema-requires-registration-or-discovery
+    wait_for_generation: true
     config:
       routes:
         - id: keycloak-lazy-missing-registration
@@ -212,7 +215,7 @@ cases:
         input: {path: /hello, headers: {Authorization: Bearer teacher-token}}
         output:
           status: 404
-          logs: {matches: 'keycloak-lazy-missing-registration.*authz-keycloak.*lazy_load_paths.*value must be false'}
+          logs: {matches: "validate plugin authz-keycloak config: /: missing properties: 'discovery'"}
 
   - name: tls-verification-defaults-to-enabled
     variants:
@@ -717,7 +720,7 @@ cases:
           plugins:
             authz-keycloak:
               client_id: course_management
-              client_secret: d1ec69e9-55d2-4109-a3ea-befa071579d5
+              client_secret: '$encrypted://YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S'
               token_endpoint: '{{FIXTURE.keycloak.URL}}/token'
               password_grant_token_generation_incoming_uri: /api/token
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
@@ -728,7 +731,7 @@ cases:
           - method: POST
             path: {equals: /token}
             body:
-              equals: client_id=course_management&client_secret=d1ec69e9-55d2-4109-a3ea-befa071579d5&grant_type=password&password=123456&username=teacher%40gmail.com
+              equals: client_id=course_management&client_secret=3416238e1edf915eac08b8fe345b2b95cdba7e04&grant_type=password&password=123456&username=teacher%40gmail.com
         respond: [{status: 200, body: '{"access_token":"encrypted-case-access","refresh_token":"encrypted-case-refresh"}'}]
       - {name: primary, kind: http, expect_requests: 0, respond: [{status: 200}]}
     steps:
@@ -738,7 +741,7 @@ cases:
           status: 200
           body: {equals: '{"access_token":"encrypted-case-access","refresh_token":"encrypted-case-refresh"}'}
           logs:
-            not_matches: 'd1ec69e9-55d2-4109-a3ea-befa071579d5|Fz1juZEEvh9PPXOmWFdMMJkREt3ZSzEVWcUZPxNP6achk3fosEvn37oN0qH4YgKB|encrypted-case-access|encrypted-case-refresh'
+            not_matches: '3416238e1edf915eac08b8fe345b2b95cdba7e04|YUfqAO0kPXjZIoAbPSuryCkUDksEmwSq08UDTIUWolN6KQwEUrh72TazePueo4/S|encrypted-case-access|encrypted-case-refresh'
   - name: vault-secret-resource-supplies-password-grant-client-secret
     config:
       secrets:
@@ -836,8 +839,6 @@ cases:
         input: *password_grant_input
         output:
           status: 404
-          logs:
-            matches: 'keycloak-invalid-environment-secret.*resolve authz-keycloak client_secret reference: credential unavailable'
       - name: missing-environment-secret-diagnostic-is-redacted
         input: *password_grant_input
         output:

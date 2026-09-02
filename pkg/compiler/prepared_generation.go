@@ -318,7 +318,10 @@ func preparedCleanupResult(cleanupErr error, terminal bool) error {
 }
 
 type consumerLookupView struct {
-	bindings *runtime.ConsumerBindings
+	bindings    *runtime.ConsumerBindings
+	preparation PreparationGeneration
+	catalog     *capability.SecretDeclarationCatalog
+	candidates  map[string][]consumerCredentialCandidate
 }
 
 func (view consumerLookupView) ConsumerByPluginKey(plugin, key string) (resource.Consumer, bool) {

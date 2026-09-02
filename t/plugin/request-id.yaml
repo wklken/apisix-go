@@ -36,7 +36,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: 'build route request-id-wrong-include-type fail:.*expected boolean'
+        matches: 'validate plugin request-id config: /include_in_response: expected boolean, but got string'
 
   - name: custom-header-name
     config:
@@ -115,7 +115,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route request-id-bad-algorithm fail:.*enum'
+            matches: 'validate plugin request-id config: /algorithm: value is not in the allowed set'
       - name: uuid-v5
         config:
           routes:
@@ -130,7 +130,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route request-id-uuid-v5 fail:.*enum'
+            matches: 'validate plugin request-id config: /algorithm: value is not in the allowed set'
 
   - name: echo-client-request-id
     config:

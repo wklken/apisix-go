@@ -427,7 +427,7 @@ func (factory *WorkerCompilerFactory) transferPreparedGeneration(
 	prepared = &PreparedGeneration{
 		publication: clonePublicationSetForPreparation(registered.publication),
 		preparation: registered.preparation, metadata: metadata, consumers: bindings,
-		lookup: consumerLookupView{bindings: bindings}, tasks: tasks,
+		lookup: newConsumerLookupView(bindings, registered.preparation, factory.compiler.schemas.catalog), tasks: tasks,
 		effective: factory.effective, catalog: factory.compiler.schemas.catalog,
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
 		observers:          factory.observers,

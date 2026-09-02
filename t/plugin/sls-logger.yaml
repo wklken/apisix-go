@@ -26,16 +26,19 @@ cases:
       - name: sink
         kind: tls-tcp
         network_expect:
-          - payload: {matches: '^\<46\>1 .* \[logservice project="your-project" logstore="your-logstore" access-key-id="your_access_key"\] \{"case":"schema-valid","route_id":"sls-schema-valid"\}\n$'}
-            forbidden_matches: [access-key-secret, your_access_secret]
+          - payload: {matches: '^\<46\>1 .* \[logservice project="your-project" logstore="your-logstore" access-key-id="your_access_key" access-key-secret="your_access_secret"\] \{"case":"schema-valid","route_id":"sls-schema-valid"\}\n$'}
         network_respond: [{payload: ''}]
     steps:
       - name: accepted-schema-emits-rfc5424
         input: {method: GET, path: /schema-valid}
-        output: {status: 200, body: {equals: done}}
+        output:
+          status: 200
+          body: {equals: done}
+          logs: {not_matches: 'your_access_secret'}
         wait: 1s
 
   - name: missing-access-key-secret-is-rejected
+    wait_for_generation: true
     config:
       routes:
         - id: sls-missing-secret
@@ -64,6 +67,7 @@ cases:
           logs: {matches: "validate plugin sls-logger config:.*missing properties: 'access_key_secret'"}
 
   - name: string-timeout-is-rejected
+    wait_for_generation: true
     config:
       routes:
         - id: sls-string-timeout
@@ -412,13 +416,15 @@ cases:
       - name: sink
         kind: tls-tcp
         network_expect:
-          - payload: {matches: '\[logservice project="your_project" logstore="your_logstore" access-key-id="your_access_key_id"\] \{"case":"encrypted-secret","route_id":"1"\}\n$'}
-            forbidden_matches: [access-key-secret, your_access_key_secret]
+          - payload: {matches: '\[logservice project="your_project" logstore="your_logstore" access-key-id="your_access_key_id" access-key-secret="your_access_key_secret"\] \{"case":"encrypted-secret","route_id":"1"\}\n$'}
         network_respond: [{payload: ''}]
     steps:
-      - name: runtime-validates-encrypted-secret-without-emitting-it
+      - name: runtime-materializes-encrypted-secret-only-for-sls-authentication
         input: {method: GET, path: /encrypted}
-        output: {status: 200, body: {equals: encrypted}}
+        output:
+          status: 200
+          body: {equals: encrypted}
+          logs: {not_matches: 'your_access_key_secret'}
         wait: 1s
   - name: route-log-format-configuration-is-effective
     config:
@@ -588,14 +594,14 @@ cases:
     fixtures:
       - name: primary
         kind: http
-        expect_requests: 0
+        expect: [{method: GET, path: {equals: /hello}}]
         respond: [{status: 200, body: unexpected}]
     steps:
-      - name: invalid-metadata-prevents-route-installation
+      - name: invalid-metadata-is-excluded-while-route-remains-live
         input: {method: GET, path: /hello}
         output:
-          status: 404
-          body: {equals: "404 page not found\n"}
+          status: 200
+          body: {equals: unexpected}
           logs: {matches: 'validate plugin sls-logger metadata:.*log_format.*expected object'}
 
   - name: correct-plugin-metadata-is-accepted

@@ -150,8 +150,15 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequest(r)
 	}
 
-	consumer, ok := p.consumerByUserDN(p.userDN(user.username))
-	if !ok {
+	var consumer resource.Consumer
+	found, credentialErr := base.UseConsumerCredential(
+		r.Context(), p.ConsumerLookup(), name, p.userDN(user.username),
+		func(candidate resource.Consumer, _ resource.PluginConfig) error {
+			consumer = candidate
+			return nil
+		},
+	)
+	if credentialErr != nil || !found {
 		p.recordAuthDiagnostic(r, "failed to find user: invalid user")
 		p.writeAuthError(w, http.StatusUnauthorized, "Invalid user authorization")
 		return base.StopRequest(r)
@@ -159,14 +166,6 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	logger.Info("find consumer " + consumer.Username)
 
 	return base.ContinueRequest(ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
-}
-
-func (p *Plugin) consumerByUserDN(userDN string) (resource.Consumer, bool) {
-	lookup := p.ConsumerLookup()
-	if lookup == nil {
-		return resource.Consumer{}, false
-	}
-	return lookup.ConsumerByPluginKey(name, userDN)
 }
 
 type basicUser struct {

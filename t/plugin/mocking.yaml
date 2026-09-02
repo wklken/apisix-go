@@ -16,7 +16,7 @@ cases:
       status: 200
       headers:
         Content-Type:
-          equals: text/plain
+          equals: text/plain; charset=utf-8
       body:
         equals: hello world
 

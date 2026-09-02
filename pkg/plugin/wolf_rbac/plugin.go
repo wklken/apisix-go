@@ -1,6 +1,7 @@
 package wolf_rbac
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -185,7 +186,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequest(r)
 	}
 
-	consumer, cfg, err := p.consumerByAppID(token.AppID)
+	consumer, cfg, err := p.consumerByAppID(r.Context(), token.AppID)
 	if err != nil {
 		logger.Errorf("consumer [%s] not found", token.AppID)
 		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "Invalid appid in rbac token")
@@ -241,30 +242,30 @@ func parseRBACToken(raw string) (rbacToken, error) {
 	return rbacToken{AppID: parts[1], WolfToken: parts[2]}, nil
 }
 
-func (p *Plugin) consumerByAppID(appID string) (resource.Consumer, consumerConfig, error) {
-	consumer, ok := p.consumerRecordByAppID(appID)
-	if !ok {
-		return resource.Consumer{}, consumerConfig{}, errWolfConsumerNotFound
-	}
-
-	raw, ok := consumer.Plugins[name]
-	if !ok {
-		return resource.Consumer{}, consumerConfig{}, errWolfConsumerNotFound
-	}
+func (p *Plugin) consumerByAppID(
+	requestContext context.Context,
+	appID string,
+) (resource.Consumer, consumerConfig, error) {
+	var consumer resource.Consumer
 	var cfg consumerConfig
-	if err := util.Parse(raw, &cfg); err != nil {
+	found, err := base.UseConsumerCredential(
+		requestContext, p.ConsumerLookup(), name, appID,
+		func(candidate resource.Consumer, config resource.PluginConfig) error {
+			if err := util.Parse(config, &cfg); err != nil {
+				return err
+			}
+			cfg.applyDefaults(p.config)
+			consumer = candidate
+			return nil
+		},
+	)
+	if err != nil {
 		return resource.Consumer{}, consumerConfig{}, err
 	}
-	cfg.applyDefaults(p.config)
-	return consumer, cfg, nil
-}
-
-func (p *Plugin) consumerRecordByAppID(appID string) (resource.Consumer, bool) {
-	lookup := p.ConsumerLookup()
-	if lookup == nil {
-		return resource.Consumer{}, false
+	if !found {
+		return resource.Consumer{}, consumerConfig{}, errWolfConsumerNotFound
 	}
-	return lookup.ConsumerByPluginKey(name, appID)
+	return consumer, cfg, nil
 }
 
 func (p *Plugin) checkPermission(
@@ -514,7 +515,7 @@ func (p *Plugin) handleLogin(w http.ResponseWriter, r *http.Request) {
 		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "appid is missing")
 		return
 	}
-	_, cfg, err := p.consumerByAppID(appid)
+	_, cfg, err := p.consumerByAppID(r.Context(), appid)
 	if err != nil {
 		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "appid not found")
 		return
@@ -574,7 +575,7 @@ func (p *Plugin) publicAPIToken(
 		_ = util.WriteJSONMessage(w, http.StatusUnauthorized, "invalid rbac token: parse failed")
 		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false
 	}
-	consumer, cfg, err := p.consumerByAppID(token.AppID)
+	consumer, cfg, err := p.consumerByAppID(r.Context(), token.AppID)
 	if err != nil {
 		_ = util.WriteJSONMessage(w, http.StatusBadRequest, "appid not found")
 		return resource.Consumer{}, consumerConfig{}, rbacToken{}, false

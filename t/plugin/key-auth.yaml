@@ -33,7 +33,7 @@ cases:
     input: {path: /hello}
     output:
       status: 404
-      logs: {matches: 'key-auth consumer configuration:.*key.*expected string'}
+      logs: {matches: 'validate consumer plugin key-auth config: /key: expected string'}
 
   - name: consumer-and-route-created
     config:
@@ -86,7 +86,7 @@ cases:
         input: {path: /hello}
         output:
           status: 401
-          body: {equals: '{"message":"Missing API key in request"}'}
+          body: {equals: "{\"message\":\"Missing API key in request\"}\n"}
 
   - name: twenty-consumer-lookup
     config:
@@ -136,7 +136,7 @@ cases:
     input: {path: /hello}
     output:
       status: 404
-      logs: {matches: "key-auth consumer configuration:.*missing properties: 'key'"}
+      logs: {matches: "validate consumer plugin key-auth config: /: missing properties: 'key'"}
 
   - name: custom-header-credential
     config:
@@ -619,7 +619,7 @@ cases:
     output:
       status: 401
       headers: {WWW-Authenticate: {equals: 'apikey realm="key"'}}
-      body: {equals: '{"message":"Missing API key in request"}'}
+      body: {equals: "{\"message\":\"Missing API key in request\"}\n"}
 
   - name: custom-realm
     config:
@@ -631,7 +631,7 @@ cases:
     output:
       status: 401
       headers: {WWW-Authenticate: {equals: 'apikey realm="my-custom-realm"'}}
-      body: {equals: '{"message":"Missing API key in request"}'}
+      body: {equals: "{\"message\":\"Missing API key in request\"}\n"}
 
   - name: missing-anonymous-consumer-returns-default-realm
     config:

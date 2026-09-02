@@ -23,6 +23,7 @@ cases:
           logs: {not_matches: '\bbar\b'}
 
   - name: consumer-username-type-diagnostic
+    wait_for_generation: true
     config:
       consumers:
         - username: foo
@@ -32,7 +33,7 @@ cases:
         input: {path: /hello}
         output:
           status: 404
-          logs: {matches: 'basic-auth consumer configuration:.*username.*expected string'}
+          logs: {matches: 'validate consumer plugin basic-auth config: /username: expected string'}
       - name: invalid-consumer-password-is-confidential
         input: {path: /hello}
         output: {status: 404, logs: {not_matches: '\bbar\b'}}
@@ -79,31 +80,31 @@ cases:
     steps:
       - name: missing-authorization
         input: {path: /hello}
-        output: {status: 401, body: {equals: '{"message":"Missing authorization in request"}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"Missing authorization in request\"}\n"}}
       - name: invalid-scheme
         input: {path: /hello, headers: {Authorization: "Bad_header YmFyOmJhcgo="}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {matches: 'Invalid authorization header format'}
       - name: invalid-base64
         input: {path: /hello, headers: {Authorization: "Basic aca_a"}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {matches: 'invalid Basic authorization encoding'}
       - name: invalid-base64-does-not-log-credential
         input: {path: /hello, headers: {Authorization: "Basic aca_a"}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {not_matches: 'aca_a'}
       - name: invalid-username
         input: {path: /hello, headers: {Authorization: "Basic YmFyOmJhcgo="}}
-        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}}
       - name: invalid-password
         input: {path: /hello, headers: {Authorization: "Basic Zm9vOmZvbwo="}}
-        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}}
       - name: duplicate-authorization-uses-first-value
         input:
           path: /hello
@@ -115,7 +116,7 @@ cases:
           path: /hello
           header_values:
             Authorization: ["Basic YmFyOmJhcgo=", "Basic Zm9vOmJhcg=="]
-        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}}
 
   - name: missing-password-diagnostic
     wait_for_generation: true
@@ -132,13 +133,13 @@ cases:
         input: {path: /hello, headers: {Authorization: "Basic YmFy"}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {matches: 'invalid Basic authorization value'}
       - name: invalid-decoded-value-does-not-log-credential
         input: {path: /hello, headers: {Authorization: "Basic YmFy"}}
         output:
           status: 401
-          body: {equals: '{"message":"Invalid authorization in request"}'}
+          body: {equals: "{\"message\":\"Invalid authorization in request\"}\n"}
           logs: {not_matches: '\bbar\b'}
 
   - name: valid-authorization-confidentiality
@@ -230,7 +231,7 @@ cases:
           input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
           output: {status: 204}
         input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
-        output: {status: 204, logs: {matches: 'basic-auth consumer configuration:.*expected object'}}
+        output: {status: 204, logs: {matches: 'validate consumer plugin basic-auth config: /: expected object'}}
       - name: later-valid-consumer-replaces-last-good
         config:
           consumers:
@@ -246,7 +247,7 @@ cases:
           input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJheg=="}}
           output: {status: 204}
         input: {path: /ready, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
-        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}}
 
   - name: default-route-schema
     config:
@@ -375,7 +376,7 @@ cases:
     steps:
       - name: unresolved-vault-password-fails-closed
         input: {path: /echo, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
-        output: {status: 401, body: {equals: '{"message":"Invalid user authorization"}'}}
+        output: {status: 401, body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}}
       - name: late-vault-password-authenticates-without-reload
         input: {path: /echo, headers: {Authorization: "Basic Zm9vOmJhcg=="}}
         output: {status: 200, body: {equals: hello world}}
@@ -534,7 +535,7 @@ cases:
     input: {path: /hello}
     output:
       status: 401
-      body: {equals: '{"message":"Invalid user authorization"}'}
+      body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}
       logs: {matches: 'failed to get anonymous consumer not-found-anonymous'}
 
   - name: default-realm
@@ -569,5 +570,5 @@ cases:
     output:
       status: 401
       headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}
-      body: {equals: '{"message":"Invalid user authorization"}'}
+      body: {equals: "{\"message\":\"Invalid user authorization\"}\n"}
       logs: {matches: 'failed to get anonymous consumer missing-consumer'}

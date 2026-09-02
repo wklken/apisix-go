@@ -36,7 +36,7 @@ cases:
         output:
           status: 404
           logs:
-            matches: 'build route public-api-invalid-schema fail:.*expected string'
+            matches: 'validate plugin public-api config: /uri: expected string, but got number'
 
   - name: direct-and-missing-public-apis
     runtime:
@@ -111,4 +111,4 @@ cases:
         output:
           status: 401
           body:
-            equals: '{"message":"Missing API key in request"}'
+            equals: "{\"message\":\"Missing API key in request\"}\n"

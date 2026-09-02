@@ -109,6 +109,7 @@ cases:
               retry_delay: 0
               timeout: 100
               tls: true
+              ssl_verify: false
           upstream:
             nodes:
               '{{FIXTURE.primary.ADDR}}': 1
@@ -254,7 +255,7 @@ cases:
     output:
       logs:
         matches: 'validate plugin tcp-logger metadata:.*log_format.*expected object.*got string'
-      status: 404
+      status: 502
 
   - name: metadata-add-and-clear-rebuilds-existing-route
     config:
@@ -487,6 +488,7 @@ cases:
               host: '{{FIXTURE.sink.HOST}}'
               port: '{{FIXTURE.sink.PORT}}'
               tls: true
+              ssl_verify: false
           upstream:
             nodes:
               '{{FIXTURE.primary.ADDR}}': 1
@@ -535,6 +537,7 @@ cases:
                   include_req_body: true
                   port: '{{FIXTURE.sink.PORT}}'
                   tls: true
+                  ssl_verify: false
               upstream:
                 nodes:
                   '{{FIXTURE.primary.ADDR}}': 1
@@ -587,6 +590,7 @@ cases:
                   max_req_body_bytes: 5
                   port: '{{FIXTURE.sink.PORT}}'
                   tls: true
+                  ssl_verify: false
               upstream:
                 nodes:
                   '{{FIXTURE.primary.ADDR}}': 1
@@ -637,6 +641,7 @@ cases:
                   include_resp_body: true
                   port: '{{FIXTURE.sink.PORT}}'
                   tls: true
+                  ssl_verify: false
               upstream:
                 nodes:
                   '{{FIXTURE.primary.ADDR}}': 1
@@ -689,6 +694,7 @@ cases:
                   max_resp_body_bytes: 5
                   port: '{{FIXTURE.sink.PORT}}'
                   tls: true
+                  ssl_verify: false
               upstream:
                 nodes:
                   '{{FIXTURE.primary.ADDR}}': 1

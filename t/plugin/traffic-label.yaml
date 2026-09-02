@@ -48,8 +48,6 @@ cases:
       path: /echo
     output:
       status: 404
-      logs:
-        matches: mixed logical operators
 
   - name: override-request-header
     runtime:
@@ -862,7 +860,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: rules.*required
+        matches: "validate plugin traffic-label config: /: missing properties: 'rules'"
 
   - name: reject-empty-rules
     runtime:

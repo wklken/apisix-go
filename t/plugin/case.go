@@ -355,6 +355,7 @@ type HTTPAssertion struct {
 	Path           *Matcher                 `yaml:"path,omitempty"`
 	Host           *Matcher                 `yaml:"host,omitempty"`
 	Headers        map[string]Matcher       `yaml:"headers,omitempty"`
+	T1KExtra       map[string]Matcher       `yaml:"t1k_extra,omitempty"`
 	Body           *Matcher                 `yaml:"body,omitempty"`
 	LokiPush       *LokiPushAssertion       `yaml:"loki_push,omitempty"`
 	SkyWalkingLogs *SkyWalkingLogsAssertion `yaml:"skywalking_logs,omitempty"`
@@ -491,6 +492,7 @@ const (
 	matcherHost           matcherScope = "host"
 	matcherLogs           matcherScope = "logs"
 	matcherNetworkPayload matcherScope = "network payload"
+	matcherT1KExtra       matcherScope = "T1K EXTRA"
 )
 
 func loadManifest(name string, data []byte) (*Manifest, error) {
@@ -1129,7 +1131,7 @@ func (f *FixtureSpec) validate() error {
 	}
 	supportedKinds := map[string]bool{
 		"http": true, "https": true, "h2c": true, "https-connect": true,
-		"tcp": true, "tls-tcp": true, "udp": true, "grpc": true,
+		"tcp": true, "tls-tcp": true, "t1k": true, "udp": true, "grpc": true,
 		"redis": true, "redis-cluster": true,
 		"kafka": true, "rocketmq": true, "dubbo": true, "ldap": true,
 	}
@@ -1258,7 +1260,8 @@ func (f *FixtureSpec) validate() error {
 		}
 		return nil
 	}
-	if f.Kind == "http" || f.Kind == "https" || f.Kind == "h2c" || f.Kind == "https-connect" {
+	if f.Kind == "http" || f.Kind == "https" || f.Kind == "h2c" || f.Kind == "https-connect" ||
+		f.Kind == "t1k" {
 		if len(f.NetworkExpect) > 0 || len(f.NetworkRespond) > 0 {
 			return fmt.Errorf("%s fixture must use expect/respond", f.Kind)
 		}
@@ -1291,6 +1294,9 @@ func (f *FixtureSpec) validate() error {
 			}
 		}
 		for i := range f.Expect {
+			if len(f.Expect[i].T1KExtra) > 0 && f.Kind != "t1k" {
+				return fmt.Errorf("expectation %d: t1k_extra is only valid for T1K fixtures", i+1)
+			}
 			if err := f.Expect[i].validate(); err != nil {
 				return fmt.Errorf("expectation %d: %w", i+1, err)
 			}
@@ -1841,6 +1847,14 @@ func (a HTTPAssertion) validate() error {
 	for name, matcher := range a.Headers {
 		if err := matcher.validate(matcherHeader); err != nil {
 			return fmt.Errorf("upstream request header %q: %w", name, err)
+		}
+	}
+	for name, matcher := range a.T1KExtra {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("T1K EXTRA field name must not be blank")
+		}
+		if err := matcher.validate(matcherT1KExtra); err != nil {
+			return fmt.Errorf("T1K EXTRA field %q: %w", name, err)
 		}
 	}
 	if a.Body != nil {

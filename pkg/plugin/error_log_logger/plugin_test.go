@@ -273,87 +273,6 @@ func TestPostInitUsesPreparedErrorLogMetadata(t *testing.T) {
 	}
 }
 
-func TestMetadataSecurityWarningIsDeliveredOnceAfterObserverAdmission(t *testing.T) {
-	received := make(chan string, 2)
-	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		received <- string(body)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(sink.Close)
-
-	p := newPreparedMetadataPlugin(t, Config{}, map[string]any{
-		"clickhouse": map[string]any{
-			"endpoint_addr": sink.URL,
-			"user":          "default",
-			"password":      "secret",
-			"database":      "default",
-			"logtable":      "logs",
-		},
-		"level": "WARN", "batch_max_size": 1, "max_retry_count": 0,
-	})
-	select {
-	case payload := <-received:
-		t.Fatalf("security warning delivered before observer admission: %q", payload)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	registry := runtime.NewTaskRegistry(context.Background(), nil)
-	owner := newObserverTaskOwner(t, registry)
-	if err := p.StartObservingWithTasks(owner); err != nil {
-		t.Fatalf("StartObservingWithTasks() error = %v", err)
-	}
-	select {
-	case payload := <-received:
-		const warning = "Using error-log-logger clickhouse.endpoint_addr with no TLS is a security risk"
-		if !strings.Contains(payload, `"data":"`) || !strings.Contains(payload, "[warn] "+warning) {
-			t.Fatalf("startup security warning payload = %q, want exact warning", payload)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for startup security warning delivery")
-	}
-
-	p.StartObserving()
-	select {
-	case payload := <-received:
-		t.Fatalf("observer re-entry repeated startup security warning: %q", payload)
-	case <-time.After(150 * time.Millisecond):
-	}
-	stopTaskRegistry(t, registry)
-}
-
-func TestRejectedObserverAdmissionDoesNotDeliverMetadataSecurityWarning(t *testing.T) {
-	received := make(chan string, 1)
-	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		received <- string(body)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(sink.Close)
-
-	p := newPreparedMetadataPlugin(t, Config{}, map[string]any{
-		"clickhouse": map[string]any{
-			"endpoint_addr": sink.URL,
-			"user":          "default",
-			"password":      "secret",
-			"database":      "default",
-			"logtable":      "logs",
-		},
-		"level": "WARN", "batch_max_size": 1, "max_retry_count": 0,
-	})
-	registry := runtime.NewTaskRegistry(context.Background(), nil)
-	owner := newObserverTaskOwner(t, registry)
-	stopTaskRegistry(t, registry)
-	if err := p.StartObservingWithTasks(owner); !errors.Is(err, errObserverTaskRegistration) {
-		t.Fatalf("StartObservingWithTasks(stopped) error = %v, want %v", err, errObserverTaskRegistration)
-	}
-	select {
-	case payload := <-received:
-		t.Fatalf("rejected observer admission delivered startup security warning: %q", payload)
-	case <-time.After(150 * time.Millisecond):
-	}
-}
-
 func TestRouteErrorLogConfigOverridesPreparedMetadata(t *testing.T) {
 	p := newPreparedMetadataPlugin(t, Config{
 		TCP:   &TCPConfig{Host: "127.0.0.1", Port: 19002},
@@ -1639,7 +1558,6 @@ func TestStartObservingUsesBatchProcessor(t *testing.T) {
 		InactiveTimeout: 60,
 	})
 
-	p.startupWarningsSent = true
 	p.StartObserving()
 	logger.Info("one")
 	select {
@@ -1697,9 +1615,9 @@ func TestStartObservingForwardsApplicationLogsToCurrentOwner(t *testing.T) {
 	second.StartObserving()
 
 	first.Stop()
-	received := make(chan string, 2)
+	received := make(chan string, 1)
 	go func() {
-		for range 2 {
+		for range 1 {
 			conn, acceptErr := secondListener.Accept()
 			if acceptErr != nil {
 				return
@@ -1709,15 +1627,6 @@ func TestStartObservingForwardsApplicationLogsToCurrentOwner(t *testing.T) {
 			received <- string(body)
 		}
 	}()
-
-	select {
-	case payload := <-received:
-		if !strings.Contains(payload, "Keeping tcp.tls disabled in error-log-logger configuration is a security risk") {
-			t.Fatalf("startup payload = %q, want TCP security warning", payload)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for startup security warning")
-	}
 
 	logger.Warn("standalone error-log observer marker")
 	select {
@@ -1747,9 +1656,9 @@ func TestStartObservingFiltersBeforeBatching(t *testing.T) {
 	})
 	p.StartObserving()
 
-	received := make(chan string, 2)
+	received := make(chan string, 1)
 	go func() {
-		for range 2 {
+		for range 1 {
 			conn, acceptErr := listener.Accept()
 			if acceptErr != nil {
 				return
@@ -1759,20 +1668,6 @@ func TestStartObservingFiltersBeforeBatching(t *testing.T) {
 			received <- string(body)
 		}
 	}()
-	logger.Warn("flush startup security warning")
-	select {
-	case payload := <-received:
-		if !strings.Contains(
-			payload,
-			"Keeping tcp.tls disabled in error-log-logger configuration is a security risk",
-		) ||
-			!strings.Contains(payload, "flush startup security warning") {
-			t.Fatalf("startup payload = %q, want security warning batch", payload)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for startup warning batch")
-	}
-
 	logger.Info("filtered observer info")
 	logger.Warn("first eligible observer warning")
 	select {
@@ -1819,7 +1714,6 @@ func TestStartObservingRetriesFailedBatch(t *testing.T) {
 		InactiveTimeout: 60,
 	})
 
-	p.startupWarningsSent = true
 	p.StartObserving()
 	logger.Info("retry me")
 

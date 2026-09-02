@@ -30,6 +30,7 @@ type StreamingResponseExecutor struct {
 	bindings              []Binding
 	terminals             []RouteTerminalCandidate
 	hasStaticHeaderFilter bool
+	bufferedDynamic       bool
 }
 
 type streamingFinish struct {
@@ -459,6 +460,17 @@ func (e *StreamingResponseExecutor) WithRouteTerminals(
 	return &clone, nil
 }
 
+func (e *StreamingResponseExecutor) withBufferedDynamicFallback() *StreamingResponseExecutor {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	clone.bindings = cloneBindings(e.bindings)
+	clone.terminals = append([]RouteTerminalCandidate(nil), e.terminals...)
+	clone.bufferedDynamic = true
+	return &clone
+}
+
 func validateExclusiveTerminalCandidates(terminals []RouteTerminalCandidate) error {
 	for _, candidate := range terminals {
 		if candidate.Terminal == nil {
@@ -563,6 +575,12 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 			!capability.CompressionOffer && !capability.StreamingResponseOwner &&
 			capability.ExclusiveProtocol == ProtocolNone && len(buffered) > 0 {
 			dynamicBindings = append(dynamicBindings, binding)
+			continue
+		}
+		if e.bufferedDynamic && len(buffered) > 0 &&
+			!capability.CompressionOffer && !capability.StreamingBodyFilter &&
+			!capability.StreamingResponseOwner && capability.ExclusiveProtocol == ProtocolNone &&
+			!isDualModeResponseBinding(binding, capability) {
 			continue
 		}
 		if capability.CompressionOffer || capability.BufferedBodyFilter || capability.StreamingBodyFilter ||

@@ -172,7 +172,7 @@ cases:
     output:
       status: 404
       body:
-        equals: "404 page not found\n"
+        equals: '{"error_msg":"404 Route Not Found"}'
 
   - name: default-max-request-post-args
     config:

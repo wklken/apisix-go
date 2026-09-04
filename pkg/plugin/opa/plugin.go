@@ -238,9 +238,6 @@ func (p *Plugin) queryOPA(r *http.Request) (*opaDecision, int, error) {
 		return nil, http.StatusForbidden, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, http.StatusServiceUnavailable, fmt.Errorf("OPA returned status %d", resp.StatusCode)
-	}
 
 	var opaResp opaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&opaResp); err != nil {

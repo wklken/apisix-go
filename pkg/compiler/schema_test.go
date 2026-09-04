@@ -194,6 +194,30 @@ func TestRawSchemaAdmissionCarriesSafeFieldDiagnostic(t *testing.T) {
 	}
 }
 
+func TestRawSchemaAdmissionRedactsSecretReferenceFromPropertyName(t *testing.T) {
+	const secretReference = "$secret://vault/team/token"
+	resource := resourceValue(
+		"routes",
+		"r1",
+		`{"id":"r1","plugins":{"forward-auth":{"uri":"http://auth.example","extra_headers":{"`+secretReference+`":"x"}}}}`,
+	)
+	compiler := newTestCompiler(t)
+	result, err := validateContext(context.Background(), normalizedSchemaInput(t, resource), compiler.schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := result.issuesForDomain(generation.DomainHTTP)
+	if len(issues) != 1 {
+		t.Fatalf("schema issues = %#v, want one", issues)
+	}
+	if strings.Contains(issues[0].Diagnostic, secretReference) {
+		t.Fatalf("schema diagnostic leaked secret reference: %q", issues[0].Diagnostic)
+	}
+	if !strings.Contains(issues[0].Diagnostic, "additionalProperties") {
+		t.Fatalf("schema diagnostic = %q, want additionalProperties context", issues[0].Diagnostic)
+	}
+}
+
 func TestRawConsumerSchemaFallsBackToPluginSchema(t *testing.T) {
 	for name, test := range map[string]struct {
 		config      string

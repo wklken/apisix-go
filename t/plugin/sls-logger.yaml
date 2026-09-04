@@ -63,7 +63,7 @@ cases:
         input: {method: GET, path: /missing-secret}
         output:
           status: 404
-          body: {equals: "404 page not found\n"}
+          body: {equals: '{"error_msg":"404 Route Not Found"}'}
           logs: {matches: "validate plugin sls-logger config:.*missing properties: 'access_key_secret'"}
 
   - name: string-timeout-is-rejected
@@ -94,7 +94,7 @@ cases:
         input: {method: GET, path: /string-timeout}
         output:
           status: 404
-          body: {equals: "404 page not found\n"}
+          body: {equals: '{"error_msg":"404 Route Not Found"}'}
           logs: {matches: 'validate plugin sls-logger config:.*timeout.*expected integer.*got string'}
 
   - name: route-plugin-configuration-is-live
@@ -381,7 +381,7 @@ cases:
           output: {status: 200, body: {equals: replacement}}
         config_timeout: 2s
         input: {method: GET, path: /hello}
-        output: {status: 404, body: {equals: "404 page not found\n"}}
+        output: {status: 404, body: {equals: '{"error_msg":"404 Route Not Found"}'}}
         wait: 1s
 
   - name: access-key-secret-is-encrypted-at-rest

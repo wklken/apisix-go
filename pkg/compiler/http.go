@@ -67,11 +67,12 @@ func decodeHTTPResourceSet(
 			return httpResourceSet{}, err
 		}
 		normalized := input.resources[key]
+		typedDocument := typedResourceDocument(normalized)
 		result.origins[key] = normalized.origin
 		switch key.Kind {
 		case "routes":
 			var value resource.Route
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			if value.ID == "" {
@@ -80,7 +81,7 @@ func decodeHTTPResourceSet(
 			result.routes = append(result.routes, value)
 		case "services":
 			var value resource.Service
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			if value.ID == "" {
@@ -89,25 +90,25 @@ func decodeHTTPResourceSet(
 			result.services[key.ID] = value
 		case "upstreams":
 			var value resource.Upstream
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			result.upstreams[key.ID] = value
 		case "plugin_configs":
 			var value resource.PluginConfigRule
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			result.pluginConfigs[key.ID] = value
 		case "protos":
 			var value resource.Proto
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			result.protos[key.ID] = value.Content
 		case "global_rules":
 			var value resource.GlobalRule
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			if value.ID == "" {
@@ -116,7 +117,7 @@ func decodeHTTPResourceSet(
 			result.globalRules = append(result.globalRules, value)
 		case "ssls":
 			var value resource.SSL
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return httpResourceSet{}, httpResourceDecodeError(key, err)
 			}
 			if value.ID == "" {

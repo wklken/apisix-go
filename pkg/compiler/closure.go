@@ -11,6 +11,7 @@ import (
 
 type candidateDecision struct {
 	decision  generation.ResourceDecision
+	origin    generation.ResourceOrigin
 	value     []byte
 	tombstone *generation.Tombstone
 }
@@ -73,7 +74,8 @@ func buildDomainCandidateContext(
 					Disposition: generation.DispositionPublished,
 					Code:        "validated",
 				},
-				value: bytes.Clone(resource.raw),
+				origin: resource.origin,
+				value:  bytes.Clone(resource.raw),
 			}
 			continue
 		}
@@ -89,7 +91,7 @@ func buildDomainCandidateContext(
 			continue
 		}
 		if hasPrevious {
-			if value, found := previous.Snapshot.Lookup(key); found {
+			if previousResource, found := previous.Snapshot.LookupResource(key); found {
 				decisions[key] = candidateDecision{
 					decision: generation.ResourceDecision{
 						Key:         key,
@@ -97,7 +99,8 @@ func buildDomainCandidateContext(
 						Code:        issue.Code,
 						Diagnostic:  issue.Diagnostic,
 					},
-					value: value,
+					origin: previousResource.Origin,
+					value:  previousResource.Value,
 				}
 				continue
 			}
@@ -109,7 +112,8 @@ func buildDomainCandidateContext(
 					Disposition: generation.DispositionPublished,
 					Code:        "validated",
 				},
-				value: bytes.Clone(resource.raw),
+				origin: resource.origin,
+				value:  bytes.Clone(resource.raw),
 			}
 			continue
 		}
@@ -126,7 +130,9 @@ func buildDomainCandidateContext(
 	if err := enforceEffectiveClosure(ctx, domain, desired.Revision(), decisions, schemas); err != nil {
 		return generation.PublicationCandidate{}, err
 	}
-	candidate, err := assembleCandidate(domain, desired.Revision(), decisions)
+	candidate, err := assembleCandidate(
+		domain, desired.Revision(), decisions, input.collectionVersions,
+	)
 	if err != nil {
 		return generation.PublicationCandidate{}, err
 	}
@@ -328,9 +334,10 @@ func assembleCandidate(
 	domain generation.Domain,
 	revision uint64,
 	selected map[generation.ResourceKey]candidateDecision,
+	collectionVersions map[string]string,
 ) (generation.PublicationCandidate, error) {
 	resources, tombstones := selectedValues(selected)
-	snapshot, err := generation.NewSnapshot(revision, resources, tombstones)
+	snapshot, err := generation.NewSnapshotWithSource(revision, resources, tombstones, collectionVersions)
 	if err != nil {
 		return generation.PublicationCandidate{}, err
 	}
@@ -360,7 +367,9 @@ func selectedValues(
 	for key, item := range selected {
 		switch item.decision.Disposition {
 		case generation.DispositionPublished, generation.DispositionLastGood:
-			resources = append(resources, generation.Resource{Key: key, Value: bytes.Clone(item.value)})
+			resources = append(resources, generation.Resource{
+				Key: key, Origin: item.origin, Value: bytes.Clone(item.value),
+			})
 		case generation.DispositionDeleted:
 			if item.tombstone != nil {
 				tombstones = append(tombstones, *item.tombstone)

@@ -264,6 +264,19 @@ func testClusterConfig() ClusterConfig {
 	}
 }
 
+func TestClusterDoesNotInventMaxInFlightLimit(t *testing.T) {
+	config := testClusterConfig()
+	config.MaxInFlight = 0
+	cluster, err := NewCluster(config, NopClusterObserver{})
+	if err != nil {
+		t.Fatalf("NewCluster() error = %v", err)
+	}
+	t.Cleanup(cluster.Close)
+	if got := cluster.MaxInFlight(); got != 0 {
+		t.Fatalf("MaxInFlight() = %d, want disabled", got)
+	}
+}
+
 func TestClusterConfigKeyChangesWhenTransportChanges(t *testing.T) {
 	base := testClusterConfig()
 	changed := testClusterConfig()

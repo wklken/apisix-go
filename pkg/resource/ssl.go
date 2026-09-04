@@ -30,15 +30,16 @@ func (c *SSLClient) UnmarshalJSON(data []byte) error {
 }
 
 type SSL struct {
-	ID     string            `json:"id,omitempty" yaml:"id,omitempty"`
-	Type   string            `json:"type,omitempty" yaml:"type,omitempty"`
-	Sni    string            `json:"sni,omitempty" yaml:"sni,omitempty"`
-	Snis   []string          `json:"snis,omitempty" yaml:"snis,omitempty"`
-	Cert   string            `json:"cert,omitempty" yaml:"cert,omitempty"`
-	Key    string            `json:"key,omitempty" yaml:"key,omitempty"`
-	Client *SSLClient        `json:"client,omitempty" yaml:"client,omitempty"`
-	Status int               `json:"status,omitempty" yaml:"status,omitempty"`
-	Labels map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	ID           string            `json:"id,omitempty" yaml:"id,omitempty"`
+	Type         string            `json:"type,omitempty" yaml:"type,omitempty"`
+	Sni          string            `json:"sni,omitempty" yaml:"sni,omitempty"`
+	Snis         []string          `json:"snis,omitempty" yaml:"snis,omitempty"`
+	Cert         string            `json:"cert,omitempty" yaml:"cert,omitempty"`
+	Key          string            `json:"key,omitempty" yaml:"key,omitempty"`
+	Client       *SSLClient        `json:"client,omitempty" yaml:"client,omitempty"`
+	SSLProtocols []string          `json:"ssl_protocols,omitempty" yaml:"ssl_protocols,omitempty"`
+	Status       int               `json:"status,omitempty" yaml:"status,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
 
 func (s *SSL) UnmarshalJSON(data []byte) error {

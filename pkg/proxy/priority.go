@@ -57,7 +57,8 @@ func newPriorityGroups(servers map[string]int, priorities map[string]int) []prio
 }
 
 type priorityLoadBalance struct {
-	groups []priorityGroup
+	groups            []priorityGroup
+	configuredTargets int
 }
 
 func (lb *priorityLoadBalance) Next() string {
@@ -70,14 +71,16 @@ func (lb *priorityLoadBalance) Next() string {
 func (lb *priorityLoadBalance) NextForRequest(request *http.Request) string {
 	state := priorityStateForRequest(request)
 	state.finishPreviousAttempt()
+	if lb.configuredTargets == 1 {
+		target := lb.groups[0].selector.Next()
+		state.last = target
+		return target
+	}
 	if target := lb.nextUntried(state.tried); target != "" {
 		state.last = target
 		return target
 	}
-	clear(state.tried)
-	target := lb.nextUntried(state.tried)
-	state.last = target
-	return target
+	return ""
 }
 
 func (lb *priorityLoadBalance) nextUntried(tried map[string]struct{}) string {

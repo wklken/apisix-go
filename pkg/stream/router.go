@@ -425,7 +425,7 @@ func (e routeEntry) rawServe(ctx context.Context, client net.Conn, peer string) 
 // the route's upstream read timeout when configured, else the default.
 func (e routeEntry) streamIdleTimeout() time.Duration {
 	if e.route.Upstream.Timeout.Read > 0 {
-		return time.Duration(e.route.Upstream.Timeout.Read) * time.Second
+		return time.Duration(e.route.Upstream.Timeout.Read * float64(time.Second))
 	}
 	return defaultStreamIdleTimeout
 }
@@ -475,7 +475,7 @@ func (e routeEntry) dialTarget(ctx context.Context, target string) (net.Conn, er
 	}
 	timeout := defaultStreamConnectTimeout
 	if e.route.Upstream.Timeout.Connect > 0 {
-		timeout = time.Duration(e.route.Upstream.Timeout.Connect) * time.Second
+		timeout = time.Duration(e.route.Upstream.Timeout.Connect * float64(time.Second))
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

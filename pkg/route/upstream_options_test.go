@@ -1,10 +1,15 @@
 package route
 
 import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
@@ -98,7 +103,7 @@ func TestBuildClusterConfigSelectsCleartextHTTP2OnlyForGRPC(t *testing.T) {
 	}
 }
 
-func TestBuildClusterConfigUsesInternalCapacityDefaults(t *testing.T) {
+func TestBuildClusterConfigDoesNotInventAdmissionCapacity(t *testing.T) {
 	for _, test := range []struct {
 		name         string
 		staticConfig *appconfig.Config
@@ -134,11 +139,90 @@ func TestBuildClusterConfigUsesInternalCapacityDefaults(t *testing.T) {
 					proxy.DefaultMaxConnsPerHost,
 				)
 			}
-			if config.MaxInFlight != proxy.DefaultMaxInFlight {
-				t.Fatalf("MaxInFlight = %d, want %d", config.MaxInFlight, proxy.DefaultMaxInFlight)
+			if config.MaxInFlight != 0 {
+				t.Fatalf("MaxInFlight = %d, want no default admission limit", config.MaxInFlight)
 			}
 		})
 	}
+}
+
+func TestBuildClusterConfigCarriesAPISIXRetryTimeout(t *testing.T) {
+	config, err := buildClusterConfigWithSSLResolver(
+		resource.Route{},
+		resource.Upstream{Scheme: "http", RetryTimeout: 0.25},
+		map[string]int{"http://127.0.0.1:8080": 1},
+		nil,
+		&testEffectiveConfig().Config,
+	)
+	if err != nil {
+		t.Fatalf("buildClusterConfigWithSSLResolver() error = %v", err)
+	}
+	field := reflect.ValueOf(config).FieldByName("RetryTimeout")
+	if !field.IsValid() {
+		t.Fatal("ClusterConfig is missing RetryTimeout")
+	}
+	if got := time.Duration(field.Int()); got != 250*time.Millisecond {
+		t.Fatalf("RetryTimeout = %s, want 250ms", got)
+	}
+}
+
+func TestAttachHTTPRetriesStopsAfterAPISIXRetryTimeout(t *testing.T) {
+	const target = "http://127.0.0.1:8080"
+	request := httptest.NewRequest(http.MethodGet, target+"/resource", nil)
+	request = attachHTTPRetriesCompiled(
+		request,
+		resource.Upstream{Retries: 5, RetryTimeout: 0.05},
+		proxy.NewSingleLoadBalance(target),
+		map[string]compiledUpstreamTarget{
+			target: {scheme: "http", host: "127.0.0.1:8080", nodeHost: "127.0.0.1:8080"},
+		},
+	)
+	attempts := 0
+	transport := proxy.NewRetryTransport(retryTimeoutRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		time.Sleep(30 * time.Millisecond)
+		return nil, errors.New("connection refused")
+	}))
+	if _, err := transport.RoundTrip(request); err == nil {
+		t.Fatal("RoundTrip() error = nil, want transport error")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 before retry_timeout expires", attempts)
+	}
+}
+
+func TestAttachHTTPRetriesUsesReferencedTrafficSplitRetryTimeout(t *testing.T) {
+	const target = "http://127.0.0.1:8080"
+	override := &traffic_split.Override{
+		Scheme:       "http",
+		Host:         "127.0.0.1:8080",
+		PassHost:     "node",
+		Retries:      5,
+		RetryTimeout: 0.05,
+	}
+	override.NextRetry = func(*http.Request) *traffic_split.Override { return override }
+	request := httptest.NewRequest(http.MethodGet, target+"/resource", nil)
+	request = traffic_split.WithOverride(request, override)
+	request = attachHTTPRetriesCompiled(request, resource.Upstream{}, nil, nil)
+
+	attempts := 0
+	transport := proxy.NewRetryTransport(retryTimeoutRoundTripper(func(*http.Request) (*http.Response, error) {
+		attempts++
+		time.Sleep(30 * time.Millisecond)
+		return nil, errors.New("connection refused")
+	}))
+	if _, err := transport.RoundTrip(request); err == nil {
+		t.Fatal("RoundTrip() error = nil, want transport error")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 before referenced traffic-split retry_timeout expires", attempts)
+	}
+}
+
+type retryTimeoutRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTripper retryTimeoutRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTripper(request)
 }
 
 func TestPlanRouteUpstreamPreparesClusterForDynamicGRPCSTarget(t *testing.T) {

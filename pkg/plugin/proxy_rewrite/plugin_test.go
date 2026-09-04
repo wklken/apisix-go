@@ -231,6 +231,20 @@ func TestHandlerExpandsConfiguredURIVariables(t *testing.T) {
 	}
 }
 
+func TestHandlerEncodesQuestionMarkFromConfiguredURIVariable(t *testing.T) {
+	p := newTestPlugin(t, Config{Uri: "/$http_x_target"})
+	request := httptest.NewRequest(http.MethodGet, "/source?from=client", nil)
+	request.Header.Set("X-Target", "admin?role=root")
+	var rewrite map[string]any
+	p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		rewrite = r.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+
+	if got := rewrite["uri"].(string); got != "/admin%3Frole=root?from=client" {
+		t.Fatalf("rewrite uri = %q, want variable question mark encoded as path data", got)
+	}
+}
+
 func TestHandlerRegexURIMatchesRealRequestURIUnsafe(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		UseRealRequestURIUnsafe: true,

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
@@ -17,6 +18,7 @@ type retryState struct {
 	count    int
 	next     RetryTarget
 	attempts int
+	deadline time.Time
 }
 
 type retryTransport struct {
@@ -36,10 +38,25 @@ type upstreamStatusContextKey struct{}
 // selector that must run before each subsequent attempt. Requests that cannot
 // be replayed are returned unchanged so they are never retried.
 func WithRetries(request *http.Request, count int, next RetryTarget) *http.Request {
+	return WithRetriesTimeout(request, count, 0, next)
+}
+
+// WithRetriesTimeout attaches retries with APISIX retry_timeout semantics. The
+// timeout bounds when another attempt may start; it does not cancel an attempt
+// that is already in flight.
+func WithRetriesTimeout(
+	request *http.Request,
+	count int,
+	timeout time.Duration,
+	next RetryTarget,
+) *http.Request {
 	if request == nil || count <= 0 || next == nil || !retryRequestAllowed(request) {
 		return request
 	}
 	state := &retryState{count: count, next: next}
+	if timeout > 0 {
+		state.deadline = time.Now().Add(timeout)
+	}
 	return request.WithContext(context.WithValue(request.Context(), retryContextKey{}, state))
 }
 
@@ -93,6 +110,10 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 	recordUpstreamTransportFailure(request, err)
 	stopped := false
 	for remaining := state.count; err != nil && remaining > 0; remaining-- {
+		if !state.deadline.IsZero() && !time.Now().Before(state.deadline) {
+			stopped = true
+			break
+		}
 		if request.Context().Err() != nil || !resetRequestBody(request) {
 			stopped = true
 			break

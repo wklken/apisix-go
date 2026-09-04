@@ -99,12 +99,12 @@ func TestNormalizeCollectsStableIdentityShapeAndKindIssues(t *testing.T) {
 	assertIssueIdentities(t, issues, want)
 }
 
-func TestNormalizeKeepsExactLargeAndNegativeIntegerReferenceIDs(t *testing.T) {
+func TestNormalizeKeepsExactLargePositiveIntegerReferenceIDs(t *testing.T) {
 	snapshot := mustGenerationSnapshot(t, 9, []generation.Resource{
 		resourceValue(
 			"routes",
 			"r",
-			`{"id":"r","service_id":-1.0,"upstream_id":9.007199254740993e15}`,
+			`{"id":"r","service_id":1.0,"upstream_id":9.007199254740993e15}`,
 		),
 	}, nil)
 	input, issues, err := normalize(snapshot)
@@ -115,9 +115,31 @@ func TestNormalizeKeepsExactLargeAndNegativeIntegerReferenceIDs(t *testing.T) {
 		t.Fatalf("normalize issues = %v", issues)
 	}
 	view := input.resources[generation.ResourceKey{Kind: "routes", ID: "r"}].view
-	if view.serviceID != "-1" || view.upstreamID != "9007199254740993" {
+	if view.serviceID != "1" || view.upstreamID != "9007199254740993" {
 		t.Fatalf("exact reference IDs = %q/%q", view.serviceID, view.upstreamID)
 	}
+}
+
+func TestReferenceIDRejectsNonPositiveNumericIDs(t *testing.T) {
+	for _, raw := range []apisixjson.Number{"0", "-1", "-1.0"} {
+		if got, valid := referenceID(raw); valid {
+			t.Fatalf("referenceID(%q) = %q, true; want invalid numeric ID", raw, got)
+		}
+	}
+}
+
+func TestNormalizeRejectsNumericConsumerUsername(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 10, []generation.Resource{
+		resourceValue("consumers", "1", `{"username":1,"plugins":{}}`),
+	}, nil)
+	_, issues, err := normalize(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIssueIdentities(t, issues, []resourceIssue{{
+		Key:  generation.ResourceKey{Kind: "consumers", ID: "1"},
+		Code: "id-invalid",
+	}})
 }
 
 func TestNormalizeValidatesOptionalPluginConfigAndConsumerGroupIDs(t *testing.T) {

@@ -48,9 +48,9 @@ func resolveUpstreamTimeouts(routeTimeout, upstreamTimeout resource.Timeout) ups
 	}
 }
 
-func durationOrDefault(seconds int) time.Duration {
+func durationOrDefault(seconds float64) time.Duration {
 	if seconds > 0 {
-		return time.Duration(seconds) * time.Second
+		return time.Duration(seconds * float64(time.Second))
 	}
 	return defaultUpstreamTimeout
 }
@@ -194,9 +194,9 @@ func buildClusterConfigWithTransport(
 		Transport:         transport,
 		SendTimeout:       timeouts.send,
 		ReadTimeout:       timeouts.read,
+		RetryTimeout:      time.Duration(upstream.RetryTimeout * float64(time.Second)),
 		Retries:           httpRetryCount(upstream),
 		RetriesConfigured: upstream.RetriesConfigured(),
-		MaxInFlight:       proxy.DefaultMaxInFlight,
 		HTTP2Cleartext:    strings.EqualFold(upstream.Scheme, "grpc"),
 	}
 	if config.Name == "" {
@@ -329,30 +329,40 @@ func attachHTTPRetriesCompiled(
 	applyProxyRewriteBeforeUpstream(request)
 	originalHost := request.Host
 	if override := traffic_split.GetOverride(request); override != nil {
-		return proxy.WithRetries(request, override.Retries, func(retry *http.Request) bool {
-			if override.NextRetry == nil {
-				proxy.SetSelectedTarget(retry, "")
+		return proxy.WithRetriesTimeout(
+			request,
+			override.Retries,
+			time.Duration(override.RetryTimeout*float64(time.Second)),
+			func(retry *http.Request) bool {
+				if override.NextRetry == nil {
+					proxy.SetSelectedTarget(retry, "")
+					return false
+				}
+				next := override.NextRetry(retry)
+				if !applyTrafficSplitTarget(retry, next, originalHost) {
+					proxy.SetSelectedTarget(retry, "")
+					return false
+				}
+				applyFinalProxyRewrite(retry)
+				return true
+			},
+		)
+	}
+	return proxy.WithRetriesTimeout(
+		request,
+		httpRetryCount(upstream),
+		time.Duration(upstream.RetryTimeout*float64(time.Second)),
+		func(retry *http.Request) bool {
+			if err := applyUpstreamTargetCompiled(retry, loadBalancer, upstream, originalHost, targets); err != nil {
 				return false
 			}
-			next := override.NextRetry(retry)
-			if !applyTrafficSplitTarget(retry, next, originalHost) {
-				proxy.SetSelectedTarget(retry, "")
-				return false
-			}
+			// A later transport failure must not report a stale director error
+			// from an earlier attempt.
+			*retry = *withDirectorError(retry, nil)
 			applyFinalProxyRewrite(retry)
 			return true
-		})
-	}
-	return proxy.WithRetries(request, httpRetryCount(upstream), func(retry *http.Request) bool {
-		if err := applyUpstreamTargetCompiled(retry, loadBalancer, upstream, originalHost, targets); err != nil {
-			return false
-		}
-		// A later transport failure must not report a stale director error
-		// from an earlier attempt.
-		*retry = *withDirectorError(retry, nil)
-		applyFinalProxyRewrite(retry)
-		return true
-	})
+		},
+	)
 }
 
 func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override, originalHost string) bool {

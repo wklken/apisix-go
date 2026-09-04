@@ -24,6 +24,28 @@ func buildDomainCandidate(
 	)
 }
 
+func TestDomainCandidatePreservesProviderIdentity(t *testing.T) {
+	origin := generation.ResourceOrigin{
+		Provider: "etcd/v1/cluster", ResourceKey: "/apisix/routes/r1", ModifiedIndex: "17",
+	}
+	desired, err := generation.NewSnapshotWithSource(21, []generation.Resource{{
+		Key: generation.ResourceKey{Kind: "routes", ID: "r1"}, Origin: origin,
+		Value: []byte(`{"id":"r1","uri":"/"}`),
+	}}, nil, map[string]string{"routes": "19"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidate := compileDomain(t, generation.DomainHTTP, desired, generation.PublishedGeneration{}, false)
+	resource, found := candidate.Snapshot.LookupResource(generation.ResourceKey{Kind: "routes", ID: "r1"})
+	if !found || resource.Origin != origin {
+		t.Fatalf("published resource origin = %#v, found=%t, want %#v", resource.Origin, found, origin)
+	}
+	if version, found := candidate.Snapshot.CollectionVersion("routes"); !found || version != "19" {
+		t.Fatalf("published routes version = %q, found=%t, want 19", version, found)
+	}
+}
+
 func TestDispositionUsesExplicitPredecessorPresenceAndPreservesLastGoodBytes(t *testing.T) {
 	oldRoute := []byte(`{"id":"r1","upstream_id":"old-u","uri":"/old"}`)
 	previousSnapshot := mustGenerationSnapshot(t, 4, []generation.Resource{

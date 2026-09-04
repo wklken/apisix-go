@@ -3,10 +3,12 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // HealthReporter receives passive upstream outcomes from the route/protocol
@@ -132,12 +134,12 @@ func newUpstreamLoadBalanceWithPriorities(
 	}
 	if len(groups) > 1 {
 		if !healthChecksConfigured {
-			return &priorityLoadBalance{groups: groups}, nil
+			return &priorityLoadBalance{groups: groups, configuredTargets: len(servers)}, nil
 		}
 		return newHealthAwareLoadBalance(servers, priorities, checks)
 	}
 	if !healthChecksConfigured {
-		return &priorityLoadBalance{groups: groups}, nil
+		return &priorityLoadBalance{groups: groups, configuredTargets: len(servers)}, nil
 	}
 	return NewHealthAwareLoadBalance(servers, checks)
 }
@@ -239,6 +241,11 @@ func (lb *HealthAwareLoadBalance) NextForRequest(request *http.Request) string {
 
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	if len(lb.targets) == 1 {
+		target := lb.groups[0].selector.Next()
+		state.last = target
+		return target
+	}
 	anyHealthy := false
 	for _, group := range lb.groups {
 		for target := range group.weights {
@@ -262,14 +269,6 @@ func (lb *HealthAwareLoadBalance) NextForRequest(request *http.Request) string {
 		}
 		return ""
 	}
-	if target := next(); target != "" {
-		state.last = target
-		return target
-	}
-	// A request may have more retries than there are eligible healthy nodes.
-	// Start another cycle while retaining the healthy-only filter; only the
-	// no-healthy-node case above intentionally falls open to all targets.
-	clear(state.tried)
 	if target := next(); target != "" {
 		state.last = target
 		return target
@@ -689,6 +688,48 @@ func nonNegativeInt(value any, field string) (int, error) {
 	}
 	if result < 0 {
 		return 0, fmt.Errorf("%s must be non-negative", field)
+	}
+	return result, nil
+}
+
+func nonNegativeNumber(value any, field string) (float64, error) {
+	var result float64
+	switch typed := value.(type) {
+	case int:
+		result = float64(typed)
+	case int8:
+		result = float64(typed)
+	case int16:
+		result = float64(typed)
+	case int32:
+		result = float64(typed)
+	case int64:
+		result = float64(typed)
+	case uint:
+		result = float64(typed)
+	case uint8:
+		result = float64(typed)
+	case uint16:
+		result = float64(typed)
+	case uint32:
+		result = float64(typed)
+	case uint64:
+		result = float64(typed)
+	case float32:
+		result = float64(typed)
+	case float64:
+		result = typed
+	default:
+		return 0, fmt.Errorf("%s must be a number", field)
+	}
+	if math.IsNaN(result) || math.IsInf(result, 0) {
+		return 0, fmt.Errorf("%s must be a finite number", field)
+	}
+	if result < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", field)
+	}
+	if result > float64((1<<63)-1)/float64(time.Second) {
+		return 0, fmt.Errorf("%s is out of range", field)
 	}
 	return result, nil
 }

@@ -41,7 +41,7 @@ func TestRouteRegistrarRegistersPurgeForExplicitMethods(t *testing.T) {
 	}
 }
 
-func TestWildcardDispatcher405IncludesSortedUniqueAllowMethods(t *testing.T) {
+func TestWildcardDispatcherMethodMissUsesAPISIX404(t *testing.T) {
 	t.Parallel()
 
 	router := chi.NewRouter()
@@ -64,15 +64,15 @@ func TestWildcardDispatcher405IncludesSortedUniqueAllowMethods(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 
-	if response.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("PUT /items/123 status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("PUT /items/123 status = %d, want %d", response.Code, http.StatusNotFound)
 	}
-	if got := response.Header().Get("Allow"); got != "GET, POST" {
-		t.Fatalf("PUT /items/123 Allow = %q, want %q", got, "GET, POST")
+	if got := response.Header().Get("Allow"); got != "" {
+		t.Fatalf("PUT /items/123 Allow = %q, want empty", got)
 	}
 }
 
-func TestEmbeddedWildcard405IncludesMethodsAcrossHostCollisions(t *testing.T) {
+func TestEmbeddedWildcardMethodMissUsesAPISIX404(t *testing.T) {
 	t.Parallel()
 
 	router := chi.NewRouter()
@@ -96,10 +96,10 @@ func TestEmbeddedWildcard405IncludesMethodsAcrossHostCollisions(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 
-	if response.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("PUT /articles/tenant/comments status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("PUT /articles/tenant/comments status = %d, want %d", response.Code, http.StatusNotFound)
 	}
-	if got := response.Header().Get("Allow"); got != "GET, POST, PURGE" {
-		t.Fatalf("PUT /articles/tenant/comments Allow = %q, want %q", got, "GET, POST, PURGE")
+	if got := response.Header().Get("Allow"); got != "" {
+		t.Fatalf("PUT /articles/tenant/comments Allow = %q, want empty", got)
 	}
 }

@@ -200,6 +200,33 @@ func TestBuildKafkaPubSubHandlerPassesUpstreamTLS(t *testing.T) {
 	}
 }
 
+func TestBuildKafkaPubSubHandlerPreservesFractionalUpstreamTimeouts(t *testing.T) {
+	received := make(chan kafka_proxy.ConsumerOptions, 1)
+	factory := func(_ context.Context, _ []string, options kafka_proxy.ConsumerOptions) (kafka_proxy.KafkaConsumer, error) {
+		received <- options
+		return fakeKafkaPubSubConsumer{}, nil
+	}
+	handler := buildKafkaPubSubProxyHandlerForTest(t, resource.Upstream{
+		Timeout: resource.Timeout{Connect: 0.5, Send: 0.5, Read: 0.5},
+		Nodes:   []resource.Node{{Host: "127.0.0.1", Port: 9093, Weight: 1}},
+	}, factory)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	_ = dialKafkaWebSocket(t, server.URL)
+	select {
+	case options := <-received:
+		if options.ConnectTimeout != 500*time.Millisecond || options.ReadTimeout != 500*time.Millisecond {
+			t.Fatalf(
+				"Kafka timeouts = connect:%s read:%s, want 500ms each",
+				options.ConnectTimeout,
+				options.ReadTimeout,
+			)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Kafka timeout configuration")
+	}
+}
+
 func TestBuildReverseHandlerRejectsKafkaTLSClientCertID(t *testing.T) {
 	_, err := buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 		resource.Upstream{

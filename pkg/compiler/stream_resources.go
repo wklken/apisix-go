@@ -53,10 +53,11 @@ func decodeStreamResourceSet(
 			return streamResourceSet{}, err
 		}
 		normalized := input.resources[key]
+		typedDocument := typedResourceDocument(normalized)
 		switch key.Kind {
 		case "stream_routes":
 			var value resource.StreamRoute
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return streamResourceSet{}, streamResourceDecodeError(key, err)
 			}
 			if value.ID == "" {
@@ -65,7 +66,7 @@ func decodeStreamResourceSet(
 			result.routes = append(result.routes, value)
 		case "services":
 			var value resource.Service
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return streamResourceSet{}, streamResourceDecodeError(key, err)
 			}
 			if value.ID == "" {
@@ -74,7 +75,7 @@ func decodeStreamResourceSet(
 			result.services[key.ID] = value
 		case "upstreams":
 			var value resource.Upstream
-			if err := util.Parse(normalized.document, &value); err != nil {
+			if err := util.Parse(typedDocument, &value); err != nil {
 				return streamResourceSet{}, streamResourceDecodeError(key, err)
 			}
 			result.upstreams[key.ID] = value

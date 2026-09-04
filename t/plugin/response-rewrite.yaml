@@ -164,7 +164,7 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: "validate plugin response-rewrite config: /headers: additionalProperties '' not allowed"
+        matches: "validate plugin response-rewrite config: /headers: additionalProperties are not allowed"
 
   - name: reject-array-header-value
     config:
@@ -180,7 +180,7 @@ cases:
     upstream: *hello_fixture
     output:
       logs:
-        matches: "validate plugin response-rewrite config: /headers: additionalProperties 'X-Name' not allowed"
+        matches: "validate plugin response-rewrite config: /headers: additionalProperties are not allowed"
 
   - name: base64-body
     config:

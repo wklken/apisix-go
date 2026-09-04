@@ -23,7 +23,7 @@ cases:
     output:
       status: 404
       logs:
-        matches: add_headers
+        matches: "validate plugin traffic-label config: /rules/0/actions/0: additionalProperties are not allowed"
 
   - name: reject-multiple-operators
     runtime:

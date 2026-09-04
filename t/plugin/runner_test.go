@@ -2992,13 +2992,40 @@ func (p *apisixProcess) logs() (string, error) {
 	return string(data), nil
 }
 
-func reservePort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func TestReservePortsReturnsDistinctPorts(t *testing.T) {
+	ports, err := reservePorts(3)
 	if err != nil {
-		return 0, err
+		t.Fatalf("reserve ports: %v", err)
 	}
-	defer func() { _ = listener.Close() }()
-	return listener.Addr().(*net.TCPAddr).Port, nil
+	if len(ports) != 3 {
+		t.Fatalf("reserved ports = %v, want 3 ports", ports)
+	}
+	seen := make(map[int]struct{}, len(ports))
+	for _, port := range ports {
+		if _, ok := seen[port]; ok {
+			t.Fatalf("reserved ports = %v, want distinct ports", ports)
+		}
+		seen[port] = struct{}{}
+	}
+}
+
+func reservePorts(count int) ([]int, error) {
+	listeners := make([]net.Listener, 0, count)
+	defer func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
+	ports := make([]int, 0, count)
+	for range count {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		listeners = append(listeners, listener)
+		ports = append(ports, listener.Addr().(*net.TCPAddr).Port)
+	}
+	return ports, nil
 }
 
 func prepareFrontendTLS(
@@ -3358,14 +3385,16 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 		}
 	}
 
-	port, err := reservePort()
-	if err != nil {
-		t.Fatalf("reserve APISIX port: %v", err)
+	portCount := 2
+	if spec.TLS != nil {
+		portCount++
 	}
-	statusPort, err := reservePort()
+	reservedPorts, err := reservePorts(portCount)
 	if err != nil {
-		t.Fatalf("reserve APISIX status port: %v", err)
+		t.Fatalf("reserve APISIX ports: %v", err)
 	}
+	port := reservedPorts[0]
+	statusPort := reservedPorts[1]
 	apisixAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	statusAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(statusPort))
 	replacements["{{APISIX_URL}}"] = "http://" + apisixAddress
@@ -3387,10 +3416,7 @@ func runCaseInternal(t *testing.T, spec Case, waitForGeneration bool) {
 		ensureMap(runtimeOverrides, "apisix")["enable_http2"] = true
 	}
 	if spec.TLS != nil {
-		tlsPort, err = reservePort()
-		if err != nil {
-			t.Fatalf("reserve APISIX TLS port: %v", err)
-		}
+		tlsPort = reservedPorts[2]
 		runtimeOverrides, standaloneResources, err = prepareFrontendTLS(
 			runtimeOverrides,
 			spec.Config,

@@ -103,8 +103,8 @@ func trafficSplitResourceUpstream(
 		Timeout: upstream.Timeout, Checks: upstream.Checks,
 		HashOn: upstream.HashOn, Key: upstream.Key,
 		PassHost: upstream.PassHost, UpstreamHost: upstream.UpstreamHost,
-		Retries: upstream.Retries,
-		Nodes:   make([]resource.Node, 0, len(targets)),
+		Retries: upstream.Retries, RetryTimeout: upstream.RetryTimeout,
+		Nodes: make([]resource.Node, 0, len(targets)),
 	}
 	for _, target := range slices.Sorted(maps.Keys(targets)) {
 		parsed, err := url.Parse(target)
@@ -400,13 +400,13 @@ func buildKafkaPubSubProxyHandlerStrictWithSSLResolver(
 ) (http.Handler, error) {
 	options := kafka_proxy.TransportOptions{}
 	if upstream.Timeout.Connect > 0 {
-		options.ConnectTimeout = time.Duration(upstream.Timeout.Connect) * time.Second
+		options.ConnectTimeout = time.Duration(upstream.Timeout.Connect * float64(time.Second))
 	}
 	if upstream.Timeout.Send > 0 {
-		options.WriteTimeout = time.Duration(upstream.Timeout.Send) * time.Second
+		options.WriteTimeout = time.Duration(upstream.Timeout.Send * float64(time.Second))
 	}
 	if upstream.Timeout.Read > 0 {
-		options.ReadTimeout = time.Duration(upstream.Timeout.Read) * time.Second
+		options.ReadTimeout = time.Duration(upstream.Timeout.Read * float64(time.Second))
 	}
 	if upstream.TLS != nil {
 		clientCert := upstream.TLS.ClientCert

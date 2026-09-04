@@ -92,7 +92,7 @@ func buildFaultHandler(t *testing.T, targetURL string, readTimeout, retries int)
 		Scheme:  "http",
 		Nodes:   []resource.Node{upstreamNode(t, targetURL)},
 		Retries: retries,
-		Timeout: resource.Timeout{Read: readTimeout},
+		Timeout: resource.Timeout{Read: float64(readTimeout)},
 	}
 	return testPreparedProxyHandler(t, resource.Route{Upstream: upstream}, resource.Service{}, testEffectiveConfig())
 }
@@ -108,7 +108,7 @@ func buildFaultHandlerWithMaxInFlight(
 		Scheme:  "http",
 		Nodes:   []resource.Node{upstreamNode(t, targetURL)},
 		Retries: retries,
-		Timeout: resource.Timeout{Read: readTimeout},
+		Timeout: resource.Timeout{Read: float64(readTimeout)},
 	}
 	return testPreparedProxyHandlerWithMaxInFlight(
 		t, resource.Route{Upstream: upstream}, resource.Service{}, testEffectiveConfig(), maxInFlight,
@@ -136,7 +136,7 @@ func TestProxyFaultHandling(t *testing.T) {
 		wantAborted  bool
 	}{
 		{
-			name:         "GET retries reset",
+			name:         "GET retries the only node after reset",
 			method:       http.MethodGet,
 			mode:         faultReset,
 			wantStatus:   http.StatusBadGateway,
@@ -150,7 +150,7 @@ func TestProxyFaultHandling(t *testing.T) {
 			wantAttempts: 1,
 		},
 		{
-			name:         "keyed POST retries reset",
+			name:         "keyed POST retries the only node after reset",
 			method:       http.MethodPost,
 			idempotency:  "order-123",
 			mode:         faultReset,

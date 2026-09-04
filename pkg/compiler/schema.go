@@ -320,7 +320,7 @@ func safeSchemaDiagnostic(
 	if leaf == nil {
 		return ""
 	}
-	location := leaf.InstanceLocation
+	location := safeDiagnosticLocation(leaf.InstanceLocation)
 	if location == "" {
 		location = "/"
 	}
@@ -369,8 +369,10 @@ func safeValidationMessage(validationErr *jsonschema.ValidationError) string {
 		keyword = keyword[index+1:]
 	}
 	switch keyword {
-	case "type", "required", "additionalProperties", "dependentRequired", "dependencies":
+	case "type", "required", "dependentRequired", "dependencies":
 		return validationErr.Message
+	case "additionalProperties":
+		return "additionalProperties are not allowed"
 	case "enum":
 		return "value is not in the allowed set"
 	case "const":
@@ -390,6 +392,16 @@ func safeValidationMessage(validationErr *jsonschema.ValidationError) string {
 	default:
 		return "value does not satisfy schema rule " + keyword
 	}
+}
+
+func safeDiagnosticLocation(location string) string {
+	lower := strings.ToLower(location)
+	for _, marker := range []string{"$secret:", "$env:", "$encrypted:"} {
+		if strings.Contains(lower, marker) {
+			return "/[redacted]"
+		}
+	}
+	return location
 }
 
 func schemaConstraintWithoutInstanceValue(message string) string {

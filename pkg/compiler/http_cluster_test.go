@@ -17,6 +17,8 @@ import (
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
+const testMaxInFlight = 1024
+
 type blockingHTTPClusterObserver struct {
 	proxy.NopClusterObserver
 	entered chan struct{}
@@ -54,7 +56,7 @@ func TestHTTPClusterFinalReleaseRetriesAfterHealthResidual(t *testing.T) {
 				"http_statuses": []any{http.StatusInternalServerError},
 			},
 		}},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	}
 	cluster, err := prepared.acquireHTTPCluster(context.Background(), config)
 	if err != nil {
@@ -131,7 +133,7 @@ func TestHTTPClusterFinalReleaseDeduplicatesMultipleActiveHealthResiduals(t *tes
 				"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
 			},
 		}},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	}
 	digest, err := config.Key()
 	if err != nil {
@@ -259,7 +261,7 @@ func TestHTTPClusterActiveHealthDoesNotRetainPrepareContext(t *testing.T) {
 				"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
 			},
 		}},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -309,7 +311,7 @@ func TestHTTPClusterHealthOutlivesCreatingGenerationWhileReused(t *testing.T) {
 				"interval": 1, "http_failures": 1, "tcp_failures": 1, "timeouts": 1,
 			},
 		}},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	}
 	oldCluster, err := old.acquireHTTPCluster(context.Background(), config)
 	if err != nil {
@@ -360,7 +362,7 @@ func TestAcquireHTTPClusterSharesCanonicalConfigAndGenerationOwnsEveryLease(t *t
 	prepared, fixture := newEffectiveBindingMaterializerFixture(t, nil, nil)
 	config := proxy.ClusterConfig{
 		Name: "shared", Targets: map[string]int{"http://127.0.0.1:9080": 1},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	}
 	first, err := prepared.acquireHTTPCluster(context.Background(), config)
 	if err != nil {
@@ -389,7 +391,7 @@ func TestAcquireHTTPClusterRollbackReleasesTentativeLease(t *testing.T) {
 	}
 	cluster, err := prepared.acquireHTTPCluster(context.Background(), proxy.ClusterConfig{
 		Name: "tentative", Targets: map[string]int{"http://127.0.0.1:9081": 1},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -419,14 +421,14 @@ func TestAcquireHTTPClusterObserverLifetimeAcrossGenerationOverlap(t *testing.T)
 
 	oldCluster, err := old.acquireHTTPCluster(context.Background(), proxy.ClusterConfig{
 		Name: "orders", Targets: map[string]int{"http://127.0.0.1:9080": 1},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	nextCluster, err := next.acquireHTTPCluster(context.Background(), proxy.ClusterConfig{
 		Name: "orders", Targets: map[string]int{"http://127.0.0.1:9081": 1},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -464,7 +466,7 @@ func TestAcquireHTTPClusterExactConfigSharesObserverLifetime(t *testing.T) {
 	first.clusterObservers, second.clusterObservers = clusterObservers, clusterObservers
 	config := proxy.ClusterConfig{
 		Name: "shared", Targets: map[string]int{"http://127.0.0.1:9080": 1},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	}
 	firstCluster, err := first.acquireHTTPCluster(context.Background(), config)
 	if err != nil {
@@ -511,7 +513,7 @@ func TestHTTPClusterLeaseUsesRetryableResourceFinalizationPhase(t *testing.T) {
 		Targets: map[string]int{
 			"http://127.0.0.1:9080": 1,
 		},
-		MaxInFlight: proxy.DefaultMaxInFlight,
+		MaxInFlight: testMaxInFlight,
 	})
 	if err != nil {
 		t.Fatal(err)

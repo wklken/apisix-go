@@ -30,6 +30,7 @@ cases:
             status: 200
             body: done
           - *done_response
+          - *done_response
     steps:
       - name: bare-address
         input:
@@ -63,10 +64,10 @@ cases:
           headers:
             XFF: 1.1.1.1:65536
         output: *forbidden_output
-      - name: client-controlled-source-without-trust-does-not-rewrite
+      - name: source-without-trusted-addresses-rewrites
         input:
           path: /no-trust?real_ip=1.1.1.1
-        output: *forbidden_output
+        output: *done_output
 
   - name: ipv6-addresses
     config:

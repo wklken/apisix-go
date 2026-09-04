@@ -191,7 +191,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		ctx := r.Context()
 		uri, captures := p.rewriteURI(p.rewriteSourceURI(r))
 		if p.config.Uri != "" {
-			uri = appendRequestQuery(resolveHeaderValue(r, p.config.Uri, nil), r.URL.RawQuery)
+			uri = appendRequestQuery(resolveURIValue(r, p.config.Uri), r.URL.RawQuery)
 		}
 		if uri != "" && p.config.Uri == "" && !p.config.UseRealRequestURIUnsafe {
 			uri = appendRequestQuery(uri, r.URL.RawQuery)
@@ -339,6 +339,13 @@ func resolveHeaderValue(r *http.Request, value string, captures []string) string
 	value = resolveCaptureValue(value, captures)
 	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
 		return base.RequestVar(r, strings.TrimPrefix(variable, "$"), 0)
+	})
+}
+
+func resolveURIValue(r *http.Request, value string) string {
+	return variablePattern.ReplaceAllStringFunc(value, func(variable string) string {
+		resolved := base.RequestVar(r, strings.TrimPrefix(variable, "$"), 0)
+		return strings.ReplaceAll(resolved, "?", "%3F")
 	})
 }
 

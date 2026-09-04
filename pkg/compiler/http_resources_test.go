@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -9,6 +10,42 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+func TestDecodeHTTPResourceSetAcceptsAPISIXNumericReferencesAndDurations(t *testing.T) {
+	snapshot, err := generation.NewSnapshot(16, []generation.Resource{
+		resourceValue(
+			"routes",
+			"1",
+			`{"id":"1","uri":"/","service_id":1,"plugin_config_id":1,"timeout":{"connect":0.5,"send":0.5,"read":0.5}}`,
+		),
+		resourceValue("services", "1", `{"id":"1","upstream_id":1}`),
+		resourceValue("upstreams", "1", `{"id":"1","nodes":{"127.0.0.1:9080":1},"retry_timeout":0.15}`),
+		resourceValue("plugin_configs", "1", `{"id":"1","plugins":{}}`),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
+
+	resources, err := decodeHTTPResourceSet(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("decodeHTTPResourceSet() error = %v", err)
+	}
+	route := resources.routes[0]
+	if route.ServiceID != "1" || route.PluginConfigID != "1" || resources.services["1"].UpstreamID != "1" {
+		t.Fatalf("numeric references = route %#v service %#v", route, resources.services["1"])
+	}
+	if got := reflect.ValueOf(route.Timeout).
+		FieldByName("Connect"); !got.IsValid() || got.Kind() != reflect.Float64 ||
+		got.Float() != 0.5 {
+		t.Fatalf("route connect timeout = %#v, want float64(0.5)", route.Timeout)
+	}
+	if got := reflect.ValueOf(resources.upstreams["1"]).
+		FieldByName("RetryTimeout"); !got.IsValid() || got.Kind() != reflect.Float64 ||
+		got.Float() != 0.15 {
+		t.Fatalf("upstream retry timeout = %#v, want float64(0.15)", resources.upstreams["1"])
+	}
+}
 
 func TestDecodeHTTPResourceSetUsesOnlyPublishedCandidate(t *testing.T) {
 	t.Parallel()

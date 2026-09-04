@@ -36,7 +36,7 @@ func TestSchemaAndPostInitMatchAPISIX317Rejections(t *testing.T) {
 	}
 }
 
-func TestXForwardedForWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *testing.T) {
+func TestXForwardedForWithoutTrustedAddressesOverridesRemoteAddress(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "http_x_forwarded_for"})
 	req := httptest.NewRequest(http.MethodGet, "/real-ip", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -44,8 +44,11 @@ func TestXForwardedForWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *tes
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "" {
-			t.Fatalf("remote_addr = %q, want unchanged", got)
+		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.9" {
+			t.Fatalf("remote_addr = %q, want 203.0.113.9", got)
+		}
+		if got := apisixctx.GetString(r.Context(), "remote_port"); got != "9443" {
+			t.Fatalf("remote_port = %q, want 9443", got)
 		}
 		if got := r.RemoteAddr; got != "192.0.2.10:12345" {
 			t.Fatalf("request RemoteAddr = %q, want original peer", got)
@@ -58,15 +61,15 @@ func TestXForwardedForWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *tes
 	}
 }
 
-func TestQueryArgSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *testing.T) {
+func TestQueryArgSourceWithoutTrustedAddressesOverridesRemoteAddress(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "arg_realip"})
 	req := httptest.NewRequest(http.MethodGet, "/real-ip?realip=203.0.113.10", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "" {
-			t.Fatalf("remote_addr = %q, want unchanged", got)
+		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.10" {
+			t.Fatalf("remote_addr = %q, want 203.0.113.10", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
@@ -195,7 +198,7 @@ func TestRemoteAddressSourceUsesExistingContextValue(t *testing.T) {
 	}
 }
 
-func TestCookieSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *testing.T) {
+func TestCookieSourceWithoutTrustedAddressesOverridesRemoteAddress(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "cookie_realip"})
 	req := httptest.NewRequest(http.MethodGet, "/real-ip", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -203,8 +206,8 @@ func TestCookieSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *test
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "" {
-			t.Fatalf("remote_addr = %q, want unchanged", got)
+		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.20" {
+			t.Fatalf("remote_addr = %q, want 203.0.113.20", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
@@ -214,7 +217,7 @@ func TestCookieSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *test
 	}
 }
 
-func TestHeaderSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *testing.T) {
+func TestHeaderSourceWithoutTrustedAddressesOverridesRemoteAddress(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "http_x_real_ip"})
 	req := httptest.NewRequest(http.MethodGet, "/real-ip", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -222,8 +225,8 @@ func TestHeaderSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *test
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "" {
-			t.Fatalf("remote_addr = %q, want unchanged", got)
+		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.20" {
+			t.Fatalf("remote_addr = %q, want 203.0.113.20", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
@@ -233,15 +236,15 @@ func TestHeaderSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *test
 	}
 }
 
-func TestHostSourceWithoutTrustedAddressesDoesNotOverrideRemoteAddress(t *testing.T) {
+func TestHostSourceWithoutTrustedAddressesOverridesRemoteAddress(t *testing.T) {
 	p := newTestPlugin(t, Config{Source: "host"})
 	req := httptest.NewRequest(http.MethodGet, "http://203.0.113.20/real-ip", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
 
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "" {
-			t.Fatalf("remote_addr = %q, want unchanged", got)
+		if got := apisixctx.GetString(r.Context(), "remote_addr"); got != "203.0.113.20" {
+			t.Fatalf("remote_addr = %q, want 203.0.113.20", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

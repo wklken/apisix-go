@@ -63,6 +63,7 @@ type Upstream struct {
 
 	Retries      int `json:"retries,omitempty"`
 	retriesSet   bool
+	RetryTimeout float64        `json:"retry_timeout,omitempty"`
 	Checks       map[string]any `json:"checks,omitempty"`
 	HashOn       string         `json:"hash_on,omitempty"`
 	Key          string         `json:"key,omitempty"`
@@ -127,6 +128,7 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		{name: "discovery_type", raw: upstreamData["discovery_type"], dest: &s.DiscoveryType},
 		{name: "service_name", raw: upstreamData["service_name"], dest: &s.ServiceName},
 		{name: "retries", raw: upstreamData["retries"], dest: &s.Retries},
+		{name: "retry_timeout", raw: upstreamData["retry_timeout"], dest: &s.RetryTimeout},
 		{name: "checks", raw: upstreamData["checks"], dest: &s.Checks},
 		{name: "hash_on", raw: upstreamData["hash_on"], dest: &s.HashOn},
 		{name: "key", raw: upstreamData["key"], dest: &s.Key},
@@ -175,9 +177,9 @@ func parseNodeAddress(address string) (string, int) {
 }
 
 type Timeout struct {
-	Connect int `json:"connect,omitempty"`
-	Send    int `json:"send,omitempty"`
-	Read    int `json:"read,omitempty"`
+	Connect float64 `json:"connect,omitempty"`
+	Send    float64 `json:"send,omitempty"`
+	Read    float64 `json:"read,omitempty"`
 }
 
 // UpstreamTLS contains APISIX upstream TLS fields used by HTTPS/grpcs and

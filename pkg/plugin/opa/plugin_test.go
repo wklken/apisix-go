@@ -139,7 +139,7 @@ func TestHandlerAllowsRequestAndSendsOPAInput(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsNon2xxOPAResponseBeforeAllowBody(t *testing.T) {
+func TestHandlerUsesDecisionBodyFromNon2xxOPAResponse(t *testing.T) {
 	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
@@ -151,12 +151,17 @@ func TestHandlerRejectsNon2xxOPAResponseBeforeAllowBody(t *testing.T) {
 		Policy: "authz",
 	})
 
+	called := false
 	res := performRequest(p, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called for a non-2xx OPA response")
+		called = true
+		w.WriteHeader(http.StatusNoContent)
 	})
 
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+	if !called {
+		t.Fatal("next handler was not called for an allow decision")
+	}
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
 	}
 }
 

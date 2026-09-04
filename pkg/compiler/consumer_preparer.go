@@ -120,7 +120,7 @@ func (preparer *consumerBindingPreparer) PrepareConsumers(
 			}
 		case "consumer_groups":
 			var group resource.ConsumerGroup
-			if err := util.Parse(normalized.document, &group); err != nil {
+			if err := util.Parse(typedResourceDocument(normalized), &group); err != nil {
 				return nil, errConsumerPreparationFailed
 			}
 			group.ConfigDigest = sha256.Sum256(normalized.raw)
@@ -192,7 +192,7 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 	}
 
 	var consumer resource.Consumer
-	if err := util.Parse(normalized.document, &consumer); err != nil ||
+	if err := util.Parse(typedResourceDocument(normalized), &consumer); err != nil ||
 		consumer.Username != normalized.key.ID {
 		return runtime.ConsumerRecord{}, nil, nil, errConsumerPreparationFailed
 	}

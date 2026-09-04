@@ -77,6 +77,32 @@ func TestCompileHTTPRejectsIncompleteInput(t *testing.T) {
 	}
 }
 
+func TestCompileHTTPUsesAPISIX404ForExactRouteMethodMiss(t *testing.T) {
+	snapshot, err := CompileHTTP(context.Background(), CompileInput{
+		Revision: 1,
+		Routes: []PreparedRoute{{
+			Route: resource.Route{ID: "get-only", Uri: "/resource", Methods: []string{http.MethodGet}},
+			Handler: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.WriteHeader(http.StatusNoContent)
+			}),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CompileHTTP() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	snapshot.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/resource", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("POST /resource status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+	if got := response.Header().Get("Allow"); got != "" {
+		t.Fatalf("POST /resource Allow = %q, want empty", got)
+	}
+	if got := response.Body.String(); got != `{"error_msg":"404 Route Not Found"}` {
+		t.Fatalf("body = %q, want APISIX route-miss body", got)
+	}
+}
+
 func TestCompileHTTPBindsGenerationGraphQLPurgeRegistry(t *testing.T) {
 	registry := graphql_proxy_cache.NewRegistry()
 	plugin := &graphql_proxy_cache.Plugin{}

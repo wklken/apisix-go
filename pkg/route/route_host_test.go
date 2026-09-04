@@ -2,6 +2,7 @@ package route
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,53 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/resource"
 )
+
+func TestRouteDecisionIndexSelectsMostSpecificWildcardWithManyUnrelatedSuffixes(t *testing.T) {
+	decision := &routeDecisionIndex{}
+	for index := range 1000 {
+		decision.add(wildcardRoute{
+			method: "*", hosts: []string{fmt.Sprintf("*.unrelated-%d.test", index)},
+			registrationIndex: uint64(index),
+		})
+	}
+	decision.add(wildcardRoute{
+		method: "*", hosts: []string{"*.example.com"}, registrationIndex: 2000,
+	})
+	decision.add(wildcardRoute{
+		method: "*", hosts: []string{"*.b.example.com"}, registrationIndex: 1002,
+	})
+
+	host := strings.Repeat("a.", 4096) + "b.example.com"
+	candidate, matchedHost, ok := decision.lookup(host, "", 1, 1, http.MethodGet)
+	if !matchedHost || !ok || candidate.route.registrationIndex != 1002 {
+		t.Fatalf(
+			"wildcard lookup = index:%d matched:%v ok:%v, want latest matching index 1002",
+			candidate.route.registrationIndex,
+			matchedHost,
+			ok,
+		)
+	}
+}
+
+func TestRouteDecisionIndexFallsBackToBroaderWildcardAfterSpecificMethodMiss(t *testing.T) {
+	decision := &routeDecisionIndex{}
+	decision.add(wildcardRoute{
+		method: http.MethodGet, hosts: []string{"*.example.com"}, registrationIndex: 2000,
+	})
+	decision.add(wildcardRoute{
+		method: http.MethodPost, hosts: []string{"*.b.example.com"}, registrationIndex: 1002,
+	})
+
+	candidate, matchedHost, ok := decision.lookup("a.b.example.com", "", 1, 0, http.MethodGet)
+	if !matchedHost || !ok || candidate.route.registrationIndex != 2000 {
+		t.Fatalf(
+			"wildcard fallback = index:%d matched:%v ok:%v, want broad GET index 2000",
+			candidate.route.registrationIndex,
+			matchedHost,
+			ok,
+		)
+	}
+}
 
 func TestCompileHTTPSingularHost(t *testing.T) {
 	snapshot, err := CompileHTTP(context.Background(), CompileInput{
@@ -145,12 +193,14 @@ func TestCompileHTTPAcceptsOneLabelWildcardHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileHTTP() error = %v", err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/wildcard-host", nil)
-	request.Host = "api.example.com"
-	response := httptest.NewRecorder()
-	snapshot.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("Host %q status = %d, want %d", request.Host, response.Code, http.StatusNoContent)
+	for _, host := range []string{"api.example.com", "a.b.example.com", ".example.com"} {
+		request := httptest.NewRequest(http.MethodGet, "/wildcard-host", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		snapshot.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("Host %q status = %d, want %d", request.Host, response.Code, http.StatusNoContent)
+		}
 	}
 }
 
@@ -158,8 +208,11 @@ func TestRouteHostRankMatchesOneLabelWildcardAndBareIPv6(t *testing.T) {
 	if got := routeHostRank([]string{"*.example.com"}, "foo.example.com"); got != 1 {
 		t.Fatalf("one-label wildcard rank = %d, want 1", got)
 	}
-	if got := routeHostRank([]string{"*.example.com"}, "a.b.example.com"); got != -1 {
-		t.Fatalf("multi-label wildcard rank = %d, want -1", got)
+	if got := routeHostRank([]string{"*.example.com"}, "a.b.example.com"); got != 1 {
+		t.Fatalf("multi-label wildcard rank = %d, want 1", got)
+	}
+	if got := routeHostRank([]string{"*.example.com"}, ".example.com"); got != 1 {
+		t.Fatalf("empty-prefix wildcard rank = %d, want 1", got)
 	}
 	if got := routeHostRank([]string{"::1"}, "[::1]"); got != 2 {
 		t.Fatalf("bracketed IPv6 rank = %d, want exact 2", got)

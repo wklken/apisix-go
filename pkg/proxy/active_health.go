@@ -80,7 +80,16 @@ func ParseActiveHealthConfig(checks map[string]any) (ActiveHealthConfig, bool, e
 		UnhealthyTCPFails:  2,
 		UnhealthyTimeouts:  3,
 		HealthyStatuses:    defaultActiveHealthyStatuses(),
-		UnhealthyStatuses:  map[int]struct{}{429: {}, 500: {}, 503: {}},
+		UnhealthyStatuses: map[int]struct{}{
+			http.StatusTooManyRequests:         {},
+			http.StatusNotFound:                {},
+			http.StatusInternalServerError:     {},
+			http.StatusNotImplemented:          {},
+			http.StatusBadGateway:              {},
+			http.StatusServiceUnavailable:      {},
+			http.StatusGatewayTimeout:          {},
+			http.StatusHTTPVersionNotSupported: {},
+		},
 	}
 
 	if rawType, exists := active["type"]; exists {
@@ -122,11 +131,11 @@ func ParseActiveHealthConfig(checks map[string]any) (ActiveHealthConfig, bool, e
 	}
 
 	if rawTimeout, exists := active["timeout"]; exists {
-		seconds, err := nonNegativeInt(rawTimeout, "checks.active.timeout")
+		seconds, err := nonNegativeNumber(rawTimeout, "checks.active.timeout")
 		if err != nil {
 			return ActiveHealthConfig{}, false, err
 		}
-		config.Timeout = time.Duration(seconds) * time.Second
+		config.Timeout = time.Duration(seconds * float64(time.Second))
 	}
 	if config.Timeout <= 0 {
 		return ActiveHealthConfig{}, false, fmt.Errorf("checks.active.timeout must be positive")

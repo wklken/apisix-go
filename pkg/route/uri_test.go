@@ -121,8 +121,8 @@ func TestRegisterRouteMatchesEmbeddedWildcardAcrossPathDepths(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/articles/12345/comments", nil)
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST method-restricted route status = %d, want %d", response.Code, http.StatusMethodNotAllowed)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("POST method-restricted route status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
 
@@ -472,7 +472,7 @@ func TestWildcardDispatcherKeepsMethodScopesSeparate(t *testing.T) {
 				{method: http.MethodGet, path: "/articles/123/comments", want: http.StatusAccepted},
 				{method: http.MethodPost, path: "/articles/123/comments", want: http.StatusAccepted},
 				{method: http.MethodGet, path: "/articles/123/likes", want: http.StatusCreated},
-				{method: http.MethodPost, path: "/articles/123/likes", want: http.StatusMethodNotAllowed},
+				{method: http.MethodPost, path: "/articles/123/likes", want: http.StatusNotFound},
 			},
 		},
 		{
@@ -662,7 +662,7 @@ func TestRouteRegistrarMatchesHostConstrainedParameters(t *testing.T) {
 		{"single parameter", http.MethodGet, "/users/42", "api.example.com", http.StatusNoContent},
 		{"multiple parameters", http.MethodPost, "/teams/core/members/alice", "api.example.com", http.StatusAccepted},
 		{"wrong host", http.MethodGet, "/users/42", "other.example.com", http.StatusNotFound},
-		{"wrong method", http.MethodDelete, "/users/42", "api.example.com", http.StatusMethodNotAllowed},
+		{"wrong method", http.MethodDelete, "/users/42", "api.example.com", http.StatusNotFound},
 		{"empty parameter", http.MethodGet, "/users/", "api.example.com", http.StatusNotFound},
 	}
 	for _, test := range tests {

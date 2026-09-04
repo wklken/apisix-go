@@ -196,6 +196,120 @@ func TestCompileSelectsExactWildcardAndFallbackCertificatesFromOwnedResources(t 
 	}
 }
 
+func TestCompileUsesCatchAllSNIResourceAsCertificateFallback(t *testing.T) {
+	certificate, key := testServerKeyPair(t, "catch-all")
+	snapshot, err := Compile(Input{
+		Config: testFrontendConfig(),
+		SSLs: map[string]resource.SSL{
+			"catch-all": {
+				ID: "catch-all", Sni: "*", Cert: certificate, Key: key, Status: 1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	selected, err := snapshot.TLSConfig().GetCertificate(&tls.ClientHelloInfo{ServerName: "unknown.example.test"})
+	if err != nil {
+		t.Fatalf("GetCertificate() error = %v", err)
+	}
+	if got := testCertificateCommonName(t, selected); got != "catch-all" {
+		t.Fatalf("selected common name = %q, want catch-all", got)
+	}
+}
+
+func TestCompileAppliesPerResourceSSLProtocols(t *testing.T) {
+	certificate, key := testServerKeyPair(t, "tls13-only")
+	snapshot, err := Compile(Input{
+		Config: testFrontendConfig(),
+		SSLs: map[string]resource.SSL{
+			"tls13-only": {
+				ID: "tls13-only", Sni: "tls13.example.test", Cert: certificate, Key: key, Status: 1,
+				SSLProtocols: []string{"TLSv1.3"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	selected, err := snapshot.TLSConfig().GetConfigForClient(
+		&tls.ClientHelloInfo{ServerName: "tls13.example.test"},
+	)
+	if err != nil {
+		t.Fatalf("GetConfigForClient() error = %v", err)
+	}
+	if selected.MinVersion != tls.VersionTLS13 || selected.MaxVersion != tls.VersionTLS13 {
+		t.Fatalf(
+			"selected TLS versions = %x-%x, want TLS 1.3 only",
+			selected.MinVersion,
+			selected.MaxVersion,
+		)
+	}
+}
+
+func TestCompileRejectsProtocolVersionsMissingFromResourceSSLProtocols(t *testing.T) {
+	certificate, key := testServerKeyPair(t, "non-contiguous-protocols")
+	snapshot, err := Compile(Input{
+		Config: testFrontendConfig(),
+		SSLs: map[string]resource.SSL{
+			"non-contiguous": {
+				ID: "non-contiguous", Sni: "non-contiguous.example.test",
+				Cert: certificate, Key: key, Status: 1,
+				SSLProtocols: []string{"TLSv1.1", "TLSv1.3"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	selected, err := snapshot.TLSConfig().GetConfigForClient(
+		&tls.ClientHelloInfo{
+			ServerName:        "non-contiguous.example.test",
+			SupportedVersions: []uint16{tls.VersionTLS12, tls.VersionTLS11},
+		},
+	)
+	if err != nil {
+		t.Fatalf("GetConfigForClient() error = %v", err)
+	}
+	if selected.MinVersion != tls.VersionTLS11 || selected.MaxVersion != tls.VersionTLS11 {
+		t.Fatalf(
+			"selected TLS versions = %x-%x, want highest offered configured version TLS 1.1",
+			selected.MinVersion,
+			selected.MaxVersion,
+		)
+	}
+	_, err = snapshot.TLSConfig().GetConfigForClient(&tls.ClientHelloInfo{
+		ServerName:        "non-contiguous.example.test",
+		SupportedVersions: []uint16{tls.VersionTLS12},
+	})
+	if err == nil {
+		t.Fatal("TLS 1.2-only client was accepted although TLS 1.2 is absent from ssl_protocols")
+	}
+}
+
+func TestCompileDoesNotInheritGlobalProtocolsForExplicitEmptyResourceProtocols(t *testing.T) {
+	certificate, key := testServerKeyPair(t, "empty-protocols")
+	snapshot, err := Compile(Input{
+		Config: testFrontendConfig(),
+		SSLs: map[string]resource.SSL{
+			"empty": {
+				ID: "empty", Sni: "empty.example.test", Cert: certificate, Key: key, Status: 1,
+				SSLProtocols: []string{},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	_, err = snapshot.TLSConfig().GetConfigForClient(&tls.ClientHelloInfo{
+		ServerName:        "empty.example.test",
+		SupportedVersions: []uint16{tls.VersionTLS13, tls.VersionTLS12},
+	})
+	if err == nil {
+		t.Fatal("explicit empty resource ssl_protocols inherited global TLS protocols")
+	}
+}
+
 func TestCompileAppliesPerResourceClientCAAndVerificationDepth(t *testing.T) {
 	clientCA, clientCAPEM := testCertificateAuthority(t, "client-root")
 	serverCert, serverKey := testServerKeyPair(t, "mtls-server")

@@ -112,14 +112,20 @@ func effectiveRouteURI(converted string) string {
 
 type routeRegistrar struct {
 	mux                   *chi.Mux
+	notFound              http.Handler
 	dispatchers           map[string]*wildcardDispatcher
 	nextRegistrationIndex uint64
 }
 
-func newRouteRegistrar(mux *chi.Mux) *routeRegistrar {
+func newRouteRegistrar(mux *chi.Mux, notFoundHandlers ...http.Handler) *routeRegistrar {
 	registerPurgeMethod()
+	notFound := apisixRouteNotFoundHandler()
+	if len(notFoundHandlers) > 0 && notFoundHandlers[0] != nil {
+		notFound = notFoundHandlers[0]
+	}
 	return &routeRegistrar{
 		mux:         mux,
+		notFound:    notFound,
 		dispatchers: make(map[string]*wildcardDispatcher),
 	}
 }
@@ -162,6 +168,7 @@ type wildcardRoute struct {
 
 type wildcardDispatcher struct {
 	prefix      string
+	notFound    http.Handler
 	nonEmbedded *routeDecisionIndex
 	embedded    map[string]*routeDecisionIndex
 }
@@ -174,14 +181,76 @@ type routeCandidate struct {
 type routeHostDecision struct {
 	exact    map[string]routeCandidate
 	wildcard routeCandidate
-	allowed  []string
 }
 
 type routeDecisionIndex struct {
 	pattern       string
 	hostless      routeHostDecision
 	exactHosts    map[string]*routeHostDecision
-	wildcardHosts map[string]*routeHostDecision
+	wildcardHosts *wildcardHostIndex
+}
+
+type wildcardHostIndex struct {
+	root wildcardHostNode
+}
+
+type wildcardHostNode struct {
+	children map[byte]*wildcardHostNode
+	decision *routeHostDecision
+	parent   *wildcardHostNode
+}
+
+func (index *wildcardHostIndex) ensure(suffix string) *routeHostDecision {
+	node := &index.root
+	for position := len(suffix) - 1; position >= 0; position-- {
+		if node.children == nil {
+			node.children = make(map[byte]*wildcardHostNode)
+		}
+		child := node.children[suffix[position]]
+		if child == nil {
+			child = &wildcardHostNode{parent: node}
+			node.children[suffix[position]] = child
+		}
+		node = child
+	}
+	if node.decision == nil {
+		node.decision = &routeHostDecision{}
+	}
+	return node.decision
+}
+
+func (index *wildcardHostIndex) exact(suffix string) *routeHostDecision {
+	if index == nil {
+		return nil
+	}
+	node := &index.root
+	for position := len(suffix) - 1; position >= 0; position-- {
+		node = node.children[suffix[position]]
+		if node == nil {
+			return nil
+		}
+	}
+	return node.decision
+}
+
+func (index *wildcardHostIndex) visitMatches(host string, visit func(*routeHostDecision) bool) {
+	if index == nil {
+		return
+	}
+	node := &index.root
+	for position := len(host) - 1; position >= 0; position-- {
+		child := node.children[host[position]]
+		if child == nil {
+			break
+		}
+		node = child
+	}
+	for node != &index.root {
+		if node.decision != nil && !visit(node.decision) {
+			return
+		}
+		node = node.parent
+	}
 }
 
 func (d *routeDecisionIndex) add(route wildcardRoute) {
@@ -197,13 +266,9 @@ func (d *routeDecisionIndex) add(route wildcardRoute) {
 				continue
 			}
 			if d.wildcardHosts == nil {
-				d.wildcardHosts = make(map[string]*routeHostDecision)
+				d.wildcardHosts = &wildcardHostIndex{}
 			}
-			decision := d.wildcardHosts[suffix]
-			if decision == nil {
-				decision = &routeHostDecision{}
-				d.wildcardHosts[suffix] = decision
-			}
+			decision := d.wildcardHosts.ensure(suffix)
 			decision.add(route)
 			continue
 		}
@@ -234,12 +299,6 @@ func (d *routeHostDecision) add(route wildcardRoute) {
 	if !ok || current.route.registrationIndex < route.registrationIndex {
 		d.exact[route.method] = candidate
 	}
-	if !ok {
-		index, _ := slices.BinarySearch(d.allowed, route.method)
-		d.allowed = append(d.allowed, "")
-		copy(d.allowed[index+1:], d.allowed[index:])
-		d.allowed[index] = route.method
-	}
 }
 
 func (d *routeDecisionIndex) lookup(
@@ -249,6 +308,23 @@ func (d *routeDecisionIndex) lookup(
 	methodIndex int,
 	method string,
 ) (routeCandidate, bool, bool) {
+	if hostRank == 1 {
+		var selected routeCandidate
+		hasRoutes := false
+		d.wildcardHosts.visitMatches(host, func(decision *routeHostDecision) bool {
+			if !decision.hasRoutes() {
+				return true
+			}
+			hasRoutes = true
+			if methodIndex == 1 {
+				selected = decision.wildcard
+				return !selected.valid
+			}
+			selected = decision.exact[method]
+			return !selected.valid
+		})
+		return selected, hasRoutes, selected.valid
+	}
 	decision := d.hostDecision(host, wildcardHost, hostRank)
 	if decision == nil {
 		return routeCandidate{}, false, false
@@ -279,37 +355,10 @@ func (d *routeDecisionIndex) hostDecision(
 		if wildcardHost == "" {
 			return nil
 		}
-		return d.wildcardHosts[wildcardHost]
+		return d.wildcardHosts.exact(wildcardHost)
 	default:
 		return &d.hostless
 	}
-}
-
-func (d *routeDecisionIndex) addAllowedMethods(
-	host string,
-	wildcardHost string,
-	allowed []string,
-) []string {
-	add := func(decision *routeHostDecision) {
-		if decision == nil {
-			return
-		}
-		for _, method := range decision.allowed {
-			index, found := slices.BinarySearch(allowed, method)
-			if found {
-				continue
-			}
-			allowed = append(allowed, "")
-			copy(allowed[index+1:], allowed[index:])
-			allowed[index] = method
-		}
-	}
-	add(d.exactHosts[host])
-	if wildcardHost != "" {
-		add(d.wildcardHosts[wildcardHost])
-	}
-	add(&d.hostless)
-	return allowed
 }
 
 func normalizeRouteHost(host string) string {
@@ -360,6 +409,7 @@ func (r *routeRegistrar) registerWildcardRoute(
 	if dispatcher == nil {
 		dispatcher = &wildcardDispatcher{
 			prefix:   strings.TrimSuffix(converted, "*"),
+			notFound: r.notFound,
 			embedded: make(map[string]*routeDecisionIndex),
 		}
 		r.mux.Handle(converted, dispatcher)
@@ -458,14 +508,10 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 		}
 	}
 	if pathMatched && hostMatched {
-		allowedMethods := d.allowedMethods(request)
-		if len(allowedMethods) > 0 {
-			writer.Header().Set("Allow", strings.Join(allowedMethods, ", "))
-		}
-		writer.WriteHeader(http.StatusMethodNotAllowed)
+		d.notFound.ServeHTTP(writer, request)
 		return
 	}
-	http.NotFound(writer, request)
+	d.notFound.ServeHTTP(writer, request)
 }
 
 func withMatchedRoute(next http.Handler, uri string, host string) http.Handler {
@@ -499,29 +545,6 @@ func matchedRouteHost(hosts []string, requestHost string) string {
 		}
 	}
 	return ""
-}
-
-func (d *wildcardDispatcher) allowedMethods(request *http.Request) []string {
-	host := requestHostname(request.Host)
-	wildcardHost := wildcardHostKey(host)
-	var allowed []string
-	if d.nonEmbedded != nil && matchesRoutePath(d.nonEmbedded.pattern, request.URL.Path) {
-		allowed = d.nonEmbedded.addAllowedMethods(host, wildcardHost, allowed)
-	}
-	for searchFrom := len(d.prefix); searchFrom < len(request.URL.Path); {
-		relativeSlash := strings.IndexByte(request.URL.Path[searchFrom:], '/')
-		if relativeSlash < 0 {
-			break
-		}
-		suffixStart := searchFrom + relativeSlash
-		suffix := request.URL.Path[suffixStart:]
-		if decision := d.embedded[suffix]; decision != nil &&
-			len(request.URL.Path) > len(d.prefix)+len(suffix) {
-			allowed = decision.addAllowedMethods(host, wildcardHost, allowed)
-		}
-		searchFrom = suffixStart + 1
-	}
-	return allowed
 }
 
 func (d *wildcardDispatcher) matchEmbeddedRoute(
@@ -660,11 +683,7 @@ func matchOneLabelHostWildcard(pattern, host string) bool {
 		return false
 	}
 	suffix := pattern[1:]
-	if !strings.HasSuffix(host, suffix) {
-		return false
-	}
-	prefix := strings.TrimSuffix(host, suffix)
-	return prefix != "" && !strings.Contains(prefix, ".")
+	return strings.HasSuffix(host, suffix)
 }
 
 func matchesWildcardRoute(pattern string, path string) bool {

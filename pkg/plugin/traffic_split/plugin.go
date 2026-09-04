@@ -3,6 +3,7 @@ package traffic_split
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"mime"
 	"net"
 	"net/http"
@@ -344,6 +345,7 @@ type Upstream struct {
 	Key          string                `json:"key,omitempty"`
 	Timeout      resource.Timeout      `json:"timeout"`
 	Retries      int                   `json:"retries,omitempty"`
+	RetryTimeout float64               `json:"-"`
 	retriesSet   bool
 	Checks       map[string]any `json:"checks,omitempty"`
 	Nodes        []Node         `json:"nodes,omitempty"`
@@ -364,6 +366,7 @@ type Override struct {
 	UpstreamHost   string
 	Timeout        resource.Timeout
 	Retries        int
+	RetryTimeout   float64
 	NextRetry      func(*http.Request) *Override
 	HealthReporter pxy.HealthReporter
 	HealthTarget   string
@@ -396,14 +399,15 @@ type compiledRule struct {
 }
 
 type compiledTarget struct {
-	fallback   bool
-	balancer   pxy.LoadBalancer
-	overrides  map[string]*Override
-	priorities map[string]int
-	hashOn     string
-	key        string
-	ring       *chash.Ring
-	retryScan  int
+	fallback        bool
+	balancer        pxy.LoadBalancer
+	overrides       map[string]*Override
+	priorities      map[string]int
+	hashOn          string
+	key             string
+	ring            *chash.Ring
+	retryScan       int
+	configuredNodes int
 }
 
 type overrideKey struct{}
@@ -485,11 +489,11 @@ func (w *WeightedUpstream) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(raw.UpstreamID, &w.UpstreamID); err == nil {
 		return nil
 	}
-	var numericID int64
-	if err := json.Unmarshal(raw.UpstreamID, &numericID); err != nil || numericID < 1 {
+	numericID, valid := new(big.Rat).SetString(string(raw.UpstreamID))
+	if !valid || !numericID.IsInt() || numericID.Sign() <= 0 {
 		return fmt.Errorf("traffic-split upstream_id must be a string or positive integer")
 	}
-	w.UpstreamID = strconv.FormatInt(numericID, 10)
+	w.UpstreamID = numericID.Num().String()
 	return nil
 }
 
@@ -670,13 +674,14 @@ func (p *Plugin) PostInit() error {
 			}
 			targetWeights[targetID] += weight
 			targets[targetID] = compiledTarget{
-				balancer:   targetBalancer,
-				overrides:  nodeOverrides,
-				priorities: nodePriorities,
-				hashOn:     hashOn,
-				key:        upstream.Key,
-				ring:       ring,
-				retryScan:  retryScan,
+				balancer:        targetBalancer,
+				overrides:       nodeOverrides,
+				priorities:      nodePriorities,
+				hashOn:          hashOn,
+				key:             upstream.Key,
+				ring:            ring,
+				retryScan:       retryScan,
+				configuredNodes: len(upstream.Nodes),
 			}
 		}
 
@@ -786,14 +791,23 @@ func (target compiledTarget) requestOverride(request *http.Request, nodeID strin
 }
 
 func (target compiledTarget) nextRetryNode(request *http.Request, previous string) string {
-	if target.balancer == nil || len(target.overrides) < 2 {
+	if target.balancer == nil {
+		return ""
+	}
+	if target.configuredNodes == 1 {
+		return pxy.NextTarget(target.balancer, request)
+	}
+	if len(target.overrides) < 2 {
 		return ""
 	}
 	scanLimit := target.retryScan
 	scanLimit = max(scanLimit, len(target.overrides))
 	for range scanLimit + 1 {
 		nodeID := pxy.NextTarget(target.balancer, request)
-		if nodeID != "" && nodeID != previous {
+		if nodeID == "" {
+			return ""
+		}
+		if nodeID != previous {
 			return nodeID
 		}
 	}
@@ -947,6 +961,7 @@ func overrideFromNode(upstream *Upstream, node Node) *Override {
 		UpstreamHost: upstream.UpstreamHost,
 		Timeout:      upstream.Timeout,
 		Retries:      configuredRetries(upstream),
+		RetryTimeout: upstream.RetryTimeout,
 	}
 }
 
@@ -1035,6 +1050,7 @@ func upstreamFromResource(stored resource.Upstream) *Upstream {
 		Key:          stored.Key,
 		Timeout:      stored.Timeout,
 		Retries:      stored.Retries,
+		RetryTimeout: stored.RetryTimeout,
 		retriesSet:   stored.RetriesConfigured(),
 		Checks:       stored.Checks,
 		Nodes:        make([]Node, 0, len(stored.Nodes)),

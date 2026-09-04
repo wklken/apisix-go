@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"slices"
 	"strings"
@@ -85,6 +86,33 @@ func normalizeContext(ctx context.Context, snapshot generation.Snapshot) (normal
 	return input, issues, nil
 }
 
+func typedResourceDocument(resource normalizedResource) any {
+	object, ok := resource.document.(map[string]any)
+	if !ok {
+		return resource.document
+	}
+	result := maps.Clone(object)
+	if resource.view.hasEmbeddedID {
+		result["id"] = resource.view.embeddedID
+	}
+	setReference := func(field, value string) {
+		if _, exists := result[field]; exists && value != "" {
+			result[field] = value
+		}
+	}
+	switch resource.key.Kind {
+	case "routes", "stream_routes":
+		setReference("service_id", resource.view.serviceID)
+		setReference("upstream_id", resource.view.upstreamID)
+		setReference("plugin_config_id", resource.view.pluginConfigID)
+	case "services":
+		setReference("upstream_id", resource.view.upstreamID)
+	case "consumers":
+		setReference("group_id", resource.view.consumerGroupID)
+	}
+	return result
+}
+
 func decodeExactDocument(raw []byte) (any, error) {
 	decoder := apisixjson.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -132,9 +160,18 @@ func decodeStructuralView(
 	issues := make([]resourceIssue, 0)
 	if idField != "" {
 		if rawID, exists := object[idField]; exists {
-			id, valid := referenceID(rawID)
+			id, valid := "", false
+			if key.Kind == "consumers" {
+				id, valid = rawID.(string)
+			} else {
+				id, valid = referenceID(rawID)
+			}
 			if !valid || id == "" {
-				issues = append(issues, newIssue(key, "id-invalid", idField+" must be a string or exact integer"))
+				requirement := "a string or exact positive integer"
+				if key.Kind == "consumers" {
+					requirement = "a non-empty string"
+				}
+				issues = append(issues, newIssue(key, "id-invalid", idField+" must be "+requirement))
 			} else {
 				view.embeddedID = id
 				view.hasEmbeddedID = true
@@ -264,7 +301,10 @@ func optionalReferenceID(
 	}
 	id, valid := referenceID(value)
 	if !valid || id == "" {
-		return "", append(issues, newIssue(key, "reference-invalid", field+" must be a string or exact integer"))
+		return "", append(
+			issues,
+			newIssue(key, "reference-invalid", field+" must be a string or exact positive integer"),
+		)
 	}
 	return id, issues
 }
@@ -279,7 +319,7 @@ func referenceID(value any) (string, bool) {
 			return "", false
 		}
 		value, valid := new(big.Rat).SetString(text)
-		if !valid || !value.IsInt() {
+		if !valid || !value.IsInt() || value.Sign() <= 0 {
 			return "", false
 		}
 		return value.Num().String(), true

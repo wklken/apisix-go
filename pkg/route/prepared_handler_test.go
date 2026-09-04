@@ -359,6 +359,12 @@ func TestBuildPreparedNotFoundHandlerRunsPreparedSystemAndGlobalBindings(t *test
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
+	if got := response.Header().Get("Content-Type"); got != "application/json; charset=UTF-8" {
+		t.Fatalf("Content-Type = %q, want APISIX JSON", got)
+	}
+	if got := response.Body.String(); got != `{"error_msg":"404 Route Not Found"}` {
+		t.Fatalf("body = %q, want APISIX route-miss body", got)
+	}
 	if got, want := strings.Join(order, ","), "system,global,source:early_stop"; got != want {
 		t.Fatalf("execution order = %q, want %q", got, want)
 	}

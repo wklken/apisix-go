@@ -65,7 +65,7 @@ func runActiveHealthCorePanicFixture(t *testing.T, marker string) {
 				"http_statuses": []any{http.StatusInternalServerError},
 			},
 		}},
-		MaxInFlight: DefaultMaxInFlight,
+		MaxInFlight: 1024,
 	}, panickingActiveHealthObserver{marker: marker}, owner, stopTasks)
 	if err != nil {
 		t.Fatal(err)
@@ -482,6 +482,18 @@ func TestParseActiveHealthConfigParsesOfficialShape(t *testing.T) {
 	}
 }
 
+func TestParseActiveHealthConfigPreservesFractionalTimeout(t *testing.T) {
+	config, enabled, err := ParseActiveHealthConfig(map[string]any{
+		"active": map[string]any{"timeout": 0.5},
+	})
+	if err != nil {
+		t.Fatalf("ParseActiveHealthConfig() error = %v", err)
+	}
+	if !enabled || config.Timeout != 500*time.Millisecond {
+		t.Fatalf("active timeout = %s enabled=%v, want 500ms enabled", config.Timeout, enabled)
+	}
+}
+
 func TestParseActiveHealthConfigUsesAPISIXActiveDefaults(t *testing.T) {
 	config, enabled, err := ParseActiveHealthConfig(map[string]any{
 		"active": map[string]any{},
@@ -503,6 +515,19 @@ func TestParseActiveHealthConfigUsesAPISIXActiveDefaults(t *testing.T) {
 	wantHealthy := map[int]struct{}{http.StatusOK: {}, http.StatusFound: {}}
 	if !reflect.DeepEqual(config.HealthyStatuses, wantHealthy) {
 		t.Fatalf("active healthy statuses = %#v, want %#v", config.HealthyStatuses, wantHealthy)
+	}
+	wantUnhealthy := map[int]struct{}{
+		http.StatusTooManyRequests:         {},
+		http.StatusNotFound:                {},
+		http.StatusInternalServerError:     {},
+		http.StatusNotImplemented:          {},
+		http.StatusBadGateway:              {},
+		http.StatusServiceUnavailable:      {},
+		http.StatusGatewayTimeout:          {},
+		http.StatusHTTPVersionNotSupported: {},
+	}
+	if !reflect.DeepEqual(config.UnhealthyStatuses, wantUnhealthy) {
+		t.Fatalf("active unhealthy statuses = %#v, want %#v", config.UnhealthyStatuses, wantUnhealthy)
 	}
 }
 

@@ -19,10 +19,6 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// DefaultMaxInFlight bounds the number of concurrently active response bodies
-// per cluster when the configuration does not select an explicit limit.
-const DefaultMaxInFlight = 1024
-
 // ErrClusterOverloaded is returned by a cluster RoundTripper when the
 // configured in-flight limit is exhausted. Callers map it to an HTTP 503.
 var ErrClusterOverloaded = errors.New("upstream cluster overloaded")
@@ -41,6 +37,7 @@ type ClusterConfig struct {
 	Transport         TransportOption
 	SendTimeout       time.Duration
 	ReadTimeout       time.Duration
+	RetryTimeout      time.Duration
 	Retries           int
 	RetriesConfigured bool
 	MaxInFlight       int
@@ -59,6 +56,7 @@ type clusterKeyIdentity struct {
 	Transport         transportKeyIdentity
 	SendTimeout       time.Duration
 	ReadTimeout       time.Duration
+	RetryTimeout      time.Duration
 	Retries           int
 	RetriesConfigured bool
 	MaxInFlight       int
@@ -87,6 +85,7 @@ func (c ClusterConfig) Key() (ClusterKey, error) {
 		Transport:         c.Transport.keyIdentity(),
 		SendTimeout:       c.SendTimeout,
 		ReadTimeout:       c.ReadTimeout,
+		RetryTimeout:      c.RetryTimeout,
 		Retries:           c.Retries,
 		RetriesConfigured: c.RetriesConfigured,
 		MaxInFlight:       c.MaxInFlight,
@@ -129,8 +128,8 @@ func sortedClusterPriorities(priorities map[string]int) []clusterKeyPriority {
 }
 
 // Cluster owns one base transport, one retry/progress wrapper chain, one load
-// balancer, an optional active-probe owner, and a non-queueing in-flight
-// limiter. It is immutable after construction except for close.
+// balancer, an optional active-probe owner, and an optional non-queueing
+// in-flight limiter. It is immutable after construction except for close.
 type Cluster struct {
 	config      ClusterConfig
 	key         ClusterKey
@@ -234,9 +233,6 @@ func newOwnedClusterWithTransport(
 		return nil, err
 	}
 	maxInFlight := config.MaxInFlight
-	if maxInFlight <= 0 {
-		maxInFlight = DefaultMaxInFlight
-	}
 
 	var lb LoadBalancer
 	if len(config.Targets) > 0 {
@@ -251,7 +247,9 @@ func newOwnedClusterWithTransport(
 	}
 	transport := NewProgressTimeoutTransport(base, config.SendTimeout, config.ReadTimeout)
 	transport = NewRetryTransportWithObserver(transport, observeRetry)
-	transport = newAdmissionTransport(transport, maxInFlight, config.Name, observer)
+	if maxInFlight > 0 {
+		transport = newAdmissionTransport(transport, maxInFlight, config.Name, observer)
+	}
 
 	cluster := &Cluster{
 		config:      config,
@@ -291,13 +289,14 @@ func (c *Cluster) LoadBalancer() LoadBalancer {
 	return c.lb
 }
 
-// RoundTripper returns the cluster's bounded, retrying, progress-aware
-// transport chain. Overload admission is fail-fast: it never queues.
+// RoundTripper returns the cluster's retrying, progress-aware transport chain.
+// An explicitly configured in-flight limit adds fail-fast admission.
 func (c *Cluster) RoundTripper() http.RoundTripper {
 	return c.transport
 }
 
-// MaxInFlight returns the cluster's effective in-flight admission limit.
+// MaxInFlight returns the explicit in-flight admission limit, or zero when
+// admission limiting is disabled.
 func (c *Cluster) MaxInFlight() int {
 	return c.maxInFlight
 }
@@ -343,8 +342,7 @@ func (c *Cluster) Closed() bool {
 
 // admissionTransport bounds the number of concurrently active response bodies
 // in a cluster. A token is acquired before RoundTrip and released exactly once
-// when the response body is closed or reaches EOF, so a 1024-byte-limit
-// cluster rejects the 1025th concurrent body with ErrClusterOverloaded.
+// when the response body is closed or reaches EOF.
 type admissionTransport struct {
 	base     http.RoundTripper
 	tokens   chan struct{}

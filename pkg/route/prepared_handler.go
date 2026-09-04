@@ -93,7 +93,7 @@ func BuildPreparedNotFoundHandler(
 	}
 	terminal := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceEarlyStop)
-		http.NotFoundHandler().ServeHTTP(writer, request)
+		writeAPISIXRouteNotFound(writer)
 	})
 	return ensureRouteLifecycle(initializeAPISIXVars(
 		responsePlan.Install(pipeline, terminal),
@@ -101,6 +101,21 @@ func BuildPreparedNotFoundHandler(
 		resource.Route{},
 		resource.Service{},
 	)), nil
+}
+
+func apisixRouteNotFoundHandler() http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceEarlyStop)
+		writeAPISIXRouteNotFound(writer)
+	})
+}
+
+func writeAPISIXRouteNotFound(writer http.ResponseWriter) {
+	_ = util.WriteJSON(
+		writer,
+		http.StatusNotFound,
+		map[string]string{"error_msg": "404 Route Not Found"},
+	)
 }
 
 // BuildPreparedHandler assembles one detached route handler without Store

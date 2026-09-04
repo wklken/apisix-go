@@ -94,7 +94,11 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 
 	mux := chi.NewRouter()
 	mux.Use(pinDecodedRoutePath)
-	registrar := newRouteRegistrar(mux)
+	if input.NotFound == nil {
+		input.NotFound = apisixRouteNotFoundHandler()
+	}
+	mux.MethodNotAllowed(input.NotFound.ServeHTTP)
+	registrar := newRouteRegistrar(mux, input.NotFound)
 	for _, prepared := range routes {
 		if prepared.Route.Disabled() {
 			continue
@@ -135,9 +139,6 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 				return nil, fmt.Errorf("compile HTTP route %q URI %q: %w", prepared.Route.ID, uri, err)
 			}
 		}
-	}
-	if input.NotFound == nil {
-		input.NotFound = http.NotFoundHandler()
 	}
 	mux.NotFound(input.NotFound.ServeHTTP)
 	if input.StaticConfig == nil && (input.PublicAPIRegistry != nil || input.GraphQLProxyCacheRegistry != nil) ||

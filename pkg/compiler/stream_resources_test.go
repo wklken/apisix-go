@@ -2,11 +2,40 @@ package compiler
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/generation"
 )
+
+func TestDecodeStreamResourceSetAcceptsAPISIXNumericReferencesAndDurations(t *testing.T) {
+	snapshot := mustGenerationSnapshot(t, 80, []generation.Resource{
+		resourceValue("stream_routes", "1", `{"id":1,"service_id":1}`),
+		resourceValue("services", "1", `{"id":1,"upstream_id":1}`),
+		resourceValue(
+			"upstreams",
+			"1",
+			`{"id":1,"scheme":"tcp","nodes":{"127.0.0.1:1883":1},"retry_timeout":0.15}`,
+		),
+	}, nil)
+	candidate := compileDomain(t, generation.DomainStream, snapshot, generation.PublishedGeneration{}, false)
+
+	resources, err := decodeStreamResourceSet(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("decodeStreamResourceSet() error = %v", err)
+	}
+	if len(resources.routes) != 1 || resources.routes[0].ID != "1" || resources.routes[0].ServiceID != "1" {
+		t.Fatalf("numeric stream route references = %#v", resources.routes)
+	}
+	if resources.services["1"].ID != "1" || resources.services["1"].UpstreamID != "1" {
+		t.Fatalf("numeric stream service references = %#v", resources.services["1"])
+	}
+	if got := reflect.ValueOf(resources.upstreams["1"]).
+		FieldByName("RetryTimeout"); !got.IsValid() || got.Kind() != reflect.Float64 || got.Float() != 0.15 {
+		t.Fatalf("stream upstream retry timeout = %#v, want float64(0.15)", resources.upstreams["1"])
+	}
+}
 
 func TestDecodeStreamResourceSetUsesOnlyPublishedStreamClosure(t *testing.T) {
 	t.Parallel()

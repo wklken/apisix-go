@@ -73,6 +73,15 @@ func TestRouterLeasePinsImmutableCompiledRouter(t *testing.T) {
 	}
 }
 
+func TestRouteEntryPreservesFractionalStreamIdleTimeout(t *testing.T) {
+	entry := routeEntry{route: resource.StreamRoute{Upstream: resource.Upstream{
+		Timeout: resource.Timeout{Read: 0.5},
+	}}}
+	if got := entry.streamIdleTimeout(); got != 500*time.Millisecond {
+		t.Fatalf("stream idle timeout = %s, want 500ms", got)
+	}
+}
+
 func TestStreamBridgeIdleDeadlineExits(t *testing.T) {
 	client, clientPeer := net.Pipe()
 	defer func() { _ = client.Close() }()

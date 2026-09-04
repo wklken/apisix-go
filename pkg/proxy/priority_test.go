@@ -172,7 +172,7 @@ func TestSamePriorityLoadBalanceSkipsTriedTargetOnRetry(t *testing.T) {
 	}
 }
 
-func TestPriorityHealthAwareLoadBalanceCyclesHealthyTargetsAfterExhaustion(t *testing.T) {
+func TestPriorityHealthAwareLoadBalanceStopsAfterHealthyTargetsAreExhausted(t *testing.T) {
 	lb, err := newUpstreamLoadBalanceWithPriorities(
 		map[string]int{lowPriorityTarget: 1, highPriorityTarget: 1},
 		map[string]int{lowPriorityTarget: 0, highPriorityTarget: 0},
@@ -195,8 +195,107 @@ func TestPriorityHealthAwareLoadBalanceCyclesHealthyTargetsAfterExhaustion(t *te
 	if first == second {
 		t.Fatalf("initial request targets = %q then %q, want distinct healthy nodes", first, second)
 	}
-	if third != first && third != second {
-		t.Fatalf("third request target = %q, want a retry cycle over %q and %q", third, first, second)
+	if third != "" {
+		t.Fatalf("third request target = %q, want exhaustion after %q and %q", third, first, second)
+	}
+}
+
+func TestPriorityLoadBalanceStopsAfterTargetsAreExhausted(t *testing.T) {
+	lb, err := newUpstreamLoadBalanceWithPriorities(
+		map[string]int{lowPriorityTarget: 1, highPriorityTarget: 1},
+		map[string]int{lowPriorityTarget: 0, highPriorityTarget: 0},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newUpstreamLoadBalanceWithPriorities() error = %v", err)
+	}
+	requestAware, ok := lb.(interface {
+		NextForRequest(*http.Request) string
+	})
+	if !ok {
+		t.Fatalf("priority load balancer = %T, want request-aware selection", lb)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	first := requestAware.NextForRequest(request)
+	second := requestAware.NextForRequest(request)
+	third := requestAware.NextForRequest(request)
+	if first == "" || second == "" || first == second {
+		t.Fatalf("initial targets = %q then %q, want two distinct nodes", first, second)
+	}
+	if third != "" {
+		t.Fatalf("third request target = %q, want exhaustion after %q and %q", third, first, second)
+	}
+}
+
+func TestPriorityLoadBalanceReusesSingleTargetForConfiguredRetries(t *testing.T) {
+	lb, err := newUpstreamLoadBalanceWithPriorities(
+		map[string]int{highPriorityTarget: 1},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("newUpstreamLoadBalanceWithPriorities() error = %v", err)
+	}
+	requestAware, ok := lb.(interface {
+		NextForRequest(*http.Request) string
+	})
+	if !ok {
+		t.Fatalf("single-target load balancer = %T, want request-aware selection", lb)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	for attempt := range 3 {
+		if got := requestAware.NextForRequest(request); got != highPriorityTarget {
+			t.Fatalf("attempt %d target = %q, want reusable %q", attempt+1, got, highPriorityTarget)
+		}
+	}
+}
+
+func TestPriorityHealthAwareLoadBalanceReusesSingleTargetForConfiguredRetries(t *testing.T) {
+	lb, err := newUpstreamLoadBalanceWithPriorities(
+		map[string]int{highPriorityTarget: 1},
+		nil,
+		map[string]any{"passive": map[string]any{}},
+	)
+	if err != nil {
+		t.Fatalf("newUpstreamLoadBalanceWithPriorities() error = %v", err)
+	}
+	healthAware, ok := lb.(*HealthAwareLoadBalance)
+	if !ok {
+		t.Fatalf("single-target load balancer = %T, want *HealthAwareLoadBalance", lb)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+	if got := healthAware.NextForRequest(request); got != highPriorityTarget {
+		t.Fatalf("initial target = %q, want %q", got, highPriorityTarget)
+	}
+	healthAware.MarkUnhealthy(highPriorityTarget)
+	if got := healthAware.NextForRequest(request); got != highPriorityTarget {
+		t.Fatalf("fail-open retry target = %q, want reusable %q", got, highPriorityTarget)
+	}
+}
+
+func TestPriorityLoadBalanceDoesNotUseSingleNodeFastPathAfterFilteringZeroWeightPeer(t *testing.T) {
+	for _, checks := range []map[string]any{nil, {"passive": map[string]any{}}} {
+		lb, err := newUpstreamLoadBalanceWithPriorities(
+			map[string]int{highPriorityTarget: 1, lowPriorityTarget: 0},
+			nil,
+			checks,
+		)
+		if err != nil {
+			t.Fatalf("newUpstreamLoadBalanceWithPriorities() error = %v", err)
+		}
+		requestAware, ok := lb.(interface {
+			NextForRequest(*http.Request) string
+		})
+		if !ok {
+			t.Fatalf("load balancer = %T, want request-aware selection", lb)
+		}
+		request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
+		if got := requestAware.NextForRequest(request); got != highPriorityTarget {
+			t.Fatalf("initial target = %q, want %q", got, highPriorityTarget)
+		}
+		if got := requestAware.NextForRequest(request); got != "" {
+			t.Fatalf("retry target = %q, want exhaustion with two configured nodes", got)
+		}
 	}
 }
 

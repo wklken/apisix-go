@@ -103,7 +103,7 @@ func CompileBase(input BaseInput) (*Snapshot, error) {
 
 func compileBase(input BaseInput) (*tls.Config, compiledSettings, error) {
 	settings := frontendSettings(input.Config)
-	minVersion, maxVersion, err := parseProtocols(settings.protocols, settings.enabled)
+	minVersion, maxVersion, _, err := parseProtocols(settings.protocols, settings.enabled, false)
 	if err != nil {
 		return nil, compiledSettings{}, fmt.Errorf("frontend TLS protocols: %w", err)
 	}
@@ -171,31 +171,38 @@ func frontendSettings(cfg *config.Config) compiledSettings {
 	return settings
 }
 
-func parseProtocols(raw string, required bool) (uint16, uint16, error) {
+func parseProtocols(raw string, required bool, allowTLS11 bool) (uint16, uint16, map[uint16]struct{}, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		if required {
-			return 0, 0, fmt.Errorf("protocol list must not be empty when TLS is enabled")
+			return 0, 0, nil, fmt.Errorf("protocol list must not be empty when TLS is enabled")
 		}
-		return tls.VersionTLS12, 0, nil
+		return tls.VersionTLS12, 0, nil, nil
 	}
 
 	seen := make(map[string]struct{}, 2)
+	versions := make(map[uint16]struct{}, 2)
 	var minVersion, maxVersion uint16
 	for token := range strings.FieldsSeq(raw) {
 		if _, exists := seen[token]; exists {
-			return 0, 0, fmt.Errorf("duplicate protocol %q", token)
+			return 0, 0, nil, fmt.Errorf("duplicate protocol %q", token)
 		}
 		seen[token] = struct{}{}
 		var version uint16
 		switch token {
+		case "TLSv1.1":
+			if !allowTLS11 {
+				return 0, 0, nil, fmt.Errorf("unsupported protocol %q", token)
+			}
+			version = tls.VersionTLS11
 		case "TLSv1.2":
 			version = tls.VersionTLS12
 		case "TLSv1.3":
 			version = tls.VersionTLS13
 		default:
-			return 0, 0, fmt.Errorf("unsupported protocol %q", token)
+			return 0, 0, nil, fmt.Errorf("unsupported protocol %q", token)
 		}
+		versions[version] = struct{}{}
 		if minVersion == 0 || version < minVersion {
 			minVersion = version
 		}
@@ -204,9 +211,9 @@ func parseProtocols(raw string, required bool) (uint16, uint16, error) {
 		}
 	}
 	if minVersion == 0 {
-		return 0, 0, fmt.Errorf("protocol list must not be empty")
+		return 0, 0, nil, fmt.Errorf("protocol list must not be empty")
 	}
-	return minVersion, maxVersion, nil
+	return minVersion, maxVersion, versions, nil
 }
 
 func parseCipherSuites(raw string, minVersion uint16, required bool) ([]uint16, error) {
@@ -256,6 +263,7 @@ func compileTrustedClientCAs(configuredPath string, certificatePEM []byte) (*x50
 type certificateIndex struct {
 	exact    map[string]certificateEntry
 	wildcard []wildcardCertificateEntry
+	catchAll *certificateEntry
 }
 
 type certificateEntry struct {
@@ -263,6 +271,9 @@ type certificateEntry struct {
 	certificate tls.Certificate
 	clientCAs   *x509.CertPool
 	clientDepth int
+	minVersion  uint16
+	maxVersion  uint16
+	protocols   map[uint16]struct{}
 }
 
 type wildcardCertificateEntry struct {
@@ -295,8 +306,29 @@ func compileCertificateIndex(ssls map[string]resource.SSL) (*certificateIndex, e
 		if err != nil {
 			return nil, fmt.Errorf("frontend TLS SSL resource %q: %w", id, err)
 		}
+		var minVersion, maxVersion uint16
+		var protocols map[uint16]struct{}
+		if ssl.SSLProtocols != nil {
+			protocols = make(map[uint16]struct{}, len(ssl.SSLProtocols))
+			if len(ssl.SSLProtocols) > 0 {
+				minVersion, maxVersion, protocols, err = parseProtocols(
+					strings.Join(ssl.SSLProtocols, " "),
+					true,
+					true,
+				)
+				if err != nil {
+					return nil, fmt.Errorf("frontend TLS SSL resource %q protocols: %w", id, err)
+				}
+			}
+		}
 		entry := certificateEntry{
-			id: id, certificate: certificate, clientCAs: clientCAs, clientDepth: clientDepth,
+			id:          id,
+			certificate: certificate,
+			clientCAs:   clientCAs,
+			clientDepth: clientDepth,
+			minVersion:  minVersion,
+			maxVersion:  maxVersion,
+			protocols:   protocols,
 		}
 		for _, rawSNI := range sslSNIs(ssl) {
 			sni := normalizeSNI(rawSNI)
@@ -312,6 +344,11 @@ func compileCertificateIndex(ssls map[string]resource.SSL) (*certificateIndex, e
 				)
 			}
 			owners[sni] = id
+			if sni == "*" {
+				entryCopy := entry
+				index.catchAll = &entryCopy
+				continue
+			}
 			if strings.HasPrefix(sni, "*.") {
 				index.wildcard = append(index.wildcard, wildcardCertificateEntry{
 					certificateEntry: entry, suffix: sni[1:],
@@ -370,12 +407,48 @@ func (index *certificateIndex) configSelector(
 		certificate := cloneCertificate(entry.certificate)
 		selected := cloneTLSConfig(base)
 		selected.Certificates = []tls.Certificate{certificate}
+		if entry.protocols != nil {
+			if entry.minVersion != 0 {
+				selected.MinVersion = entry.minVersion
+				selected.MaxVersion = entry.maxVersion
+			}
+			if hello != nil && len(hello.SupportedVersions) > 0 {
+				selectedVersion := uint16(0)
+				for _, version := range hello.SupportedVersions {
+					if _, allowed := entry.protocols[version]; allowed && version > selectedVersion {
+						selectedVersion = version
+					}
+				}
+				if selectedVersion == 0 {
+					return nil, fmt.Errorf("no shared TLS protocol for SSL resource %q", entry.id)
+				}
+				selected.MinVersion = selectedVersion
+				selected.MaxVersion = selectedVersion
+			} else {
+				enforceProtocolSet(selected, entry.protocols)
+			}
+		}
 		if entry.clientCAs != nil {
 			selected.ClientCAs = entry.clientCAs.Clone()
 			selected.ClientAuth = tls.RequireAndVerifyClientCert
 			enforceClientCertificateDepth(selected, entry.clientDepth)
 		}
 		return selected, nil
+	}
+}
+
+func enforceProtocolSet(tlsConfig *tls.Config, allowed map[uint16]struct{}) {
+	previous := tlsConfig.VerifyConnection
+	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+		if previous != nil {
+			if err := previous(state); err != nil {
+				return err
+			}
+		}
+		if _, ok := allowed[state.Version]; !ok {
+			return fmt.Errorf("negotiated TLS protocol %x is not enabled for this SSL resource", state.Version)
+		}
+		return nil
 	}
 }
 
@@ -388,6 +461,9 @@ func (index *certificateIndex) selectEntry(serverName string) (certificateEntry,
 		if wildcardMatches(normalized, entry.suffix) {
 			return entry.certificateEntry, nil
 		}
+	}
+	if index.catchAll != nil {
+		return *index.catchAll, nil
 	}
 	return certificateEntry{}, fmt.Errorf("no SSL certificate for SNI %q", strings.TrimSpace(serverName))
 }
@@ -425,6 +501,7 @@ func sslSNIs(ssl resource.SSL) []string {
 
 func cloneSSL(ssl resource.SSL) resource.SSL {
 	ssl.Snis = slices.Clone(ssl.Snis)
+	ssl.SSLProtocols = slices.Clone(ssl.SSLProtocols)
 	ssl.Labels = maps.Clone(ssl.Labels)
 	if ssl.Client != nil {
 		client := *ssl.Client

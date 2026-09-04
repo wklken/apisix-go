@@ -6,13 +6,24 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	pxy "github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/util"
 )
+
+type exhaustedLoadBalancer struct {
+	calls int
+}
+
+func (loadBalancer *exhaustedLoadBalancer) Next() string {
+	loadBalancer.calls++
+	return ""
+}
 
 func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	t.Helper()
@@ -397,6 +408,7 @@ func TestAPISIX317InlineUpstreamProjectionDropsUncopiedFields(t *testing.T) {
 		Key:          "X-Tenant",
 		Timeout:      resource.Timeout{Connect: 1, Send: 2, Read: 3},
 		Retries:      0,
+		RetryTimeout: 0.25,
 		retriesSet:   true,
 		Checks:       map[string]any{"passive": map[string]any{}},
 		Nodes:        []Node{{Host: "127.0.0.1", Port: 8443, Weight: 1, weightSet: true}},
@@ -406,7 +418,7 @@ func TestAPISIX317InlineUpstreamProjectionDropsUncopiedFields(t *testing.T) {
 	if projected == input {
 		t.Fatal("inline projection reused the input object")
 	}
-	if projected.TLS != nil || projected.Checks != nil || projected.RetriesConfigured() {
+	if projected.TLS != nil || projected.Checks != nil || projected.RetriesConfigured() || projected.RetryTimeout != 0 {
 		t.Fatalf("inline projection retained unprojected fields: %#v", projected)
 	}
 	if projected.Name != input.Name || projected.Type != input.Type || projected.Scheme != input.Scheme ||
@@ -449,6 +461,27 @@ func TestRetryOverrideSelectsAnotherNodeFromSameTarget(t *testing.T) {
 	if third.Host == second.Host {
 		t.Fatalf("second retry host = %q, want a node other than previous host", third.Host)
 	}
+}
+
+func TestNextRetryNodeStopsWhenPriorityBalancerIsExhausted(t *testing.T) {
+	loadBalancer := &exhaustedLoadBalancer{}
+	target := compiledTarget{
+		balancer: loadBalancer,
+		overrides: map[string]*Override{
+			"one": {},
+			"two": {},
+		},
+		retryScan: 100,
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	if got := target.nextRetryNode(request, "one"); got != "" {
+		t.Fatalf("nextRetryNode() = %q, want exhausted selection", got)
+	}
+	if loadBalancer.calls != 1 {
+		t.Fatalf("load balancer calls = %d, want one exhausted selection", loadBalancer.calls)
+	}
+	var _ pxy.LoadBalancer = loadBalancer
 }
 
 func TestHandlerSelectsHighestPriorityInlineNode(t *testing.T) {
@@ -992,6 +1025,18 @@ func TestConfigAcceptsNumericUpstreamID(t *testing.T) {
 	}
 }
 
+func TestConfigNormalizesExponentIntegerUpstreamID(t *testing.T) {
+	var config Config
+	if err := json.Unmarshal([]byte(`{
+		"rules":[{"weighted_upstreams":[{"upstream_id":1e2,"weight":1}]}]
+	}`), &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if got := config.Rules[0].WeightedUpstreams[0].UpstreamID; got != "100" {
+		t.Fatalf("normalized upstream_id = %q, want 100", got)
+	}
+}
+
 func TestHandlerSetsUpstreamIDOverride(t *testing.T) {
 	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
 		if id != "shadow" {
@@ -1060,6 +1105,14 @@ func TestReferencedUpstreamCarriesTLSSettings(t *testing.T) {
 	}
 }
 
+func TestReferencedUpstreamCarriesRetryTimeout(t *testing.T) {
+	upstream := upstreamFromResource(resource.Upstream{RetryTimeout: 0.25})
+	field := reflect.ValueOf(*upstream).FieldByName("RetryTimeout")
+	if !field.IsValid() || field.Kind() != reflect.Float64 || field.Float() != 0.25 {
+		t.Fatalf("referenced upstream retry timeout = %#v, want 0.25", upstream)
+	}
+}
+
 func TestReferencedUpstreamCarriesNodePriority(t *testing.T) {
 	upstream := upstreamFromResource(resource.Upstream{Nodes: []resource.Node{{
 		Host: "priority.example.com", Port: 80, Weight: 1, Priority: 10,
@@ -1082,6 +1135,54 @@ func TestReferencedUpstreamKeepsLegacyDefaultNodeWeight(t *testing.T) {
 	override := performRequest(t, p)
 	if override == nil || override.Host != "default-weight.example.com:80" {
 		t.Fatalf("override = %#v, want default-weight.example.com:80", override)
+	}
+}
+
+func TestReferencedSingleNodeUpstreamRetriesTheSameNode(t *testing.T) {
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		return upstreamFromResource(resource.Upstream{
+			Retries: 1,
+			Nodes:   []resource.Node{{Host: "one.example.com", Port: 80, Weight: 1}},
+		}), nil
+	})
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{UpstreamID: "one"}},
+	}}})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	first := performRequestWithRequest(t, p, request)
+	if first == nil || first.NextRetry == nil {
+		t.Fatalf("first override = %#v, want retry selector", first)
+	}
+	second := first.NextRetry(request)
+	if second == nil || second.Host != first.Host {
+		t.Fatalf("retry override = %#v, want same single node %q", second, first.Host)
+	}
+}
+
+func TestReferencedUpstreamDoesNotUseSingleNodeFastPathAfterFilteringZeroWeightPeer(t *testing.T) {
+	var stored resource.Upstream
+	if err := json.Unmarshal([]byte(`{
+		"retries": 1,
+		"nodes": [
+			{"host":"one.example.com","port":80,"weight":1},
+			{"host":"disabled.example.com","port":80,"weight":0}
+		]
+	}`), &stored); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	withTestUpstreamResolver(t, func(id string) (*Upstream, error) {
+		return upstreamFromResource(stored), nil
+	})
+	p := newTestPlugin(t, Config{Rules: []Rule{{
+		WeightedUpstreams: []WeightedUpstream{{UpstreamID: "one-of-two"}},
+	}}})
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	first := performRequestWithRequest(t, p, request)
+	if first == nil || first.NextRetry == nil {
+		t.Fatalf("first override = %#v, want retry selector", first)
+	}
+	if second := first.NextRetry(request); second != nil {
+		t.Fatalf("retry override = %#v, want exhaustion with two configured nodes", second)
 	}
 }
 

@@ -98,6 +98,7 @@ cases:
   - name: reject-invalid-host-patterns
     variants:
       - name: embedded-wildcard
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: referer-invalid-x-pattern
@@ -109,6 +110,7 @@ cases:
           logs:
             matches: "validate plugin referer-restriction config: /whitelist/0: does not match pattern"
       - name: tilde-prefix
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: referer-invalid-tilde-pattern
@@ -155,6 +157,7 @@ cases:
     output: *hello_output
 
   - name: reject-whitelist-and-blacklist
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: referer-reject-mutually-exclusive-lists

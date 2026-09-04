@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -39,16 +40,28 @@ func (c *ConfigClient) ServerVersion(ctx context.Context) (string, error) {
 		response, err := c.status(statusCtx, endpoint)
 		cancel()
 		if err != nil {
-			failures = append(failures, fmt.Errorf("status %s: %w", endpoint, err))
+			failures = append(failures, fmt.Errorf("status %s: %w", redactEndpointUserinfo(endpoint), err))
 			continue
 		}
 		if response == nil || strings.TrimSpace(response.Version) == "" {
-			failures = append(failures, fmt.Errorf("status %s returned an empty version", endpoint))
+			failures = append(
+				failures,
+				fmt.Errorf("status %s returned an empty version", redactEndpointUserinfo(endpoint)),
+			)
 			continue
 		}
 		return strings.TrimSpace(response.Version), nil
 	}
 	return "", errors.Join(failures...)
+}
+
+func redactEndpointUserinfo(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.User == nil {
+		return endpoint
+	}
+	parsed.User = nil
+	return parsed.String()
 }
 
 // ServerInfoReporter owns the lease used for the control-plane server-info

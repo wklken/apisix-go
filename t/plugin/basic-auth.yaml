@@ -23,6 +23,7 @@ cases:
           logs: {not_matches: '\bbar\b'}
 
   - name: consumer-username-type-diagnostic
+    target_plugin_exempt_reason: invalid consumer configuration is rejected before a request can execute the target plugin
     wait_for_generation: true
     config:
       consumers:

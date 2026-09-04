@@ -73,6 +73,7 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Provider", "test-llm")
+		w.Header().Set("Set-Cookie", "provider_session=secret")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}],"usage":{"total_tokens":9}}`))
 	}))
@@ -112,8 +113,10 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("response code = %d, want 201", rr.Code)
 	}
-	if got := rr.Header().Get("X-Provider"); got != "test-llm" {
-		t.Fatalf("X-Provider = %q, want test-llm", got)
+	for _, header := range []string{"X-Provider", "Set-Cookie"} {
+		if got := rr.Header().Get(header); got != "" {
+			t.Fatalf("provider header %s leaked: %q", header, got)
+		}
 	}
 	if got := strings.TrimSpace(
 		rr.Body.String(),
@@ -128,6 +131,43 @@ func TestHandlerProxiesOpenAICompatibleChatRequest(t *testing.T) {
 	}
 	if got := apisixlog.GetField(req, "$upstream_uri"); got != "/v1/chat/completions?api-key=***&api-version=***" {
 		t.Fatalf("logged upstream URI = %#v, want auth query redacted", got)
+	}
+}
+
+func TestWriteProviderResponseUsesProviderContentTypeForStreamingClient(t *testing.T) {
+	flushInterval := 0
+	p := &Plugin{config: Config{StreamingFlushIntervalMS: &flushInterval}}
+	prepared := preparedProviderRequest{
+		clientDocument:      ai_protocols.Document{Raw: map[string]any{"stream": true}},
+		clientProtocol:      ai_protocols.AnthropicMessages,
+		providerProtocol:    ai_protocols.OpenAIChat,
+		anthropicConversion: true,
+	}
+	request := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
+	response := httptest.NewRecorder()
+	p.writeProviderResponse(response, request, prepared, time.Now(), &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header: http.Header{
+			"Content-Type": {"application/json"},
+			"Set-Cookie":   {"provider_session=secret"},
+			"X-Provider":   {"must-not-leak"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"bad request","type":"invalid_request_error"}}`)),
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"type":"error"`) ||
+		!strings.Contains(response.Body.String(), "bad request") {
+		t.Fatalf("bounded provider error was not preserved: %s", response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	for _, header := range []string{"Set-Cookie", "X-Provider"} {
+		if got := response.Header().Get(header); got != "" {
+			t.Fatalf("provider header %s leaked: %q", header, got)
+		}
 	}
 }
 

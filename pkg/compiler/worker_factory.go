@@ -1,22 +1,18 @@
 package compiler
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/secret"
-	"github.com/wklken/apisix-go/pkg/tlsconfig"
 )
 
 var (
@@ -34,20 +30,18 @@ type workerFactoryCheckpointState struct {
 // WorkerCompilerFactory owns the immutable compiler inputs and shared runtime
 // registry used to prepare candidate generations.
 type WorkerCompilerFactory struct {
-	compiler           *Compiler
-	effective          *config.EffectiveConfig
-	materializer       secret.Materializer
-	generations        *generationFactory
-	consumers          ConsumerPreparer
-	metadata           MetadataPreparer
-	registry           *runtime.ResourceRegistry
-	observers          WorkerRuntimeObservers
-	clusterObservers   *clusterObserverRegistry
-	bindingOps         effectiveBindingOps
-	trustedClientCAPEM []byte
-
-	gate   sync.RWMutex
-	closed bool
+	compiler         *Compiler
+	effective        *config.EffectiveConfig
+	materializer     secret.Materializer
+	generations      *generationFactory
+	consumers        ConsumerPreparer
+	metadata         MetadataPreparer
+	registry         *runtime.ResourceRegistry
+	observers        WorkerRuntimeObservers
+	clusterObservers *clusterObserverRegistry
+	bindingOps       effectiveBindingOps
+	gate             sync.RWMutex
+	closed           bool
 
 	liveMu sync.Mutex
 	live   map[uint64]*PreparedGeneration
@@ -91,10 +85,6 @@ func NewWorkerCompilerFactory(
 	if err != nil {
 		return nil, fmt.Errorf("%w: effective config is not defensively ownable", ErrInvalidInput)
 	}
-	trustedClientCAPEM, err := readWorkerTrustedClientCA(&ownedEffective.Config)
-	if err != nil {
-		return nil, err
-	}
 	generations, err := newGenerationFactory(compiler, materializer)
 	if err != nil {
 		return nil, err
@@ -112,24 +102,8 @@ func NewWorkerCompilerFactory(
 		generations: generations, consumers: consumers, metadata: metadata,
 		registry: runtime.NewResourceRegistry(), observers: observers,
 		clusterObservers: clusterObservers, bindingOps: defaultEffectiveBindingOps(),
-		trustedClientCAPEM: trustedClientCAPEM,
-		live:               make(map[uint64]*PreparedGeneration),
+		live: make(map[uint64]*PreparedGeneration),
 	}, nil
-}
-
-func readWorkerTrustedClientCA(cfg *config.Config) ([]byte, error) {
-	if !tlsconfig.FrontendEnabled(cfg) {
-		return nil, nil
-	}
-	path := strings.TrimSpace(cfg.Apisix.Ssl.SslTrustedCertificate)
-	if path == "" {
-		return nil, nil
-	}
-	certificatePEM, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read trusted client CA %q: %w", path, err)
-	}
-	return bytes.Clone(certificatePEM), nil
 }
 
 // PrepareGeneration compiles, registers, and atomically transfers one complete
@@ -430,10 +404,9 @@ func (factory *WorkerCompilerFactory) transferPreparedGeneration(
 		lookup: newConsumerLookupView(bindings, registered.preparation, factory.compiler.schemas.catalog), tasks: tasks,
 		effective: factory.effective, catalog: factory.compiler.schemas.catalog,
 		registry: factory.registry, materializer: factory.materializer, cleanup: cleanup,
-		observers:          factory.observers,
-		clusterObservers:   factory.clusterObservers,
-		bindingOps:         factory.bindingOps.withDefaults(generationNumber),
-		trustedClientCAPEM: bytes.Clone(factory.trustedClientCAPEM),
+		observers:        factory.observers,
+		clusterObservers: factory.clusterObservers,
+		bindingOps:       factory.bindingOps.withDefaults(generationNumber),
 	}
 	if err := factory.runCheckpoint("bind-generation-secrets", state); err != nil {
 		return fail(err)

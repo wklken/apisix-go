@@ -26,6 +26,7 @@ cases:
           logs: {not_matches: '\btest-key\b'}
 
   - name: consumer-key-type-diagnostic
+    target_plugin_exempt_reason: invalid consumer configuration is rejected before a request can execute the target plugin
     config:
       consumers:
         - username: invalid-type
@@ -129,6 +130,7 @@ cases:
         output: {status: 200, body: {equals: hello world}}
 
   - name: missing-consumer-key-is-rejected
+    target_plugin_exempt_reason: invalid consumer configuration is rejected before a request can execute the target plugin
     config:
       consumers:
         - username: invalid

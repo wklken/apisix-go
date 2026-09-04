@@ -2,7 +2,12 @@ package etcd
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -665,7 +670,7 @@ func TestConfigClientSnapshotTransfersProviderAuthorityAtLowerEtcdRevision(t *te
 	}
 }
 
-func TestConfigClientSameCursorReplayAcceptsCommittedHistoricalTombstones(t *testing.T) {
+func TestConfigClientSameCursorReplayAcceptsCompactedHistoricalTombstones(t *testing.T) {
 	applier := &recordingDesiredApplier{apply: func(
 		_ context.Context,
 		batch generation.DesiredBatch,
@@ -687,8 +692,14 @@ func TestConfigClientSameCursorReplayAcceptsCommittedHistoricalTombstones(t *tes
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := client.tombstones["/apisix/routes/deleted-before-restart"]; got != 20 {
-		t.Fatalf("recovered tombstone acknowledgement revision = %d, want provider cursor 20", got)
+	if len(client.tombstones) != 0 {
+		t.Fatalf("acknowledged tombstones retained in provider state: %v", client.tombstones)
+	}
+	if err := client.applySnapshot(context.Background(), &clientv3.GetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 20},
+		Kvs:    []*mvccpb.KeyValue{{Key: []byte("/apisix/routes/current"), ModRevision: 19}},
+	}); err != nil {
+		t.Fatalf("same-cursor replay after tombstone compaction: %v", err)
 	}
 }
 
@@ -1119,11 +1130,34 @@ func TestConfiguredRecoveryDelayIncludesAtMostFiftyPercentJitter(t *testing.T) {
 
 func TestNewTLSConfigHonorsVerificationAndSNI(t *testing.T) {
 	verify := false
-	config, err := NewTLSConfig("", "", "etcd.example.com", &verify)
+	config, err := NewTLSConfig("", "", "etcd.example.com", &verify, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if config.ServerName != "etcd.example.com" || !config.InsecureSkipVerify {
 		t.Fatalf("TLS config = %+v", config)
+	}
+}
+
+func TestNewTLSConfigLoadsTrustedCertificateForOutboundVerification(t *testing.T) {
+	server := httptest.NewTLSServer(nil)
+	t.Cleanup(server.Close)
+	certificate := server.Certificate()
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
+	path := filepath.Join(t.TempDir(), "trusted-ca.pem")
+	if err := os.WriteFile(path, certificatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := NewTLSConfig("", "", "", nil, path)
+	if err != nil {
+		t.Fatalf("NewTLSConfig() error = %v", err)
+	}
+	want := x509.NewCertPool()
+	if !want.AppendCertsFromPEM(certificatePEM) {
+		t.Fatal("test certificate was not accepted")
+	}
+	if config.RootCAs == nil || !config.RootCAs.Equal(want) {
+		t.Fatal("RootCAs does not contain ssl_trusted_certificate")
 	}
 }

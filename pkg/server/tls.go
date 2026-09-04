@@ -3,9 +3,6 @@ package server
 import (
 	"crypto/tls"
 	"errors"
-	"fmt"
-	"os"
-	"strings"
 
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/tlsconfig"
@@ -14,17 +11,7 @@ import (
 var errHTTPGenerationUnavailable = errors.New("HTTP generation unavailable")
 
 func buildGenerationFrontendTLSConfig(cfg *config.Config, source httpLeaseSource) (*tls.Config, error) {
-	var trustedClientCAPEM []byte
-	if trustedCertificate := frontendTLSTrustedCertificate(cfg); trustedCertificate != "" {
-		certificatePEM, err := os.ReadFile(trustedCertificate)
-		if err != nil {
-			return nil, fmt.Errorf("read trusted client CA %q: %w", trustedCertificate, err)
-		}
-		trustedClientCAPEM = certificatePEM
-	}
-	base, err := tlsconfig.CompileBase(tlsconfig.BaseInput{
-		Config: cfg, TrustedClientCAPEM: trustedClientCAPEM,
-	})
+	base, err := tlsconfig.CompileBase(tlsconfig.BaseInput{Config: cfg})
 	if err != nil {
 		return nil, err
 	}
@@ -62,11 +49,4 @@ func generationFrontendTLSConfigSelector(source httpLeaseSource) func(*tls.Clien
 		}
 		return selected.Clone(), nil
 	}
-}
-
-func frontendTLSTrustedCertificate(cfg *config.Config) string {
-	if cfg == nil {
-		return ""
-	}
-	return strings.TrimSpace(cfg.Apisix.Ssl.SslTrustedCertificate)
 }

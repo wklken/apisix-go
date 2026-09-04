@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/capability"
@@ -234,7 +235,7 @@ func (p *Plugin) handleCallbackLocked(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, util.BuildMessageResponse("failed to store session"), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, session.OriginalURI, http.StatusFound)
+	http.Redirect(w, r, safeOriginalURI(session.OriginalURI), http.StatusFound)
 }
 
 func (p *Plugin) redirectToAuthorizeLocked(w http.ResponseWriter, r *http.Request, originalURI string) {
@@ -249,7 +250,7 @@ func (p *Plugin) redirectToAuthorizeLocked(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := p.setSessionCookieLocked(w, sessionData{
-		OriginalURI: originalURI,
+		OriginalURI: safeOriginalURI(originalURI),
 		State:       state,
 	}, 10*time.Minute); err != nil {
 		logger.Error(err.Error())
@@ -278,6 +279,21 @@ func originalRequestURL(r *http.Request) *url.URL {
 		}
 	}
 	return r.URL
+}
+
+func safeOriginalURI(originalURI string) string {
+	if originalURI == "" || !strings.HasPrefix(originalURI, "/") ||
+		strings.HasPrefix(originalURI, "//") || strings.Contains(originalURI, "\\") ||
+		strings.IndexFunc(originalURI, unicode.IsControl) >= 0 {
+		return "/"
+	}
+	parsed, err := url.ParseRequestURI(originalURI)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Path == "" ||
+		strings.HasPrefix(parsed.Path, "//") || strings.Contains(parsed.Path, "\\") ||
+		strings.IndexFunc(parsed.Path, unicode.IsControl) >= 0 {
+		return "/"
+	}
+	return originalURI
 }
 
 func (p *Plugin) authenticatedLocked(r *http.Request) bool {

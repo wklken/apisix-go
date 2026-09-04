@@ -186,7 +186,7 @@ func BuildPreparedHandler(input PreparedHandlerInput) (http.Handler, error) {
 		return nil, fmt.Errorf("build prepared handler route %q upgrade path: %w", routeResource.ID, err)
 	}
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if isWebsocketUpgradeRequest(request) {
+		if isUpgradeRequest(request) {
 			upgrade.ServeHTTP(writer, request)
 			return
 		}
@@ -490,7 +490,7 @@ func ensureRouteLifecycle(next http.Handler) http.Handler {
 
 func requireWebsocketEnablement(next http.Handler, enabled bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !enabled && isWebsocketUpgradeRequest(r) {
+		if !enabled && isUpgradeRequest(r) {
 			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
 			_ = util.WriteJSONMessage(w, http.StatusBadRequest, websocketDisabledMessage)
 			return
@@ -499,14 +499,14 @@ func requireWebsocketEnablement(next http.Handler, enabled bool) http.Handler {
 	})
 }
 
-func isWebsocketUpgradeRequest(r *http.Request) bool {
+func isUpgradeRequest(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
 	for _, value := range r.Header.Values("Connection") {
 		for token := range strings.SplitSeq(value, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
-				return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
+				return strings.TrimSpace(r.Header.Get("Upgrade")) != ""
 			}
 		}
 	}

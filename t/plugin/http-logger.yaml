@@ -262,6 +262,7 @@ cases:
       - {name: primary, kind: http, respond: [{status: 200, body: ok}]}
       - name: sink
         kind: http
+        expect_unordered: true
         expect:
           - {method: POST, body: {json_equals: '{"request_body":"abcde","route_id":"metadata-format-route"}'}}
           - {method: POST, body: {matches: '"request".*"body":"abcde".*"request_body":"abcde"|"request_body":"abcde".*"request".*"body":"abcde"'}}

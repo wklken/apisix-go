@@ -30,6 +30,7 @@ cases:
           body: {equals: hello world}
 
   - name: consumer-key-type-diagnostic
+    target_plugin_exempt_reason: invalid consumer configuration is rejected before a request can execute the target plugin
     config:
       consumers:
         - username: jack
@@ -41,6 +42,7 @@ cases:
       logs: {matches: 'validate consumer plugin jwe-decrypt config: /key: expected string'}
 
   - name: consumer-secret-type-diagnostic
+    target_plugin_exempt_reason: invalid consumer configuration is rejected before a request can execute the target plugin
     config:
       consumers:
         - username: jack
@@ -52,6 +54,7 @@ cases:
       logs: {matches: 'validate consumer plugin jwe-decrypt config: /secret: expected string'}
 
   - name: raw-secret-length-diagnostic
+    target_plugin_exempt_reason: invalid consumer configuration is rejected before a request can execute the target plugin
     config:
       consumers:
         - username: jack
@@ -63,6 +66,7 @@ cases:
       logs: {matches: 'the secret length should be 32 chars'}
 
   - name: base64-secret-length-diagnostic
+    target_plugin_exempt_reason: invalid consumer configuration is rejected before a request can execute the target plugin
     config:
       consumers:
         - username: jack

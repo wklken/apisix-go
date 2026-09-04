@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
@@ -927,15 +928,8 @@ func (p *Plugin) writeProviderResponse(
 		w.WriteHeader(resp.StatusCode)
 		return
 	}
-	if prepared.clientDocument.IsStreaming(prepared.clientProtocol) {
-		for field, values := range resp.Header {
-			if prepared.anthropicConversion && strings.EqualFold(field, "Content-Length") {
-				continue
-			}
-			for _, value := range values {
-				w.Header().Add(field, value)
-			}
-		}
+	copyProviderContentType(w.Header(), resp.Header)
+	if isStreamingProviderResponse(resp, prepared.providerProtocol) {
 		flushInterval := time.Duration(*p.config.StreamingFlushIntervalMS) * time.Millisecond
 		streamWriter := ai_stream.NewFlushWriter(r.Context(), w, flushInterval, func() {
 			ai_runtime.MarkFirstToken(r, started)
@@ -1027,7 +1021,6 @@ func (p *Plugin) writeProviderResponse(
 		return
 	}
 	ai_runtime.MarkFirstToken(r, started)
-	convertedResponse := false
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices &&
 		p.config.Provider == "vertex-ai" && prepared.clientProtocol == ai_protocols.OpenAIEmbeddings {
 		body, err = ai_protocols.ConvertVertexEmbeddingsToOpenAI(body, p.requestModel(prepared.clientBody))
@@ -1035,7 +1028,6 @@ func (p *Plugin) writeProviderResponse(
 			base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		convertedResponse = true
 	}
 	if prepared.anthropicConversion {
 		body, err = ai_protocols.ConvertOpenAIChatToAnthropic(body, "", prepared.toolNameMap)
@@ -1043,21 +1035,29 @@ func (p *Plugin) writeProviderResponse(
 			base.WriteJSONMessage(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		convertedResponse = true
 	}
 	responseDocument, _ := ai_protocols.DecodeDocument(body)
 	registerLLMRequestVars(r, prepared.clientDocument, prepared.clientProtocol, responseDocument)
 
-	for field, values := range resp.Header {
-		if convertedResponse && strings.EqualFold(field, "Content-Length") {
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(field, value)
-		}
-	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+func isStreamingProviderResponse(resp *http.Response, protocol ai_protocols.Protocol) bool {
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil {
+		return false
+	}
+	if protocol == ai_protocols.BedrockConverse {
+		return strings.EqualFold(mediaType, "application/vnd.amazon.eventstream")
+	}
+	return strings.EqualFold(mediaType, "text/event-stream")
+}
+
+func copyProviderContentType(dst, src http.Header) {
+	if contentType := src.Get("Content-Type"); contentType != "" {
+		dst.Set("Content-Type", contentType)
+	}
 }
 
 func isProviderErrorStatus(status int) bool {

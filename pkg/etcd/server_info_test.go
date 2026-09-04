@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,6 +82,27 @@ func TestConfigClientServerVersionUsesFirstReachableEndpoint(t *testing.T) {
 	}
 	if version != "3.6.13" {
 		t.Fatalf("ServerVersion() = %q, want 3.6.13", version)
+	}
+}
+
+func TestConfigClientServerVersionRedactsEndpointUserinfo(t *testing.T) {
+	client := &ConfigClient{
+		endpoints:      []string{"https://api-user:api-password@etcd.example.com:2379"},
+		requestTimeout: time.Second,
+		status: func(context.Context, string) (*clientv3.StatusResponse, error) {
+			return nil, errors.New("unreachable")
+		},
+	}
+	_, err := client.ServerVersion(context.Background())
+	if err == nil {
+		t.Fatal("ServerVersion() error = nil")
+	}
+	message := err.Error()
+	if strings.Contains(message, "api-user") || strings.Contains(message, "api-password") {
+		t.Fatalf("ServerVersion() leaked endpoint userinfo: %v", err)
+	}
+	if !strings.Contains(message, "etcd.example.com:2379") {
+		t.Fatalf("ServerVersion() removed safe endpoint context: %v", err)
 	}
 }
 

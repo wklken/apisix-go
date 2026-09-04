@@ -2,6 +2,7 @@ cases:
   - name: reject-invalid-schema
     variants:
       - name: allowlist-and-denylist
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-both-lists
@@ -14,6 +15,7 @@ cases:
           logs:
             matches: 'validate plugin ua-restriction config:'
       - name: bypass-missing-not-boolean
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-bypass-type
@@ -23,6 +25,7 @@ cases:
                   bypass_missing: foo
         output: *schema_error
       - name: allowlist-not-array
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-allowlist-type
@@ -32,6 +35,7 @@ cases:
                   allowlist: my-bot1
         output: *schema_error
       - name: denylist-not-array
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-denylist-type
@@ -41,6 +45,7 @@ cases:
                   denylist: 100
         output: *schema_error
       - name: message-not-string
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-message-type
@@ -51,6 +56,7 @@ cases:
                   message: 100
         output: *schema_error
       - name: message-empty
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-message-empty
@@ -61,6 +67,7 @@ cases:
                   message: ""
         output: *schema_error
       - name: message-too-long
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-message-long
@@ -71,6 +78,7 @@ cases:
                   message: "-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#-1Aa#"
         output: *schema_error
       - name: allowlist-null-element
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-allowlist-null
@@ -80,6 +88,7 @@ cases:
                   allowlist: ["userdata: NULL", null, ""]
         output: *schema_error
       - name: denylist-null-element
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-denylist-null
@@ -89,6 +98,7 @@ cases:
                   denylist: ["userdata: NULL", null, ""]
         output: *schema_error
       - name: no-list
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: ua-schema-no-list

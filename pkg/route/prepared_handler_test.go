@@ -188,7 +188,7 @@ func TestBuildPreparedHandlerAssemblesPreparedKafkaProtocolTerminal(t *testing.T
 	}
 }
 
-func TestBuildPreparedHandlerEnforcesPreparedWebsocketPolicy(t *testing.T) {
+func TestBuildPreparedHandlerEnforcesPreparedUpgradePolicy(t *testing.T) {
 	t.Parallel()
 
 	const target = "http://websocket-upstream.test:8080"
@@ -213,14 +213,18 @@ func TestBuildPreparedHandlerEnforcesPreparedWebsocketPolicy(t *testing.T) {
 		t.Fatalf("BuildPreparedHandler() error = %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "http://gateway.test/socket", nil)
-	request.Header.Set("Connection", "Upgrade")
-	request.Header.Set("Upgrade", "websocket")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	for _, protocol := range []string{"websocket", "h2c"} {
+		t.Run(protocol, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/socket", nil)
+			request.Header.Set("Connection", "Upgrade")
+			request.Header.Set("Upgrade", protocol)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+			}
+		})
 	}
 }
 

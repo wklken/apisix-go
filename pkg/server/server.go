@@ -1602,6 +1602,7 @@ func (s *Server) constructEtcdConfigProducer(ctx context.Context) (configProduce
 			etcdConfig.TLS.Key,
 			etcdConfig.TLS.SNI,
 			etcdConfig.TLS.Verify,
+			cfg.Apisix.Ssl.SslTrustedCertificate,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("build etcd TLS config: %w", err)

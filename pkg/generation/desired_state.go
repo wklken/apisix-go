@@ -106,7 +106,16 @@ func (s *desiredState) commit(
 	ack := Acknowledgement{
 		Cursor: candidate.ticket.Cursor, Revisions: revisions, Decisions: decisions,
 	}
-	s.snapshot = candidate.snapshot.Clone()
+	compacted, err := NewSnapshotWithSource(
+		candidate.snapshot.Revision(),
+		candidate.snapshot.Resources(),
+		nil,
+		candidate.snapshot.CollectionVersions(),
+	)
+	if err != nil {
+		return Acknowledgement{}, ErrIntegrity
+	}
+	s.snapshot = compacted
 	s.cursor = candidate.ticket.Cursor
 	s.batchDigest = candidate.batchDigest
 	s.acknowledgement = cloneAcknowledgement(ack)

@@ -555,6 +555,18 @@ func (s *responseExecution) complete() {
 			s.fail(http.StatusBadGateway, "Bad Gateway")
 			return
 		}
+		if err := s.runTransforms(&state, source); err != nil {
+			apisixctx.SetRequestResponseSource(s.request, apisixctx.ResponseSourceAPISIX)
+			s.fail(http.StatusInternalServerError, "Internal Server Error")
+			return
+		}
+		if invalidFinalState(state, s.executor.config.MaxBytes) {
+			s.fail(http.StatusBadGateway, "Bad Gateway")
+			return
+		}
+		if cacheutil.RequiredVary(s.request, "Accept-Encoding") {
+			base.AppendVaryToken(state.Header, "Accept-Encoding")
+		}
 		s.commitState(state)
 		return
 	}
@@ -577,6 +589,10 @@ func (s *responseExecution) complete() {
 		s.fail(http.StatusBadGateway, "Bad Gateway")
 		return
 	}
+	canonical := base.CloneResponseState(state)
+	if cacheutil.RequiredVary(s.request, "Accept-Encoding") {
+		base.AppendVaryToken(canonical.Header, "Accept-Encoding")
+	}
 	if err := s.runTransforms(&state, source); err != nil {
 		apisixctx.SetRequestResponseSource(s.request, apisixctx.ResponseSourceAPISIX)
 		s.fail(http.StatusInternalServerError, "Internal Server Error")
@@ -589,7 +605,7 @@ func (s *responseExecution) complete() {
 	if cacheutil.RequiredVary(s.request, "Accept-Encoding") {
 		base.AppendVaryToken(state.Header, "Accept-Encoding")
 	}
-	s.runStores(state, source)
+	s.runStores(canonical, source)
 	s.commitState(state)
 }
 
@@ -681,9 +697,6 @@ func (s *responseExecution) runStores(
 }
 
 func eligible(binding ResponseBinding, source apisixctx.ResponseSource, phase Phase) bool {
-	if source == apisixctx.ResponseSourceCacheHit {
-		return false
-	}
 	if checker, ok := binding.Plugin.(base.ResponseEligibility); ok {
 		eligible, err := guardValue(binding.factoryKey, phase, func() (bool, error) {
 			return checker.AppliesToResponseSource(source), nil
@@ -692,6 +705,9 @@ func eligible(binding ResponseBinding, source apisixctx.ResponseSource, phase Ph
 			panic(panicErr)
 		}
 		return eligible
+	}
+	if source == apisixctx.ResponseSourceCacheHit {
+		return false
 	}
 	return source == apisixctx.ResponseSourceUpstream
 }

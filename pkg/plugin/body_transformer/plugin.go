@@ -193,11 +193,12 @@ func (p *Plugin) RunBufferedBodyFilter(r *http.Request, state *base.ResponseStat
 	return nil
 }
 
-// AppliesToResponseSource keeps response transforms away from cache hits while
-// retaining the Plan 15 APISIX/early-stop behavior.
+// AppliesToResponseSource preserves APISIX's response-filter behavior for
+// upstream, cache-hit, APISIX-generated, and early-stop responses.
 func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
 	switch source {
-	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceAPISIX, apisixctx.ResponseSourceEarlyStop:
+	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceCacheHit,
+		apisixctx.ResponseSourceAPISIX, apisixctx.ResponseSourceEarlyStop:
 		return true
 	default:
 		return false

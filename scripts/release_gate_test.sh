@@ -132,11 +132,13 @@ require_job_fixed "$workflow" proxy-soak "go test -json ./pkg/route -run '^TestP
 # The candidate workflow binds every gate to one resolved commit and includes
 # functional smoke and soak evidence.
 require_job_fixed "$candidate_workflow" resolve-source 'commit=$(git rev-parse HEAD)'
-for job in lint build-and-unit integration-smoke; do
+for job in lint build-and-unit integration-smoke integration-full; do
     require_job_fixed "$candidate_workflow" "$job" 'resolve-source'
     require_job_fixed "$candidate_workflow" "$job" 'ref: ${{ needs.resolve-source.outputs.commit }}'
 done
 require_job_fixed "$candidate_workflow" build-and-unit 'run: make test'
+require_job_fixed "$candidate_workflow" integration-full 'run: make test-integration'
+require_job_fixed "$candidate_workflow" security-release-gates 'integration-full'
 require_job_fixed "$candidate_workflow" security-release-gates 'uses: ./.github/workflows/security-release-gates.yml'
 require_job_fixed "$candidate_workflow" security-release-gates 'run-operational: true'
 require_job_fixed "$candidate_workflow" security-release-gates 'source-commit: ${{ needs.resolve-source.outputs.commit }}'

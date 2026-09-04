@@ -62,6 +62,10 @@ var (
 	llmCompletionSeries   *metricSeriesTracker
 	llmActiveSeries       *metricSeriesTracker
 	upstreamStatusSeries  *metricSeriesTracker
+	proxyInFlightSeries   *metricSeriesTracker
+	proxyRejectedSeries   *metricSeriesTracker
+	proxyRetrySeries      *metricSeriesTracker
+	proxyHealthSeries     *metricSeriesTracker
 	httpSeriesOverflow    *prometheus.CounterVec
 	llmSeriesOverflow     *prometheus.CounterVec
 	metricExpiration      *expirationRuntime
@@ -616,6 +620,26 @@ func initMetrics(attr map[string]any) error {
 		metricConfig.Expires[upstreamStatusMetric],
 		httpSeriesOverflow.WithLabelValues(upstreamStatusMetric),
 		UpstreamStatus.DeleteLabelValues,
+	)
+	proxyInFlightSeries = newMetricSeriesTracker(
+		defaultMaxMetricSeries, 1, 0,
+		httpSeriesOverflow.WithLabelValues(proxyInFlightMetric),
+		ProxyInFlight.DeleteLabelValues,
+	)
+	proxyRejectedSeries = newMetricSeriesTracker(
+		defaultMaxMetricSeries, 1, 0,
+		httpSeriesOverflow.WithLabelValues(proxyRejectedMetric),
+		ProxyRejected.DeleteLabelValues,
+	)
+	proxyRetrySeries = newMetricSeriesTracker(
+		defaultMaxMetricSeries, 2, 0,
+		httpSeriesOverflow.WithLabelValues(proxyRetryMetric),
+		ProxyRetry.DeleteLabelValues,
+	)
+	proxyHealthSeries = newMetricSeriesTracker(
+		defaultMaxMetricSeries, 2, 0,
+		httpSeriesOverflow.WithLabelValues(proxyHealthMetric),
+		ProxyHealth.DeleteLabelValues,
 	)
 	metricExpiration = newExpirationRuntime(
 		httpStatusSeries,

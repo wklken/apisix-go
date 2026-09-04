@@ -63,7 +63,6 @@ func (prepared *PreparedGeneration) compileAndAttachHTTP(ctx context.Context) er
 	if tlsconfig.FrontendEnabled(&prepared.effective.Config) {
 		tlsSnapshot, err = tlsconfig.Compile(tlsconfig.Input{
 			Config: &prepared.effective.Config, SSLs: plan.resources.ssls,
-			TrustedClientCAPEM: prepared.trustedClientCAPEM,
 		})
 		if err != nil {
 			return err

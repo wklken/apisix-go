@@ -362,7 +362,7 @@ func TestFrontendTLSCipherConfigStrict(t *testing.T) {
 	}
 }
 
-func TestFrontendTLSSessionTicketsAndClientCA(t *testing.T) {
+func TestFrontendTLSSessionTicketsIgnoreOutboundTrustedCA(t *testing.T) {
 	ca := newFrontendTestCA(t)
 	caPath := filepath.Join(t.TempDir(), "client-ca.pem")
 	if err := os.WriteFile(caPath, ca.certPEM, 0o600); err != nil {
@@ -383,11 +383,11 @@ func TestFrontendTLSSessionTicketsAndClientCA(t *testing.T) {
 	if tlsConfig.SessionTicketsDisabled {
 		t.Fatal("SessionTicketsDisabled = true, want false when tickets are enabled")
 	}
-	if tlsConfig.ClientAuth != tls.RequireAndVerifyClientCert {
-		t.Fatalf("ClientAuth = %v, want RequireAndVerifyClientCert", tlsConfig.ClientAuth)
+	if tlsConfig.ClientAuth != tls.NoClientCert {
+		t.Fatalf("ClientAuth = %v, want NoClientCert", tlsConfig.ClientAuth)
 	}
-	if tlsConfig.ClientCAs == nil {
-		t.Fatal("ClientCAs = nil, want configured client CA pool")
+	if tlsConfig.ClientCAs != nil {
+		t.Fatal("ClientCAs is configured from ssl_trusted_certificate, want outbound-only trust")
 	}
 }
 
@@ -525,34 +525,22 @@ func TestFrontendTLSHandshakeSelectsConfiguredCipher(t *testing.T) {
 
 func TestFrontendTLSHandshakeRequiresTrustedClientCertificate(t *testing.T) {
 	ca := newFrontendTestCA(t)
-	caPath := filepath.Join(t.TempDir(), "client-ca.pem")
-	if err := os.WriteFile(caPath, ca.certPEM, 0o600); err != nil {
-		t.Fatalf("write client CA: %v", err)
-	}
-	serverCertificate := frontendHandshakeCertificate(
-		t,
-		"server.example.test",
-		&ca,
-		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	)
 	clientCertificate := frontendHandshakeCertificate(
 		t,
 		"client.example.test",
 		&ca,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	)
-	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
-		Enable:                true,
-		SslProtocols:          "TLSv1.2",
-		SslCiphers:            frontendTLS12Cipher,
-		SslTrustedCertificate: caPath,
-	}}}
-	serverConfig, err := buildGenerationFrontendTLSConfig(cfg, nil)
+	fixture := newTLSHTTPLeaseFixture(t, 409, "server.example.test", &resource.SSLClient{
+		CA: string(ca.certPEM), Depth: 1,
+	})
+	serverConfig, err := generationFrontendTLSConfigSelector(fixture.Acquire)(
+		&tls.ClientHelloInfo{ServerName: "server.example.test"},
+	)
 	if err != nil {
-		t.Fatalf("generation frontend TLS config error = %v", err)
+		t.Fatalf("select generation frontend TLS config: %v", err)
 	}
 	serverConfig.GetConfigForClient = nil
-	serverConfig.Certificates = []tls.Certificate{serverCertificate}
 
 	missingClient := &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12, InsecureSkipVerify: true}
 	_, clientErr, serverErr := frontendTLSHandshake(serverConfig, missingClient)
@@ -675,7 +663,7 @@ func newSerialNumber(t *testing.T) *big.Int {
 	return serial
 }
 
-func TestFrontendTLSConfigRejectsMalformedTrustedCA(t *testing.T) {
+func TestFrontendTLSConfigDoesNotReadOutboundTrustedCA(t *testing.T) {
 	caPath := filepath.Join(t.TempDir(), "invalid-ca.pem")
 	if err := os.WriteFile(caPath, []byte("not a certificate"), 0o600); err != nil {
 		t.Fatalf("write invalid CA: %v", err)
@@ -685,12 +673,16 @@ func TestFrontendTLSConfigRejectsMalformedTrustedCA(t *testing.T) {
 		SslProtocols:          "TLSv1.3",
 		SslTrustedCertificate: caPath,
 	}}}
-	_, err := buildGenerationFrontendTLSConfig(cfg, nil)
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ca") {
-		t.Fatalf("generation frontend TLS config error = %v, want CA parsing context", err)
+	tlsConfig, err := buildGenerationFrontendTLSConfig(cfg, nil)
+	if err != nil {
+		t.Fatalf("generation frontend TLS config error = %v", err)
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		t.Fatal("malformed CA error unexpectedly reported missing file")
+	if tlsConfig.ClientAuth != tls.NoClientCert || tlsConfig.ClientCAs != nil {
+		t.Fatalf(
+			"client authentication = %v/%v, want outbound-only trust ignored",
+			tlsConfig.ClientAuth,
+			tlsConfig.ClientCAs,
+		)
 	}
 }
 

@@ -357,27 +357,24 @@ func TestCompileAppliesPerResourceClientCAAndVerificationDepth(t *testing.T) {
 	}
 }
 
-func TestCompileAppliesOwnedTrustedClientCA(t *testing.T) {
-	_, trustedCAPEM := testCertificateAuthority(t, "trusted-client")
-	extraCA, _ := testCertificateAuthority(t, "caller-only")
+func TestCompileDoesNotApplyOutboundTrustedCertificateAsClientCA(t *testing.T) {
 	cfg := testFrontendConfig()
 	cfg.Apisix.Ssl.SslTrustedCertificate = "trusted-client.pem"
-	snapshot, err := Compile(Input{Config: cfg, TrustedClientCAPEM: []byte(trustedCAPEM)})
+	snapshot, err := Compile(Input{Config: cfg})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	first := snapshot.TLSConfig()
-	if first.ClientAuth != tls.RequireAndVerifyClientCert || first.ClientCAs == nil {
-		t.Fatalf("client authentication = %v/%v", first.ClientAuth, first.ClientCAs)
-	}
-	wantClientCAs := first.ClientCAs.Clone()
-	first.ClientCAs.AddCert(extraCA)
-	if got := snapshot.TLSConfig().ClientCAs; !got.Equal(wantClientCAs) {
-		t.Fatal("TLSConfig() leaked client CA pool mutation")
+	tlsConfig := snapshot.TLSConfig()
+	if tlsConfig.ClientAuth != tls.NoClientCert || tlsConfig.ClientCAs != nil {
+		t.Fatalf(
+			"client authentication = %v/%v, want outbound-only trust ignored",
+			tlsConfig.ClientAuth,
+			tlsConfig.ClientCAs,
+		)
 	}
 }
 
-func TestCompileValidatesTLSAndClientCAMaterial(t *testing.T) {
+func TestCompileValidatesTLSAndResourceClientCAMaterial(t *testing.T) {
 	validCert, validKey := testServerKeyPair(t, "valid")
 	_, validCAPEM := testCertificateAuthority(t, "trusted")
 	tests := []struct {
@@ -398,22 +395,6 @@ func TestCompileValidatesTLSAndClientCAMaterial(t *testing.T) {
 				Config: testConfigWithTLS("TLSv1.2", "TLS_AES_128_GCM_SHA256"),
 			},
 			want: "TLS 1.3 cipher suite",
-		},
-		{
-			name: "trusted CA material required",
-			input: Input{Config: func() *config.Config {
-				cfg := testFrontendConfig()
-				cfg.Apisix.Ssl.SslTrustedCertificate = "configured.pem"
-				return cfg
-			}()},
-			want: "trusted client CA material was not provided",
-		},
-		{
-			name: "malformed trusted CA",
-			input: Input{
-				Config: testFrontendConfig(), TrustedClientCAPEM: []byte("bad CA"),
-			},
-			want: "trusted client CA contains no certificates",
 		},
 		{
 			name: "malformed server key pair",

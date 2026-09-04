@@ -70,7 +70,7 @@ cases:
           path: /missing-username
         output:
           status: 404
-          body: {matches: '404 page not found'}
+          body: {equals: '{"error_msg":"404 Route Not Found"}'}
           logs: {matches: 'validate plugin authz-casbin config:.*username'}
 
   - name: metadata-policy-lifecycle

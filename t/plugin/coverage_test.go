@@ -2,7 +2,9 @@ package pluginintegration
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -49,15 +51,15 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 	}{
 		{
 			name: "route plugin",
-			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
-				"routes": []any{map[string]any{"plugins": map[string]any{"acl": map[string]any{}}}},
+			manifest: &Manifest{Cases: []Case{{Input: HTTPInput{Path: "/"}, Config: map[string]any{
+				"routes": []any{map[string]any{"uri": "/", "plugins": map[string]any{"acl": map[string]any{}}}},
 			}}}},
 			plugin: "acl",
 			want:   true,
 		},
 		{
 			name: "global plugin",
-			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
+			manifest: &Manifest{Cases: []Case{{Input: HTTPInput{Path: "/"}, Config: map[string]any{
 				"global_rules": []any{map[string]any{"plugins": map[string]any{"error-page": map[string]any{}}}},
 			}}}},
 			plugin: "error-page",
@@ -65,7 +67,7 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 		},
 		{
 			name: "control plugin",
-			manifest: &Manifest{Cases: []Case{{Runtime: map[string]any{
+			manifest: &Manifest{Cases: []Case{{Input: HTTPInput{Path: "/apisix/status"}, Runtime: map[string]any{
 				"plugins": []any{"node-status"},
 			}}}},
 			plugin: "node-status",
@@ -73,16 +75,22 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 		},
 		{
 			name: "variant plugin",
-			manifest: &Manifest{Cases: []Case{{Variants: []CaseVariant{{Config: map[string]any{
-				"routes": []any{map[string]any{"plugins": map[string]any{"ua-restriction": map[string]any{}}}},
-			}}}}}},
+			manifest: &Manifest{
+				Cases: []Case{{Variants: []CaseVariant{{Input: HTTPInput{Path: "/"}, Config: map[string]any{
+					"routes": []any{
+						map[string]any{"uri": "/", "plugins": map[string]any{"ua-restriction": map[string]any{}}},
+					},
+				}}}}},
+			},
 			plugin: "ua-restriction",
 			want:   true,
 		},
 		{
 			name: "explicit manifest target alias",
-			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
-				"routes": []any{map[string]any{"plugins": map[string]any{"ai-proxy-multi": map[string]any{}}}},
+			manifest: &Manifest{Cases: []Case{{Input: HTTPInput{Path: "/"}, Config: map[string]any{
+				"routes": []any{
+					map[string]any{"uri": "/", "plugins": map[string]any{"ai-proxy-multi": map[string]any{}}},
+				},
 			}}}},
 			plugin: "ai-proxy",
 			want:   true,
@@ -91,11 +99,13 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 			name: "step config plugin",
 			manifest: &Manifest{Cases: []Case{{
 				Config: map[string]any{
-					"routes": []any{map[string]any{"plugins": map[string]any{"mocking": map[string]any{}}}},
+					"routes": []any{map[string]any{"uri": "/", "plugins": map[string]any{"mocking": map[string]any{}}}},
 				},
 				Steps: []CaseStep{{Config: map[string]any{
-					"routes": []any{map[string]any{"plugins": map[string]any{"ai-proxy": map[string]any{}}}},
-				}}},
+					"routes": []any{
+						map[string]any{"uri": "/", "plugins": map[string]any{"ai-proxy": map[string]any{}}},
+					},
+				}, Input: HTTPInput{Path: "/"}}},
 			}}},
 			plugin: "ai-proxy",
 			want:   true,
@@ -121,6 +131,21 @@ func TestManifestExercisesTargetPlugin(t *testing.T) {
 			manifest: &Manifest{Cases: []Case{{Config: map[string]any{
 				"routes": []any{map[string]any{"plugins": map[string]any{"mocking": map[string]any{}}}},
 			}}}},
+			plugin: "acl",
+			want:   false,
+		},
+		{
+			name: "target plugin on an unrequested route",
+			manifest: &Manifest{Cases: []Case{{
+				Input: HTTPInput{Path: "/requested"},
+				Config: map[string]any{"routes": []any{
+					map[string]any{"id": "requested", "uri": "/requested"},
+					map[string]any{
+						"id": "unused", "uri": "/unused",
+						"plugins": map[string]any{"acl": map[string]any{}},
+					},
+				}},
+			}}},
 			plugin: "acl",
 			want:   false,
 		},
@@ -179,6 +204,7 @@ func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Ma
 				caseSpec.Config,
 				caseSpec.Steps,
 				pluginNames,
+				caseSpec.Input,
 			)
 			if err := validateTargetPluginExemption(caseSpec.TargetPluginExemptReason, activates); err != nil {
 				t.Errorf("%s case %q target plugin %q: %v", file, caseSpec.Name, pluginName, err)
@@ -192,6 +218,7 @@ func assertManifestExercisesTargetPlugin(t *testing.T, file string, manifest *Ma
 				variant.Config,
 				variant.Steps,
 				pluginNames,
+				variant.Input,
 			)
 			if err := validateTargetPluginExemption(variant.TargetPluginExemptReason, activates); err != nil {
 				t.Errorf(
@@ -315,12 +342,16 @@ func targetPluginActivationNames(t *testing.T, pluginName string) []string {
 func manifestExercisesPlugin(manifest *Manifest, pluginNames []string) bool {
 	for i := range manifest.Cases {
 		caseSpec := &manifest.Cases[i]
-		if caseExercisesTargetPlugin(caseSpec.Runtime, caseSpec.Config, caseSpec.Steps, pluginNames) {
+		if caseExercisesTargetPlugin(
+			caseSpec.Runtime, caseSpec.Config, caseSpec.Steps, pluginNames, caseSpec.Input,
+		) {
 			return true
 		}
 		for j := range caseSpec.Variants {
 			variant := &caseSpec.Variants[j]
-			if caseExercisesTargetPlugin(variant.Runtime, variant.Config, variant.Steps, pluginNames) {
+			if caseExercisesTargetPlugin(
+				variant.Runtime, variant.Config, variant.Steps, pluginNames, variant.Input,
+			) {
 				return true
 			}
 		}
@@ -332,16 +363,216 @@ func caseExercisesTargetPlugin(
 	runtime, config map[string]any,
 	steps []CaseStep,
 	pluginNames []string,
+	inputs ...HTTPInput,
 ) bool {
-	if scenarioExercisesTargetPlugin(runtime, config, pluginNames) {
+	requestInputs := append([]HTTPInput(nil), inputs...)
+	for i := range steps {
+		requestInputs = append(requestInputs, steps[i].Input)
+	}
+	if len(inputs) == 0 {
+		return scenarioExercisesTargetPlugin(runtime, config, pluginNames)
+	}
+	if scenarioExercisesTargetPluginForInputs(runtime, config, pluginNames, requestInputs) {
 		return true
 	}
 	for i := range steps {
-		if scenarioExercisesTargetPlugin(nil, steps[i].Config, pluginNames) {
+		if scenarioExercisesTargetPluginForInputs(
+			nil, steps[i].Config, pluginNames, []HTTPInput{steps[i].Input},
+		) {
 			return true
 		}
 	}
 	return false
+}
+
+func scenarioExercisesTargetPluginForInputs(
+	runtime, config map[string]any,
+	pluginNames []string,
+	inputs []HTTPInput,
+) bool {
+	for _, candidate := range pluginNames {
+		if runtimeEnablesPlugin(runtime, candidate) && hasRequestInput(inputs) {
+			return true
+		}
+		if configRoutesRequestThroughPlugin(config, inputs, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeEnablesPlugin(runtime map[string]any, pluginName string) bool {
+	switch plugins := runtime["plugins"].(type) {
+	case []any:
+		for _, configured := range plugins {
+			if configured == pluginName {
+				return true
+			}
+		}
+	case []string:
+		return slices.Contains(plugins, pluginName)
+	}
+	return false
+}
+
+func hasRequestInput(inputs []HTTPInput) bool {
+	for _, input := range inputs {
+		if strings.TrimSpace(input.Path) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func configRoutesRequestThroughPlugin(config map[string]any, inputs []HTTPInput, pluginName string) bool {
+	if !hasRequestInput(inputs) {
+		return false
+	}
+	for _, root := range []string{"global_rules", "global-rules"} {
+		if configContainsPlugin(config[root], pluginName) {
+			return true
+		}
+	}
+	services := indexedStandaloneResources(config["services"])
+	pluginConfigs := indexedStandaloneResources(config["plugin_configs"])
+	consumerBound := configContainsPlugin(config["consumers"], pluginName) ||
+		configContainsPlugin(config["consumer_groups"], pluginName)
+	routes, _ := config["routes"].([]any)
+	for _, routeValue := range routes {
+		route, ok := routeValue.(map[string]any)
+		if !ok || !routeMatchesAnyInput(route, inputs) {
+			continue
+		}
+		if pluginMapActivates(route["plugins"], pluginName) {
+			return true
+		}
+		if service := services[stringValue(route["service_id"])]; pluginMapActivates(service["plugins"], pluginName) {
+			return true
+		}
+		if pluginConfig := pluginConfigs[stringValue(route["plugin_config_id"])]; pluginMapActivates(
+			pluginConfig["plugins"],
+			pluginName,
+		) {
+			return true
+		}
+		if consumerBound && pluginMapContainsAuthentication(route["plugins"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginMapContainsAuthentication(value any) bool {
+	plugins, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, name := range []string{
+		"basic-auth", "hmac-auth", "jwt-auth", "key-auth", "ldap-auth",
+		"multi-auth", "openid-connect", "wolf-rbac",
+	} {
+		if _, configured := plugins[name]; configured {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginMapActivates(value any, pluginName string) bool {
+	plugins, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, configured := plugins[pluginName]; configured {
+		return true
+	}
+	return configContainsPlugin(plugins, pluginName)
+}
+
+func indexedStandaloneResources(value any) map[string]map[string]any {
+	indexed := make(map[string]map[string]any)
+	resources, _ := value.([]any)
+	for _, resourceValue := range resources {
+		resource, ok := resourceValue.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id := stringValue(resource["id"]); id != "" {
+			indexed[id] = resource
+		}
+	}
+	return indexed
+}
+
+func stringValue(value any) string {
+	valueString, _ := value.(string)
+	return valueString
+}
+
+func routeMatchesAnyInput(route map[string]any, inputs []HTTPInput) bool {
+	for _, input := range inputs {
+		requestPath := input.Path
+		if before, _, found := strings.Cut(requestPath, "?"); found {
+			requestPath = before
+		}
+		if routeMatchesPath(route, requestPath) {
+			return true
+		}
+	}
+	return false
+}
+
+func routeMatchesPath(route map[string]any, requestPath string) bool {
+	if uri, ok := route["uri"].(string); ok && manifestURIMatches(uri, requestPath) {
+		return true
+	}
+	switch uris := route["uris"].(type) {
+	case []any:
+		for _, value := range uris {
+			if uri, ok := value.(string); ok && manifestURIMatches(uri, requestPath) {
+				return true
+			}
+		}
+	case []string:
+		for _, uri := range uris {
+			if manifestURIMatches(uri, requestPath) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func manifestURIMatches(uri, requestPath string) bool {
+	candidates := []string{requestPath}
+	if decoded, err := url.PathUnescape(requestPath); err == nil && decoded != requestPath {
+		candidates = append(candidates, decoded)
+	}
+	for _, candidate := range slices.Clone(candidates) {
+		cleaned := pathpkg.Clean(candidate)
+		if cleaned != candidate {
+			candidates = append(candidates, cleaned)
+		}
+	}
+	for _, candidate := range candidates {
+		if manifestURIPatternMatches(uri, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func manifestURIPatternMatches(uri, requestPath string) bool {
+	if uri == requestPath || uri == "/*" {
+		return true
+	}
+	if prefix, ok := strings.CutSuffix(uri, "*"); ok {
+		if strings.HasPrefix(requestPath, prefix) {
+			return true
+		}
+	}
+	matched, err := pathpkg.Match(uri, requestPath)
+	return err == nil && matched
 }
 
 func scenarioExercisesTargetPlugin(runtime, config map[string]any, pluginNames []string) bool {

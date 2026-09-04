@@ -590,6 +590,21 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 	}
 }
 
+func TestSafeOriginalURIRejectsSchemeRelativeRedirect(t *testing.T) {
+	for _, test := range []struct {
+		original string
+		want     string
+	}{
+		{original: "/orders/1?debug=true", want: "/orders/1?debug=true"},
+		{original: "//attacker.example/path", want: "/"},
+		{original: "/\\attacker.example/path", want: "/"},
+	} {
+		if got := safeOriginalURI(test.original); got != test.want {
+			t.Fatalf("safeOriginalURI(%q) = %q, want %q", test.original, got, test.want)
+		}
+	}
+}
+
 func TestCallbackWithoutSessionReturnsBareServiceUnavailable(t *testing.T) {
 	logged := make(chan logger.Entry, 1)
 	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {

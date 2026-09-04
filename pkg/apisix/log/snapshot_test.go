@@ -462,13 +462,13 @@ func TestBuildSnapshotFromOwnedInputsHandlesNilAndSchemeBoundaries(t *testing.T)
 
 	forwarded := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
 	forwarded.Header.Set("X-Forwarded-Proto", "wss")
-	if got := requestScheme(forwarded); got != "wss" {
-		t.Fatalf("forwarded scheme = %q", got)
+	if got := requestScheme(forwarded); got != "http" {
+		t.Fatalf("forwarded scheme changed gateway transport = %q", got)
 	}
 	forwarded.Header.Del("X-Forwarded-Proto")
 	forwarded.URL.Scheme = "custom"
-	if got := requestScheme(forwarded); got != "custom" {
-		t.Fatalf("URL scheme = %q", got)
+	if got := requestScheme(forwarded); got != "http" {
+		t.Fatalf("URL scheme changed gateway transport = %q", got)
 	}
 	forwarded.URL.Scheme = ""
 	forwarded.TLS = &tls.ConnectionState{}

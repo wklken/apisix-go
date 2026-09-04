@@ -59,6 +59,32 @@ func TestCoordinatorAppliesDesiredStateInMemory(t *testing.T) {
 	}
 }
 
+func TestCoordinatorPublishesTombstoneOnceThenCompactsDesiredState(t *testing.T) {
+	engine := &coordinatorPublisher{}
+	coordinator := NewCoordinator(engine)
+	if _, err := coordinator.Apply(context.Background(), coordinatorBatch("1", "r1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Apply(context.Background(), DesiredBatch{
+		Cursor:          ProviderCursor{Provider: "etcd", Revision: "2"},
+		RequiredDomains: []Domain{DomainHTTP},
+		Mutations: []Mutation{{
+			Type: MutationDelete, Key: ResourceKey{Kind: "routes", ID: "r1"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !engine.lastDesired.Deleted(ResourceKey{Kind: "routes", ID: "r1"}) {
+		t.Fatal("deletion publication did not carry the tombstone")
+	}
+	if _, err := coordinator.Apply(context.Background(), coordinatorBatch("3", "r2")); err != nil {
+		t.Fatal(err)
+	}
+	if engine.lastDesired.Deleted(ResourceKey{Kind: "routes", ID: "r1"}) {
+		t.Fatal("acknowledged tombstone leaked into the next publication")
+	}
+}
+
 func TestCoordinatorCommitsOnlyAfterSuccessfulPublish(t *testing.T) {
 	wantErr := errors.New("publish failed")
 	engine := &coordinatorPublisher{failAtCall: 2, publishErr: wantErr}

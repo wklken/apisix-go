@@ -1093,6 +1093,26 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 	}
 }
 
+func TestStandaloneSnapshotAcceptsOfficialDumpMetadata(t *testing.T) {
+	path := writeStandaloneTestConfig(t, `{
+		"routes":[{"id":"r1","uri":"/one"}],
+		"routes_conf_version":42,
+		"X-Last-Modified":"Fri, 04 Sep 2026 08:00:00 GMT",
+		"X-Digest":"sha256:test"
+	}`)
+	snapshot, err := readStandaloneSnapshot(
+		path,
+		standaloneProviderJSON,
+		testStandaloneDataEncryption(t, false, nil),
+	)
+	if err != nil {
+		t.Fatalf("readStandaloneSnapshot() error = %v", err)
+	}
+	if _, ok := snapshot["routes"]["r1"]; !ok {
+		t.Fatal("official dump metadata prevented route loading")
+	}
+}
+
 func TestStandaloneFileWatcherLoadsYAMLAndJSON(t *testing.T) {
 	tests := []struct {
 		name     string

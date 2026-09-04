@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
 	"math/rand"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -190,8 +192,8 @@ func newHealthCheck(get getFunc, prefix string) healthCheckFunc {
 	}
 }
 
-func NewTLSConfig(certPath, keyPath, serverName string, verify *bool) (*tls.Config, error) {
-	if certPath == "" && keyPath == "" && serverName == "" && verify == nil {
+func NewTLSConfig(certPath, keyPath, serverName string, verify *bool, trustedCertificate string) (*tls.Config, error) {
+	if certPath == "" && keyPath == "" && serverName == "" && verify == nil && trustedCertificate == "" {
 		return nil, nil
 	}
 	config := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
@@ -204,6 +206,27 @@ func NewTLSConfig(certPath, keyPath, serverName string, verify *bool) (*tls.Conf
 			return nil, err
 		}
 		config.Certificates = []tls.Certificate{certificate}
+	}
+	trustedCertificate = strings.TrimSpace(trustedCertificate)
+	if trustedCertificate != "" {
+		var roots *x509.CertPool
+		var err error
+		if trustedCertificate == "system" {
+			roots, err = x509.SystemCertPool()
+			if err != nil {
+				return nil, fmt.Errorf("load system trusted certificates: %w", err)
+			}
+		} else {
+			certificatePEM, readErr := os.ReadFile(trustedCertificate)
+			if readErr != nil {
+				return nil, fmt.Errorf("read ssl_trusted_certificate %q: %w", trustedCertificate, readErr)
+			}
+			roots = x509.NewCertPool()
+			if !roots.AppendCertsFromPEM(certificatePEM) {
+				return nil, fmt.Errorf("ssl_trusted_certificate %q contains no certificates", trustedCertificate)
+			}
+		}
+		config.RootCAs = roots
 	}
 	return config, nil
 }
@@ -1138,7 +1161,7 @@ func (c *ConfigClient) applyCandidate(ctx context.Context, candidate etcdProvide
 	}
 
 	c.knownKeys = candidate.knownKeys
-	c.tombstones = candidate.tombstones
+	c.tombstones = make(map[string]int64)
 	c.quarantine = nextQuarantine
 	c.lastCursor = ack.Cursor
 	c.lastRevision = providerRevision

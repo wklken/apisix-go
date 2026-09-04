@@ -33,21 +33,17 @@ var tls13CipherNames = map[string]struct{}{
 }
 
 // Input is the complete frontend TLS input for one generation. Config and
-// SSLs are consumed during Compile and are not retained. TrustedClientCAPEM is
-// the already-read content named by ssl_trusted_certificate, keeping file I/O
-// with the caller that owns static configuration loading.
+// SSLs are consumed during Compile and are not retained.
 type Input struct {
-	Config             *config.Config
-	SSLs               map[string]resource.SSL
-	TrustedClientCAPEM []byte
+	Config *config.Config
+	SSLs   map[string]resource.SSL
 }
 
 // BaseInput is the static frontend TLS input shared by immutable generation
 // compilation and the legacy server wrapper. It deliberately contains no SSL
 // resource index or certificate-selection authority.
 type BaseInput struct {
-	Config             *config.Config
-	TrustedClientCAPEM []byte
+	Config *config.Config
 }
 
 // Snapshot owns a compiled frontend TLS configuration and certificate index.
@@ -73,9 +69,7 @@ func FrontendEnabled(cfg *config.Config) bool {
 // Compile validates and compiles frontend TLS settings and active server SSL
 // resources into an immutable snapshot.
 func Compile(input Input) (*Snapshot, error) {
-	base, settings, err := compileBase(BaseInput{
-		Config: input.Config, TrustedClientCAPEM: input.TrustedClientCAPEM,
-	})
+	base, settings, err := compileBase(BaseInput{Config: input.Config})
 	if err != nil {
 		return nil, err
 	}
@@ -112,24 +106,15 @@ func compileBase(input BaseInput) (*tls.Config, compiledSettings, error) {
 		return nil, compiledSettings{}, fmt.Errorf("frontend TLS ciphers: %w", err)
 	}
 
-	clientCAs, err := compileTrustedClientCAs(settings.trustedCertificate, input.TrustedClientCAPEM)
-	if err != nil {
-		return nil, compiledSettings{}, err
-	}
-
 	base := &tls.Config{
 		MinVersion:             minVersion,
 		MaxVersion:             maxVersion,
 		CipherSuites:           slices.Clone(cipherSuites),
 		SessionTicketsDisabled: !settings.sessionTickets,
 		NextProtos:             []string{"http/1.1"},
-		ClientCAs:              cloneCertPool(clientCAs),
 	}
 	if settings.http2 {
 		base.NextProtos = []string{"h2", "http/1.1"}
-	}
-	if clientCAs != nil {
-		base.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return base, settings, nil
 }
@@ -145,13 +130,12 @@ func (snapshot *Snapshot) TLSConfig() *tls.Config {
 }
 
 type compiledSettings struct {
-	enabled            bool
-	protocols          string
-	ciphers            string
-	sessionTickets     bool
-	fallbackSNI        string
-	trustedCertificate string
-	http2              bool
+	enabled        bool
+	protocols      string
+	ciphers        string
+	sessionTickets bool
+	fallbackSNI    string
+	http2          bool
 }
 
 func frontendSettings(cfg *config.Config) compiledSettings {
@@ -160,13 +144,12 @@ func frontendSettings(cfg *config.Config) compiledSettings {
 	}
 	ssl := cfg.Apisix.Ssl
 	settings := compiledSettings{
-		enabled:            ssl.Enable,
-		protocols:          ssl.SslProtocols,
-		ciphers:            ssl.SslCiphers,
-		sessionTickets:     ssl.SslSessionTickets,
-		fallbackSNI:        strings.TrimSpace(ssl.FallbackSNI),
-		trustedCertificate: strings.TrimSpace(ssl.SslTrustedCertificate),
-		http2:              cfg.Apisix.EnableHttp2,
+		enabled:        ssl.Enable,
+		protocols:      ssl.SslProtocols,
+		ciphers:        ssl.SslCiphers,
+		sessionTickets: ssl.SslSessionTickets,
+		fallbackSNI:    strings.TrimSpace(ssl.FallbackSNI),
+		http2:          cfg.Apisix.EnableHttp2,
 	}
 	return settings
 }
@@ -244,20 +227,6 @@ func parseCipherSuites(raw string, minVersion uint16, required bool) ([]uint16, 
 		result = append(result, cipherSuite)
 	}
 	return result, nil
-}
-
-func compileTrustedClientCAs(configuredPath string, certificatePEM []byte) (*x509.CertPool, error) {
-	if len(certificatePEM) == 0 {
-		if configuredPath != "" {
-			return nil, fmt.Errorf("frontend TLS trusted client CA material was not provided for %q", configuredPath)
-		}
-		return nil, nil
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(slices.Clone(certificatePEM)) {
-		return nil, fmt.Errorf("frontend TLS trusted client CA contains no certificates")
-	}
-	return pool, nil
 }
 
 type certificateIndex struct {

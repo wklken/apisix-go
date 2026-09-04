@@ -474,7 +474,8 @@ func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, state *base.Streaming
 
 func (p *Plugin) AppliesToResponseSource(source apisixctx.ResponseSource) bool {
 	switch source {
-	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceAPISIX, apisixctx.ResponseSourceEarlyStop:
+	case apisixctx.ResponseSourceUpstream, apisixctx.ResponseSourceAPISIX,
+		apisixctx.ResponseSourceEarlyStop, apisixctx.ResponseSourceCacheHit:
 		return true
 	default:
 		return false

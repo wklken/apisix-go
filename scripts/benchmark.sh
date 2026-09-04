@@ -104,21 +104,28 @@ meta_value() {
     printf '%s\t%s\n' "$key" "$value"
 }
 
-write_metadata() {
-    local file="$1" corpus_hash="$2" harness_hash="$3"
-    local go_version goversion goos goarch goarm64 cgo_enabled goexperiment goflags
-    local env_output host_id kernel cpu_model head_sha worktree_sha run_at
+go_env_value() {
+    local key="$1" value
+    if value="$("$GO_BIN" env "$key" 2>/dev/null)"; then
+        printf '%s' "$value"
+        return
+    fi
+    printf 'unknown'
+}
 
-    go_version="$("$GO_BIN" version 2>/dev/null || true)"
-    env_output="$("$GO_BIN" env GOVERSION GOOS GOARCH GOARM64 CGO_ENABLED GOEXPERIMENT GOFLAGS 2>/dev/null || true)"
-    goversion=unknown
-    goos=unknown
-    goarch=unknown
-    goarm64=unknown
-    cgo_enabled=unknown
-    goexperiment=unknown
-    goflags=unknown
-    IFS=$'\n' read -r goversion goos goarch goarm64 cgo_enabled goexperiment goflags <<< "$env_output" || true
+write_metadata() {
+	local file="$1" corpus_hash="$2" harness_hash="$3"
+	local go_version goversion goos goarch goarm64 cgo_enabled goexperiment goflags
+	local host_id kernel cpu_model head_sha worktree_sha run_at
+
+	go_version="$("$GO_BIN" version 2>/dev/null || true)"
+	goversion="$(go_env_value GOVERSION)"
+	goos="$(go_env_value GOOS)"
+	goarch="$(go_env_value GOARCH)"
+	goarm64="$(go_env_value GOARM64)"
+	cgo_enabled="$(go_env_value CGO_ENABLED)"
+	goexperiment="$(go_env_value GOEXPERIMENT)"
+	goflags="$(go_env_value GOFLAGS)"
 
     host_id="${HOST_ID:-$(hostname)}"
     if [[ "$(uname -s)" == "Darwin" ]]; then

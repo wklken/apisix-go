@@ -515,12 +515,6 @@ func safeConsumerIdentity(values map[string]any) SafeConsumerLogIdentity {
 }
 
 func requestScheme(r *http.Request) string {
-	if value := r.Header.Get("X-Forwarded-Proto"); value != "" {
-		return value
-	}
-	if r.URL.Scheme != "" {
-		return r.URL.Scheme
-	}
 	if r.TLS != nil {
 		return "https"
 	}

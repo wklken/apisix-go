@@ -28,6 +28,7 @@ cases:
         equals: Hello world
 
   - name: reject-invalid-status
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-reject-invalid-status
@@ -42,6 +43,7 @@ cases:
         matches: 'validate plugin response-rewrite config: /status_code: must be <= 598'
 
   - name: reject-invalid-config
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-reject-invalid-config
@@ -151,6 +153,7 @@ cases:
           equals: https://www.iresty.com
 
   - name: empty-header-value
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-reject-empty-header-field
@@ -167,6 +170,7 @@ cases:
         matches: "validate plugin response-rewrite config: /headers: additionalProperties are not allowed"
 
   - name: reject-array-header-value
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-reject-array-header-value
@@ -442,6 +446,7 @@ cases:
           body:
             equals: hemlo world
       - name: rejects-body-and-filters-together
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: response-rewrite-body-and-filters
@@ -461,6 +466,7 @@ cases:
           logs:
             matches: 'validate plugin response-rewrite config: /: value does not satisfy schema rule not'
       - name: rejects-empty-filters-array
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: response-rewrite-empty-filters
@@ -478,6 +484,7 @@ cases:
             matches: 'validate plugin response-rewrite config: /filters: minimum 1 items required'
 
   - name: filter-rejects-missing-replace
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-missing-replace
@@ -496,6 +503,7 @@ cases:
         matches: "validate plugin response-rewrite config: /filters/0: missing properties: 'replace'"
 
   - name: filter-rejects-invalid-scope
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-invalid-scope
@@ -517,6 +525,7 @@ cases:
         matches: 'validate plugin response-rewrite config: /filters/0/scope: value is not in the allowed set'
 
   - name: filter-rejects-empty-regex
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-empty-regex
@@ -789,6 +798,7 @@ cases:
         equals: hello world
 
   - name: headers-schema-rejection
+    target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
     config:
       routes:
         - id: response-rewrite-headers-schema

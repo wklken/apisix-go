@@ -39,6 +39,10 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 	session, err := p.readSession(r)
 	now := p.currentTime()
 	if err == nil && session != nil && p.sessionValid(*session, now) {
+		if err := p.validateStoredSessionClaimSchema(*session); err != nil {
+			p.writeInvalidToken(w, err.Error())
+			return
+		}
 		if p.refreshSessionDue(*session, now) {
 			p.beginAuthorization(w, r, redirectURI, session, "none")
 			return
@@ -70,6 +74,10 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 				session.RefreshToken = tokens.RefreshToken
 			}
 			session.ExpiresAt = p.tokenExpiresAt(now, tokens.ExpiresIn)
+			if err := p.validateStoredSessionClaimSchema(*session); err != nil {
+				p.writeInvalidToken(w, err.Error())
+				return
+			}
 			if err := p.writeSession(w, *session); err != nil {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return
@@ -81,6 +89,13 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 	}
 
 	p.beginAuthorization(w, r, redirectURI, nil, "")
+}
+
+func (p *Plugin) validateStoredSessionClaimSchema(session sessionData) error {
+	return p.validateSessionClaimSchema(tokenResponse{
+		AccessToken: session.AccessToken,
+		IDToken:     session.IDToken,
+	}, session.Userinfo)
 }
 
 func (p *Plugin) beginAuthorization(

@@ -699,10 +699,10 @@ func TestBufferedResponseSeparatesAndCommitsDeclaredTrailers(t *testing.T) {
 	}
 }
 
-func TestBufferedResponseCacheHitConsumesOnceAndSkipsTransformsStores(t *testing.T) {
-	plugin := newResponseTestPlugin("proxy-cache", 1, nil)
-	callbackCalls := 0
-	plugin.request = func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+func TestBufferedResponseCacheHitRecomputesResponseRewriteAndSkipsStore(t *testing.T) {
+	cache := newResponseTestPlugin("proxy-cache", 1, nil)
+	storeCalls := 0
+	cache.request = func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
 		holder := base.CacheHitResponseHolderFromRequest(r)
 		holder.Publish(base.CachedResponseState{
 			Status: http.StatusOK,
@@ -712,32 +712,93 @@ func TestBufferedResponseCacheHitConsumesOnceAndSkipsTransformsStores(t *testing
 		apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceCacheHit)
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceCacheHit)
 	}
-	plugin.store = func(*http.Request, base.ResponseState) error {
-		callbackCalls++
+	cache.store = func(*http.Request, base.ResponseState) error {
+		storeCalls++
 		return nil
 	}
-	binding := checkedResponseBinding(t, "proxy-cache", plugin, ScopeRoute, "route")
+	bindings := []Binding{
+		checkedResponseBinding(t, "proxy-cache", cache, ScopeRoute, "cache-route"),
+		resolvedPlan16Binding(t, "response-rewrite", newRequestDependentResponseRewrite(t), "rewrite-route"),
+	}
+	for _, tenant := range []string{"alpha", "beta"} {
+		request, _ := executorRequest(t)
+		request.Header.Set("X-Tenant", tenant)
+		response := httptest.NewRecorder()
+		NewRequestPipeline(bindings, nil).
+			WithBufferedResponseExecutor(newBufferedTestExecutor(t, bindings)).
+			Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("terminal called on cache hit")
+			})).
+			ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Body.String() != "cached" ||
+			response.Header().Get("X-Cache") != "hit" || response.Header().Get("X-Tenant") != tenant {
+			t.Fatalf(
+				"cache hit response for %q = %d/%q headers=%v",
+				tenant,
+				response.Code,
+				response.Body.String(),
+				response.Header(),
+			)
+		}
+	}
+	if storeCalls != 0 {
+		t.Fatalf("cache hit store calls = %d, want 0", storeCalls)
+	}
+}
+
+func TestBufferedResponseStoresCanonicalStateBeforeRequestTransforms(t *testing.T) {
+	cache := newResponseTestPlugin("proxy-cache", 1, nil)
+	var stored base.ResponseState
+	cache.store = func(_ *http.Request, state base.ResponseState) error {
+		stored = base.CloneResponseState(state)
+		return nil
+	}
+	bindings := []Binding{
+		checkedResponseBinding(t, "proxy-cache", cache, ScopeRoute, "cache-route"),
+		resolvedPlan16Binding(t, "response-rewrite", newRequestDependentResponseRewrite(t), "rewrite-route"),
+	}
+	request, _ := executorRequest(t)
+	request.Header.Set("X-Tenant", "alpha")
 	response := httptest.NewRecorder()
-	serveBufferedTestPipeline(
-		t,
-		[]Binding{binding},
-		nil,
-		newBufferedTestExecutor(t, []Binding{binding}),
-		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("terminal called on cache hit") }),
-		response,
-	)
-	if response.Code != http.StatusOK || response.Body.String() != "cached" ||
-		response.Header().Get("X-Cache") != "hit" {
-		t.Fatalf(
-			"cache hit response = %d/%q/%q",
-			response.Code,
-			response.Body.String(),
-			response.Header().Get("X-Cache"),
-		)
+	NewRequestPipeline(bindings, nil).
+		WithBufferedResponseExecutor(newBufferedTestExecutor(t, bindings)).
+		Then(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceUpstream)
+			w.Header().Set("X-Origin", "yes")
+			_, _ = w.Write([]byte("origin"))
+		})).
+		ServeHTTP(response, request)
+
+	if stored.Status != http.StatusOK || string(stored.Body) != "origin" ||
+		stored.Header.Get("X-Origin") != "yes" || stored.Header.Get("X-Tenant") != "" {
+		t.Fatalf("stored canonical response = status:%d body:%q headers:%v", stored.Status, stored.Body, stored.Header)
 	}
-	if callbackCalls != 0 {
-		t.Fatalf("cache hit store calls = %d, want 0", callbackCalls)
+	if response.Body.String() != "origin" || response.Header().Get("X-Tenant") != "alpha" {
+		t.Fatalf("client response = body:%q headers:%v", response.Body.String(), response.Header())
 	}
+}
+
+func newRequestDependentResponseRewrite(t *testing.T) Plugin {
+	t.Helper()
+	p := New("response-rewrite", base.Dependencies{})
+	if p == nil {
+		t.Fatal("response-rewrite plugin is not registered")
+	}
+	if err := p.Init(); err != nil {
+		t.Fatalf("response-rewrite Init() error = %v", err)
+	}
+	if err := util.Parse(map[string]any{
+		"headers": map[string]any{
+			"set": map[string]any{"X-Tenant": "$http_x_tenant"},
+		},
+		"vars": []any{[]any{"status", "==", http.StatusOK}},
+	}, p.Config()); err != nil {
+		t.Fatalf("parse response-rewrite config: %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("response-rewrite PostInit() error = %v", err)
+	}
+	return p
 }
 
 func TestResponsePlanMakesCompressionCacheSafe(t *testing.T) {

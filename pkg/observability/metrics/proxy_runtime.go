@@ -45,7 +45,14 @@ func newProxyRuntimeObserver(registry *prometheus.Registry) *proxyRuntimeObserve
 		[]string{"name", "ip", "port"},
 	)
 	registry.MustRegister(inFlight, rejected, retry, health, status)
-	return &proxyRuntimeObserver{inFlight: inFlight, rejected: rejected, retry: retry, health: health, status: status}
+	return &proxyRuntimeObserver{
+		inFlight: inFlight, rejected: rejected, retry: retry, health: health, status: status,
+		inFlightSeries: newMetricSeriesTracker(defaultMaxMetricSeries, 1, 0, nil, inFlight.DeleteLabelValues),
+		rejectedSeries: newMetricSeriesTracker(defaultMaxMetricSeries, 1, 0, nil, rejected.DeleteLabelValues),
+		retrySeries:    newMetricSeriesTracker(defaultMaxMetricSeries, 2, 0, nil, retry.DeleteLabelValues),
+		healthSeries:   newMetricSeriesTracker(defaultMaxMetricSeries, 2, 0, nil, health.DeleteLabelValues),
+		statusSeries:   newMetricSeriesTracker(defaultMaxMetricSeries, 3, 0, nil, status.DeleteLabelValues),
+	}
 }
 
 type proxyRuntimeObserver struct {
@@ -54,17 +61,27 @@ type proxyRuntimeObserver struct {
 	retry    *prometheus.CounterVec
 	health   *prometheus.GaugeVec
 	status   *prometheus.GaugeVec
+
+	inFlightSeries *metricSeriesTracker
+	rejectedSeries *metricSeriesTracker
+	retrySeries    *metricSeriesTracker
+	healthSeries   *metricSeriesTracker
+	statusSeries   *metricSeriesTracker
 }
 
 func (o *proxyRuntimeObserver) SetInFlight(cluster string, delta int) {
 	if vec := o.vector(ProxyInFlight, o.inFlight); vec != nil {
-		vec.WithLabelValues(cluster).Add(float64(delta))
+		o.tracker(proxyInFlightSeries, o.inFlightSeries).withSeries([]string{cluster}, func(labels []string) {
+			vec.WithLabelValues(labels...).Add(float64(delta))
+		})
 	}
 }
 
 func (o *proxyRuntimeObserver) ObserveRejected(cluster string) {
 	if vec := o.counter(ProxyRejected, o.rejected); vec != nil {
-		vec.WithLabelValues(cluster).Inc()
+		o.tracker(proxyRejectedSeries, o.rejectedSeries).withSeries([]string{cluster}, func(labels []string) {
+			vec.WithLabelValues(labels...).Inc()
+		})
 	}
 }
 
@@ -72,7 +89,9 @@ func (o *proxyRuntimeObserver) ObserveRetry(cluster, result string) {
 	if vec := o.counter(ProxyRetry, o.retry); vec != nil {
 		switch result {
 		case "success", "error", "stopped":
-			vec.WithLabelValues(cluster, result).Inc()
+			o.tracker(proxyRetrySeries, o.retrySeries).withSeries([]string{cluster, result}, func(labels []string) {
+				vec.WithLabelValues(labels...).Inc()
+			})
 		}
 	}
 }
@@ -83,7 +102,9 @@ func (o *proxyRuntimeObserver) SetHealth(cluster, target string, healthy bool) {
 		if healthy {
 			value = 1
 		}
-		vec.WithLabelValues(cluster, target).Set(value)
+		o.tracker(proxyHealthSeries, o.healthSeries).withSeries([]string{cluster, target}, func(labels []string) {
+			vec.WithLabelValues(labels...).Set(value)
+		})
 	}
 	if o.status != nil {
 		ip, port := upstreamTargetLabels(target)
@@ -91,7 +112,9 @@ func (o *proxyRuntimeObserver) SetHealth(cluster, target string, healthy bool) {
 		if healthy {
 			value = 1
 		}
-		o.status.WithLabelValues(cluster, ip, port).Set(value)
+		o.statusSeries.withSeries([]string{cluster, ip, port}, func(labels []string) {
+			o.status.WithLabelValues(labels...).Set(value)
+		})
 	} else {
 		setUpstreamStatus(cluster, target, healthy)
 	}
@@ -107,7 +130,9 @@ func (o *proxyRuntimeObserver) SetUpstreamStatus(cluster, target string, healthy
 		if healthy {
 			value = 1
 		}
-		o.status.WithLabelValues(cluster, ip, port).Set(value)
+		o.statusSeries.withSeries([]string{cluster, ip, port}, func(labels []string) {
+			o.status.WithLabelValues(labels...).Set(value)
+		})
 		return
 	}
 	setUpstreamStatus(cluster, target, healthy)
@@ -115,11 +140,20 @@ func (o *proxyRuntimeObserver) SetUpstreamStatus(cluster, target string, healthy
 
 func (o *proxyRuntimeObserver) DeleteUpstreamStatus(cluster, target string) {
 	if vec := o.vector(ProxyHealth, o.health); vec != nil {
-		vec.DeleteLabelValues(cluster, target)
+		tracker := o.tracker(proxyHealthSeries, o.healthSeries)
+		if tracker != nil {
+			tracker.deleteMatching(func(labels []string) bool {
+				return len(labels) == 2 && labels[0] == cluster && labels[1] == target
+			})
+		} else {
+			vec.DeleteLabelValues(cluster, target)
+		}
 	}
 	ip, port := upstreamTargetLabels(target)
 	if o.status != nil {
-		o.status.DeleteLabelValues(cluster, ip, port)
+		o.statusSeries.deleteMatching(func(labels []string) bool {
+			return len(labels) == 3 && labels[0] == cluster && labels[1] == ip && labels[2] == port
+		})
 		return
 	}
 	if upstreamStatusSeries != nil {
@@ -136,16 +170,24 @@ func (o *proxyRuntimeObserver) DeleteUpstreamStatus(cluster, target string) {
 func (o *proxyRuntimeObserver) DeleteCluster(cluster string) {
 	labels := prometheus.Labels{"upstream": cluster}
 	if vec := o.vector(ProxyInFlight, o.inFlight); vec != nil {
-		vec.DeletePartialMatch(labels)
+		deleteProxyClusterSeries(o.tracker(proxyInFlightSeries, o.inFlightSeries), cluster, func() {
+			vec.DeletePartialMatch(labels)
+		})
 	}
 	if vec := o.counter(ProxyRejected, o.rejected); vec != nil {
-		vec.DeletePartialMatch(labels)
+		deleteProxyClusterSeries(o.tracker(proxyRejectedSeries, o.rejectedSeries), cluster, func() {
+			vec.DeletePartialMatch(labels)
+		})
 	}
 	if vec := o.counter(ProxyRetry, o.retry); vec != nil {
-		vec.DeletePartialMatch(labels)
+		deleteProxyClusterSeries(o.tracker(proxyRetrySeries, o.retrySeries), cluster, func() {
+			vec.DeletePartialMatch(labels)
+		})
 	}
 	if vec := o.vector(ProxyHealth, o.health); vec != nil {
-		vec.DeletePartialMatch(labels)
+		deleteProxyClusterSeries(o.tracker(proxyHealthSeries, o.healthSeries), cluster, func() {
+			vec.DeletePartialMatch(labels)
+		})
 	}
 	if UpstreamStatus != nil {
 		UpstreamStatus.DeletePartialMatch(prometheus.Labels{"name": cluster})
@@ -156,8 +198,30 @@ func (o *proxyRuntimeObserver) DeleteCluster(cluster string) {
 		})
 	}
 	if o.status != nil {
-		o.status.DeletePartialMatch(prometheus.Labels{"name": cluster})
+		deleteProxyClusterSeries(o.statusSeries, cluster, func() {
+			o.status.DeletePartialMatch(prometheus.Labels{"name": cluster})
+		})
 	}
+}
+
+func (o *proxyRuntimeObserver) tracker(
+	packageTracker *metricSeriesTracker,
+	injected *metricSeriesTracker,
+) *metricSeriesTracker {
+	if injected != nil {
+		return injected
+	}
+	return packageTracker
+}
+
+func deleteProxyClusterSeries(tracker *metricSeriesTracker, cluster string, fallback func()) {
+	if tracker == nil {
+		fallback()
+		return
+	}
+	tracker.deleteMatching(func(labels []string) bool {
+		return len(labels) > 0 && labels[0] == cluster
+	})
 }
 
 func (o *proxyRuntimeObserver) vector(

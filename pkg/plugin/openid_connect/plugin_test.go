@@ -2480,6 +2480,80 @@ func TestHandlerRejectsSessionClaimsThatDoNotMatchClaimSchema(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsValidStoredSessionThatNoLongerMatchesClaimSchema(t *testing.T) {
+	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"unused"}`))
+	})
+	cfg := codeFlowConfig(idp.URL)
+	cfg.ClaimSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"user": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"role": map[string]any{"const": "admin"}},
+				"required":   []string{"role"},
+			},
+		},
+		"required": []string{"user"},
+	}
+	p := newTestPlugin(t, cfg)
+	cookieWriter := httptest.NewRecorder()
+	if err := p.writeSession(cookieWriter, sessionData{
+		CreatedAt: time.Now().Unix(), UpdatedAt: time.Now().Unix(),
+		AccessToken: "access-token", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		Userinfo: `{"role":"viewer"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	request.AddCookie(cookieWriter.Result().Cookies()[0])
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("stored session bypassed the current claim schema")
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerRejectsRefreshedSessionThatDoesNotMatchClaimSchema(t *testing.T) {
+	idp := newCodeFlowIDP(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"renewed-access-token","expires_in":3600}`))
+	})
+	cfg := codeFlowConfig(idp.URL)
+	cfg.ClaimSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"user": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"role": map[string]any{"const": "admin"}},
+				"required":   []string{"role"},
+			},
+		},
+		"required": []string{"user"},
+	}
+	p := newTestPlugin(t, cfg)
+	cookieWriter := httptest.NewRecorder()
+	if err := p.writeSession(cookieWriter, sessionData{
+		CreatedAt: time.Now().Add(-time.Hour).Unix(), UpdatedAt: time.Now().Unix(),
+		AccessToken: "expired-access-token", RefreshToken: "refresh-token",
+		ExpiresAt: time.Now().Add(-time.Minute).Unix(), Userinfo: `{"role":"viewer"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	request.AddCookie(cookieWriter.Result().Cookies()[0])
+	response := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("refreshed session bypassed the current claim schema")
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestHandlerForceReauthorizeAddsConfiguredAuthorizationParameters(t *testing.T) {
 	idp := newCodeFlowIDP(t, nil)
 	cfg := codeFlowConfig(idp.URL)

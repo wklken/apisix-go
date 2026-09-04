@@ -139,6 +139,31 @@ jobs:
       - name: Run focused standalone smoke case
         run: make test-plugin-smoke PLUGIN_SMOKE_CASE='${{ matrix.case.pattern }}'
 
+  integration-full:
+    name: RC Full Plugin Integration
+    needs: resolve-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
+
+      - name: Record checked-out commit
+        run: echo "checked-out commit=$(git rev-parse HEAD)"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run full real-process plugin integration suite
+        run: make test-integration
+
   security-release-gates:
     name: RC HTTP Functional And Stability Verification
     needs:
@@ -146,6 +171,7 @@ jobs:
       - lint
       - build-and-unit
       - integration-smoke
+      - integration-full
     uses: ./.github/workflows/security-release-gates.yml
     with:
       run-operational: true

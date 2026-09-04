@@ -39,7 +39,15 @@ case "${1:-}" in
         echo "${FAKE_GO_VERSION:-go version go1.26.5 darwin/arm64}"
         ;;
     env)
-        printf 'go1.26.5\ndarwin\narm64\nv8.0\n1\n\n'
+        case "${2:-}" in
+            GOVERSION) echo go1.26.5 ;;
+            GOOS) echo darwin ;;
+            GOARCH) echo arm64 ;;
+            GOARM64) echo v8.0 ;;
+            CGO_ENABLED) echo 1 ;;
+            GOEXPERIMENT) echo rangefunc ;;
+            GOFLAGS) printf '%s\n' '-mod=readonly' ;;
+        esac
         ;;
     test)
         if [[ "${FAKE_GO_FAIL:-0}" == 1 ]]; then
@@ -238,6 +246,25 @@ run_test_8() {
     pass_test "test 8: missing corpus file aborts run without publishing"
 }
 
+run_test_9() {
+    local dir="$TMP_BASE/t9"
+    setup_env "$dir"
+    bash "$RUNNER" run baseline >/dev/null 2>&1
+    for expected in \
+        $'GOVERSION\tgo1.26.5' \
+        $'GOOS\tdarwin' \
+        $'GOARCH\tarm64' \
+        $'GOARM64\tv8.0' \
+        $'CGO_ENABLED\t1' \
+        $'GOEXPERIMENT\trangefunc' \
+        $'GOFLAGS\t-mod=readonly'; do
+        if ! grep -Fxq "$expected" "$dir/baseline.meta"; then
+            fail_test "test 9: missing exact go env metadata $expected"
+        fi
+    done
+    pass_test "test 9: every requested go env value is recorded"
+}
+
 run_test_1
 run_test_2
 run_test_3
@@ -246,5 +273,6 @@ run_test_5
 run_test_6
 run_test_7
 run_test_8
+run_test_9
 
 echo "all benchmark runner regression tests passed"

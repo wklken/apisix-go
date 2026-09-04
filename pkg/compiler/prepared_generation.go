@@ -20,24 +20,23 @@ var errPreparedGenerationCleanupFailed = errors.New("prepared generation cleanup
 // PreparedGeneration owns one fully prepared candidate or recovered
 // generation until it is discarded or transferred to a runtime owner.
 type PreparedGeneration struct {
-	publication        generation.PublicationSet
-	preparation        PreparationGeneration
-	metadata           runtime.MetadataView
-	consumers          *runtime.ConsumerBindings
-	lookup             consumerLookupView
-	tasks              *runtime.TaskRegistry
-	effective          *config.EffectiveConfig
-	catalog            *capability.SecretDeclarationCatalog
-	registry           *runtime.ResourceRegistry
-	observers          WorkerRuntimeObservers
-	clusterObservers   *clusterObserverRegistry
-	materializer       secret.Materializer
-	cleanup            *cleanupStack
-	detach             func()
-	bindingOps         effectiveBindingOps
-	trustedClientCAPEM []byte
-	httpSnapshot       *HTTPSnapshot
-	streamSnapshot     *StreamSnapshot
+	publication      generation.PublicationSet
+	preparation      PreparationGeneration
+	metadata         runtime.MetadataView
+	consumers        *runtime.ConsumerBindings
+	lookup           consumerLookupView
+	tasks            *runtime.TaskRegistry
+	effective        *config.EffectiveConfig
+	catalog          *capability.SecretDeclarationCatalog
+	registry         *runtime.ResourceRegistry
+	observers        WorkerRuntimeObservers
+	clusterObservers *clusterObserverRegistry
+	materializer     secret.Materializer
+	cleanup          *cleanupStack
+	detach           func()
+	bindingOps       effectiveBindingOps
+	httpSnapshot     *HTTPSnapshot
+	streamSnapshot   *StreamSnapshot
 
 	materializeMu    sync.Mutex
 	bindingOpsMu     sync.Mutex
@@ -278,7 +277,6 @@ func (prepared *PreparedGeneration) clearTerminalAuthorities() func() {
 	prepared.observers = WorkerRuntimeObservers{}
 	prepared.clusterObservers = nil
 	prepared.materializer = nil
-	prepared.trustedClientCAPEM = nil
 	prepared.cleanup = nil
 	prepared.bindingOpsMu.Lock()
 	prepared.bindingOps = effectiveBindingOps{}

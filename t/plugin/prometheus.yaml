@@ -296,6 +296,7 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_latency_bucket\{[^\n]*service="3"[^\n]*type="apisix"[^\n]*le="500"[^\n]*\} 3'}}
 
   - name: node-info-from-prometheus-source
+    target_plugin_exempt_reason: node-info is asserted through the public metrics route without executing the target plugin route
     config:
       routes:
         - id: prometheus-node-info-metrics
@@ -519,6 +520,7 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*dummy=""[^\n]*route="prometheus-missing-label"[^\n]*\} 1'}}
 
   - name: node-info-from-prometheus4-source
+    target_plugin_exempt_reason: node-info is asserted through the public metrics route without executing the target plugin route
     config:
       routes:
         - id: prometheus4-node-info-metrics

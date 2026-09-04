@@ -38,6 +38,7 @@ cases:
         upstream: *fixture
         output: *done
       - name: missing-sasl-password
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: kafka-proxy-missing-password
@@ -50,6 +51,7 @@ cases:
           logs:
             matches: 'validate plugin kafka-proxy config:'
       - name: numeric-sasl-password
+        target_plugin_exempt_reason: invalid route configuration is rejected before a request can execute the target plugin
         config:
           routes:
             - id: kafka-proxy-numeric-password

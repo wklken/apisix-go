@@ -636,7 +636,7 @@ func TestNewWorkerCompilerFactoryIgnoresUnreadableTrustedClientCAWhenTLSDisabled
 	}
 }
 
-func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableEnabledTLSClientCA(t *testing.T) {
+func TestNewWorkerCompilerFactoryDoesNotReadOutboundTrustedCA(t *testing.T) {
 	compiler, err := New()
 	if err != nil {
 		t.Fatal(err)
@@ -651,8 +651,11 @@ func TestNewWorkerCompilerFactoryFailsClosedOnUnreadableEnabledTLSClientCA(t *te
 		&workerTestMaterializer{digest: compiler.schemas.catalog.Digest()},
 		workerTestRuntimeObservers(),
 	)
-	if factory != nil || err == nil || !strings.Contains(err.Error(), "read trusted client CA") {
-		t.Fatalf("enabled TLS constructor = %#v/%v, want unreadable trusted CA failure", factory, err)
+	if err != nil || factory == nil {
+		t.Fatalf("enabled TLS constructor = %#v/%v, want outbound trust ignored", factory, err)
+	}
+	if err := factory.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

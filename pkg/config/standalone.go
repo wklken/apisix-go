@@ -700,9 +700,15 @@ func readStandaloneSnapshot(
 func validateStandaloneSections(sections map[string]json.RawMessage) error {
 	unknown := make([]string, 0)
 	for section := range sections {
-		if !slices.Contains(standaloneBuckets, section) {
-			unknown = append(unknown, section)
+		if slices.Contains(standaloneBuckets, section) ||
+			section == "X-Last-Modified" || section == "X-Digest" {
+			continue
 		}
+		bucket, hasVersion := strings.CutSuffix(section, "_conf_version")
+		if hasVersion && slices.Contains(standaloneBuckets, bucket) {
+			continue
+		}
+		unknown = append(unknown, section)
 	}
 	if len(unknown) == 0 {
 		return nil

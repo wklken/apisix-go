@@ -53,6 +53,46 @@ func TestProxyRuntimeObserverRejectsUnknownRetryResult(t *testing.T) {
 	}
 }
 
+func TestProxyRuntimeObserverBoundsProviderControlledLabels(t *testing.T) {
+	observer := newProxyRuntimeObserver(prometheus.NewRegistry())
+	observer.inFlightSeries = newMetricSeriesTracker(1, 1, 0, nil, observer.inFlight.DeleteLabelValues)
+	observer.rejectedSeries = newMetricSeriesTracker(1, 1, 0, nil, observer.rejected.DeleteLabelValues)
+	observer.retrySeries = newMetricSeriesTracker(1, 2, 0, nil, observer.retry.DeleteLabelValues)
+	observer.healthSeries = newMetricSeriesTracker(1, 2, 0, nil, observer.health.DeleteLabelValues)
+
+	observer.SetInFlight("orders", 1)
+	observer.SetInFlight("payments", 1)
+	observer.ObserveRejected("orders")
+	observer.ObserveRejected("payments")
+	observer.ObserveRetry("orders", "error")
+	observer.ObserveRetry("payments", "error")
+	observer.SetHealth("orders", "127.0.0.1:8080", true)
+	observer.SetHealth("payments", "127.0.0.1:8081", true)
+
+	for name, tracker := range map[string]*metricSeriesTracker{
+		"in-flight": observer.inFlightSeries,
+		"rejected":  observer.rejectedSeries,
+		"retry":     observer.retrySeries,
+		"health":    observer.healthSeries,
+	} {
+		if got := metricSeriesEntryCount(tracker); got != 1 {
+			t.Fatalf("%s admitted series = %d, want 1", name, got)
+		}
+	}
+	if got := gaugeVecValue(t, observer.inFlight.WithLabelValues(overflowLabel)); got != 1 {
+		t.Fatalf("in-flight overflow = %v, want 1", got)
+	}
+	if got := counterVecValue(t, observer.rejected.WithLabelValues(overflowLabel)); got != 1 {
+		t.Fatalf("rejected overflow = %v, want 1", got)
+	}
+	if got := counterVecValue(t, observer.retry.WithLabelValues(overflowLabel, overflowLabel)); got != 1 {
+		t.Fatalf("retry overflow = %v, want 1", got)
+	}
+	if got := gaugeVecValue(t, observer.health.WithLabelValues(overflowLabel, overflowLabel)); got != 1 {
+		t.Fatalf("health overflow = %v, want 1", got)
+	}
+}
+
 func TestNewProxyRuntimeObserverReturnsNonNil(t *testing.T) {
 	observer := NewProxyRuntimeObserver()
 	if observer == nil {

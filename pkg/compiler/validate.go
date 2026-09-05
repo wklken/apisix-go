@@ -164,7 +164,7 @@ func addDocumentEdges(
 	issues *[]resourceIssue,
 	issuesByDomain map[generation.Domain][]resourceIssue,
 ) {
-	walkNonPluginDocument(resource.document, resourceKindHasPlugins(resource.key.Kind), func(value string) {
+	walkNonPluginDocument(resource.document, resource.key.Kind, func(value string) {
 		if !strings.HasPrefix(value, "$secret://") {
 			return
 		}
@@ -187,6 +187,9 @@ func addDocumentEdges(
 		addUpstreamTLSReference(graph, resource.key, object, nil, issues)
 	}
 	for name, config := range resource.view.plugins {
+		if pluginConfigDisabled(config) {
+			continue
+		}
 		domains := pluginDependencyDomains(name)
 		if len(domains) == 0 {
 			continue
@@ -237,11 +240,7 @@ func addDocumentEdges(
 	}
 }
 
-func walkNonPluginDocument(document any, pluginsAreRuntimeMap bool, visitString func(string)) {
-	if !pluginsAreRuntimeMap {
-		walkDocument(document, visitString)
-		return
-	}
+func walkNonPluginDocument(document any, kind string, visitString func(string)) {
 	object, ok := document.(map[string]any)
 	if !ok {
 		walkDocument(document, visitString)
@@ -249,9 +248,16 @@ func walkNonPluginDocument(document any, pluginsAreRuntimeMap bool, visitString 
 	}
 	keys := make([]string, 0, len(object))
 	for key := range object {
-		if key != "plugins" {
-			keys = append(keys, key)
+		if key == "plugins" && resourceKindHasPlugins(kind) {
+			continue
 		}
+		// Resource metadata is literal text, not a materialized secret field.
+		// Plugin metadata and secret backend documents have their own schemas.
+		if kind != "plugin_metadata" && kind != "secrets" &&
+			(key == "desc" || key == "name" || key == "labels") {
+			continue
+		}
+		keys = append(keys, key)
 	}
 	slices.Sort(keys)
 	for _, key := range keys {

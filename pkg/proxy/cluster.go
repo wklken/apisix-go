@@ -246,6 +246,18 @@ func newOwnedClusterWithTransport(
 		observer.ObserveRetry(config.Name, result)
 	}
 	transport := NewProgressTimeoutTransport(base, config.SendTimeout, config.ReadTimeout)
+	if _, ok := base.(*http.Transport); ok && config.SendTimeout > 0 {
+		// HTTP/1 requests use the timeout wrapper's private pool; health probes retain
+		// the original pool. The cluster owns and closes both.
+		closeRequests := transport.(*progressTimeoutTransport).CloseIdleConnections
+		closeProbes := closeIdle
+		closeIdle = func() {
+			closeRequests()
+			if closeProbes != nil {
+				closeProbes()
+			}
+		}
+	}
 	transport = NewRetryTransportWithObserver(transport, observeRetry)
 	if maxInFlight > 0 {
 		transport = newAdmissionTransport(transport, maxInFlight, config.Name, observer)

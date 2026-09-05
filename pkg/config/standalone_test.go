@@ -157,6 +157,7 @@ func TestStandaloneEncryptionServiceIsRequiredAtEntryPoints(t *testing.T) {
 		"routes",
 		json.RawMessage(`{"id":"r1"}`),
 		testutil.UnconfiguredDataEncryptionService(),
+		1,
 	); !errors.Is(err, data_encryption.ErrDeclarationCatalogUnavailable) {
 		t.Fatalf("normalizeStandaloneResource() error = %v, want catalog error", err)
 	}
@@ -263,11 +264,11 @@ func TestDesiredBatchFromStandaloneEncryptedRetryBindsCursorToTranslatedState(t 
 		"plugins":{"key-auth":{"key":"plaintext-secret"}}
 	}`)
 	encryption := testStandaloneDataEncryption(t, true, []string{key})
-	firstID, firstValue, err := normalizeStandaloneResource("routes", raw, encryption)
+	firstID, firstValue, err := normalizeStandaloneResource("routes", raw, encryption, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondID, secondValue, err := normalizeStandaloneResource("routes", raw, encryption)
+	secondID, secondValue, err := normalizeStandaloneResource("routes", raw, encryption, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +548,7 @@ func TestStandaloneWatcherParseFailureDoesNotCallApplier(t *testing.T) {
 		content string
 	}{
 		{name: "missing end marker", content: "routes:\n  - id: r1\n"},
-		{name: "missing id", content: "routes:\n  - uri: /one\n#END\n"},
+		{name: "invalid id", content: "routes:\n  - id: []\n    uri: /one\n#END\n"},
 		{name: "unknown section", content: "routes:\n  - id: r1\nunknown:\n  - id: x\n#END\n"},
 	}
 	for _, test := range tests {
@@ -583,7 +584,8 @@ func TestStandaloneWatcherDoesNotRetainInMemoryLastGoodSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeStandaloneConfig(t, path, `routes:
-  - uri: /invalid-a
+  - id: []
+    uri: /invalid-a
   - id: b
     uri: /b
 #END
@@ -1076,7 +1078,7 @@ func TestStandaloneSnapshotDecodeFailures(t *testing.T) {
 		{name: "unknown section", provider: "json", content: `{"unknown":[]}`, want: "unknown root section"},
 		{name: "null bucket", provider: "json", content: `{"routes":null}`, want: "expected array"},
 		{name: "object bucket", provider: "json", content: `{"routes":{}}`, want: "decode standalone routes"},
-		{name: "missing id", provider: "json", content: `{"routes":[{"uri":"/"}]}`, want: "missing id"},
+		{name: "invalid id", provider: "json", content: `{"routes":[{"id":[],"uri":"/"}]}`, want: "id"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

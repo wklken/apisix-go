@@ -452,10 +452,11 @@ func canonicalEtcdResourceValue(bucket, id string, modifiedIndex int64, value []
 	}
 	var document map[string]json.RawMessage
 	if err := json.Unmarshal(value, &document); err != nil {
-		return nil, fmt.Errorf("decode etcd consumer %q: %w", id, err)
+		// Invalid resources belong to compiler disposition, not batch translation.
+		return cloneEtcdValue(value), nil
 	}
 	if document == nil {
-		return nil, fmt.Errorf("decode etcd consumer %q: object is required", id)
+		return cloneEtcdValue(value), nil
 	}
 	canonicalID, err := json.Marshal(id)
 	if err != nil {

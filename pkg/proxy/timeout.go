@@ -2,8 +2,11 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -208,6 +211,71 @@ func wrapProgressTimeoutBody(
 	}
 }
 
+// sendTimeoutConn bounds actual HTTP/1 socket writes, including the final
+// buffered flush. The connection is activated only after acquisition so dialing
+// and the handshake retain their own timeouts. It belongs to the send transport's
+// private pool, not to other users of the supplied base transport.
+type sendTimeoutConn struct {
+	net.Conn
+	timeout time.Duration
+	active  atomic.Bool
+}
+
+func (conn *sendTimeoutConn) Write(payload []byte) (int, error) {
+	if !conn.active.Load() {
+		return conn.Conn.Write(payload)
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(conn.timeout)); err != nil {
+		return 0, err
+	}
+	n, err := conn.Conn.Write(payload)
+	if clearErr := conn.SetWriteDeadline(time.Time{}); err == nil {
+		err = clearErr
+	}
+	return n, err
+}
+
+func cloneSendTimeoutTransport(base *http.Transport, timeout time.Duration) *http.Transport {
+	transport := base.Clone()
+	// Clone initializes the original's implicit HTTP/2 support. Installing our
+	// dial wrapper must not make the clone downgrade that protocol selection.
+	if transport.TLSNextProto == nil && base.TLSNextProto["h2"] != nil {
+		transport.ForceAttemptHTTP2 = true
+	}
+	dial := transport.DialContext
+	if dial == nil {
+		legacyDial := transport.Dial //nolint:staticcheck // Preserve an explicitly supplied legacy dialer.
+		if legacyDial != nil {
+			dial = func(_ context.Context, network, address string) (net.Conn, error) {
+				return legacyDial(network, address)
+			}
+		} else {
+			dial = (&net.Dialer{}).DialContext
+		}
+	}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &sendTimeoutConn{Conn: conn, timeout: timeout}, nil
+	}
+	return transport
+}
+
+func activateSendTimeout(info httptrace.GotConnInfo) {
+	conn := info.Conn
+	if secured, ok := conn.(*tls.Conn); ok {
+		if secured.ConnectionState().NegotiatedProtocol == "h2" {
+			return
+		}
+		conn = secured.NetConn()
+	}
+	if timed, ok := conn.(*sendTimeoutConn); ok {
+		timed.active.Store(true)
+	}
+}
+
 type progressTimeoutTransport struct {
 	base http.RoundTripper
 	send time.Duration
@@ -308,10 +376,14 @@ func wrapCancelOnCloseBody(body io.ReadCloser, cancel context.CancelFunc) io.Rea
 // response-body reads that make no progress for the configured durations
 // cancel the request. Zero or negative durations leave the corresponding side
 // unbounded. When neither side is configured the base transport is returned
-// unchanged.
+// unchanged. Standard HTTP transports receive a private HTTP/1 connection pool whose
+// HTTP/1 header and buffered writes are also bounded by the send timeout.
 func NewProgressTimeoutTransport(base http.RoundTripper, send, read time.Duration) http.RoundTripper {
 	if send <= 0 && read <= 0 {
 		return base
+	}
+	if transport, ok := base.(*http.Transport); ok && send > 0 {
+		base = cloneSendTimeoutTransport(transport, send)
 	}
 	return &progressTimeoutTransport{base: base, send: send, read: read}
 }
@@ -319,6 +391,11 @@ func NewProgressTimeoutTransport(base http.RoundTripper, send, read time.Duratio
 func (transport *progressTimeoutTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithCancel(request.Context())
 	request = request.WithContext(ctx)
+	if transport.send > 0 {
+		request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+			GotConn: activateSendTimeout,
+		}))
+	}
 
 	var sendBody *progressTimeoutBody
 	if request.Body != nil && request.Body != http.NoBody && transport.send > 0 {
@@ -333,6 +410,9 @@ func (transport *progressTimeoutTransport) RoundTrip(request *http.Request) (*ht
 	}
 	if err != nil {
 		cancel()
+		if sendBody != nil && sendBody.timedOut.Load() {
+			return response, context.DeadlineExceeded
+		}
 		return response, err
 	}
 	if response.Body == nil || response.Body == http.NoBody {

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/wklken/apisix-go/pkg/data_encryption"
@@ -56,8 +57,9 @@ type StandaloneFileWatcher struct {
 	applier        generation.DesiredApplier
 	dataEncryption data_encryption.Service
 
-	reloadMu sync.Mutex
-	mu       sync.Mutex
+	lastModTime time.Time // protected by reloadMu; advanced only after acknowledgement
+	reloadMu    sync.Mutex
+	mu          sync.Mutex
 
 	acknowledgedCursor    generation.ProviderCursor
 	acknowledgedRevisions generation.RevisionSet
@@ -208,7 +210,7 @@ func NewStandaloneFileWatcher(
 }
 
 func (w *StandaloneFileWatcher) Reload() error {
-	return w.reconcile()
+	return w.reconcile(false)
 }
 
 // Start registers the standalone file watcher. It is safe to call more than
@@ -247,12 +249,12 @@ func (w *StandaloneFileWatcher) Start() error {
 // StartAndReconcile registers the watcher before reading the file so changes
 // cannot land in a registration gap. The initial reconciliation must succeed
 // before the data plane starts serving traffic; later watcher failures are
-// logged and retried by the next filesystem event.
+// logged and retried by a filesystem event or the periodic file check.
 func (w *StandaloneFileWatcher) StartAndReconcile() error {
 	if err := w.Start(); err != nil {
 		return err
 	}
-	return w.reconcile()
+	return w.reconcile(false)
 }
 
 // Stop cancels and joins the watcher and every in-flight Apply. It does not
@@ -299,11 +301,19 @@ func (w *StandaloneFileWatcher) watchLoop(watcher *fsnotify.Watcher) {
 		w.lifecycleMu.Unlock()
 	}()
 
+	// Like APISIX, stat the configured path periodically. Directory watches
+	// alone cannot reliably observe a projected volume's symlink target swap.
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	configuredBase := filepath.Base(w.path)
 	for {
 		select {
 		case <-w.ctx.Done():
 			return
+		case <-ticker.C:
+			if err := w.reconcile(true); err != nil {
+				logger.Errorf("reload standalone config %q failed: %s", w.path, err)
+			}
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return
@@ -312,7 +322,7 @@ func (w *StandaloneFileWatcher) watchLoop(watcher *fsnotify.Watcher) {
 				!event.Has(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) {
 				continue
 			}
-			if err := w.reconcile(); err != nil {
+			if err := w.reconcile(false); err != nil {
 				logger.Errorf("reload standalone config %q failed: %s", w.path, err)
 			}
 		case err, ok := <-watcher.Errors:
@@ -324,22 +334,25 @@ func (w *StandaloneFileWatcher) watchLoop(watcher *fsnotify.Watcher) {
 	}
 }
 
-func (w *StandaloneFileWatcher) reconcile() error {
+func (w *StandaloneFileWatcher) reconcile(onlyIfChanged bool) error {
 	w.reloadMu.Lock()
 	defer w.reloadMu.Unlock()
 	if err := w.ctx.Err(); err != nil {
 		return err
 	}
 
-	snapshot, err := readStandaloneSnapshot(w.path, w.provider, w.dataEncryption)
-	if err != nil {
-		metrics.RecordConfigApplyAttemptFailure("standalone", "translate")
-		return err
-	}
 	fileInfo, err := os.Stat(w.path)
 	if err != nil {
 		metrics.RecordConfigApplyAttemptFailure("standalone", "translate")
 		return fmt.Errorf("stat standalone config %q: %w", w.path, err)
+	}
+	if onlyIfChanged && fileInfo.ModTime().Equal(w.lastModTime) {
+		return nil
+	}
+	snapshot, err := readStandaloneSnapshot(w.path, w.provider, w.dataEncryption)
+	if err != nil {
+		metrics.RecordConfigApplyAttemptFailure("standalone", "translate")
+		return err
 	}
 	batch := desiredBatchFromStandaloneWithSource(
 		snapshot,
@@ -363,6 +376,7 @@ func (w *StandaloneFileWatcher) reconcile() error {
 		}
 		return err
 	}
+	w.lastModTime = fileInfo.ModTime()
 	return nil
 }
 
@@ -680,8 +694,8 @@ func readStandaloneSnapshot(
 		if err := json.Unmarshal(raw, &resources); err != nil {
 			return nil, fmt.Errorf("decode standalone %s: %w", bucket, err)
 		}
-		for _, resource := range resources {
-			id, value, normalizeErr := normalizeStandaloneResource(bucket, resource, encryption)
+		for index, resource := range resources {
+			id, value, normalizeErr := normalizeStandaloneResource(bucket, resource, encryption, index+1)
 			if normalizeErr != nil {
 				return nil, fmt.Errorf("decode standalone %s resource: %w", bucket, normalizeErr)
 			}
@@ -721,6 +735,7 @@ func normalizeStandaloneResource(
 	bucket string,
 	raw json.RawMessage,
 	encryption data_encryption.Service,
+	arrayIndex int,
 ) (string, []byte, error) {
 	if !encryption.Configured() {
 		return "", nil, data_encryption.ErrDeclarationCatalogUnavailable
@@ -747,7 +762,8 @@ func normalizeStandaloneResource(
 		}
 	}
 	if idKey == "" {
-		return "", nil, fmt.Errorf("missing id")
+		idKey = "id"
+		idRaw = json.RawMessage(fmt.Sprintf(`"arr_%d"`, arrayIndex))
 	}
 	id, err := standaloneResourceID(idRaw)
 	if err != nil {

@@ -1544,11 +1544,11 @@ func TestStreamingExecutorDefersCompressionDecisionUntilFinalStatus(t *testing.T
 	}
 }
 
-func TestStreamingExecutorRejectsUnacceptableEncodingWithBodyless406(t *testing.T) {
+func TestStreamingExecutorPreservesResponseWhenEncodingUnavailable(t *testing.T) {
 	plugin := &plan16CompressionPlugin{coding: compression.Gzip, rank: 1}
 	plugin.Name = "gzip"
 	executor, err := NewStreamingResponseExecutor([]Binding{
-		resolvedPlan16Binding(t, "gzip", plugin, "gzip-406"),
+		resolvedPlan16Binding(t, "gzip", plugin, "gzip-passthrough"),
 	})
 	if err != nil {
 		t.Fatalf("NewStreamingResponseExecutor() error = %v", err)
@@ -1563,12 +1563,12 @@ func TestStreamingExecutorRejectsUnacceptableEncodingWithBodyless406(t *testing.
 				w.Header().Set("Content-MD5", "stale")
 				_, _ = w.Write([]byte("payload"))
 			})).ServeHTTP(response, request)
-			if response.Code != http.StatusNotAcceptable || response.Body.Len() != 0 {
-				t.Fatalf("response = %d/%q, want bodyless 406", response.Code, response.Body.String())
+			if response.Code != http.StatusOK || response.Body.String() != "payload" {
+				t.Fatalf("response = %d/%q, want 200/payload", response.Code, response.Body.String())
 			}
 			if response.Header().Get("Vary") != "" ||
-				response.Header().Get("Content-Length") != "" || response.Header().Get("Content-MD5") != "" {
-				t.Fatalf("response headers = %#v, want no Vary or body-derived headers", response.Header())
+				response.Header().Get("Content-Length") != "7" || response.Header().Get("Content-MD5") != "stale" {
+				t.Fatalf("response headers = %#v, want no Vary and preserved representation headers", response.Header())
 			}
 		})
 	}
@@ -1669,7 +1669,7 @@ func TestPlan16CompressionUsesSharedStateAndOneFrozenWinner(t *testing.T) {
 		Header: http.Header{"Content-Type": {"text/plain"}},
 	}
 	first, second := state.Decide(meta), state.Decide(meta)
-	if first != second || first.Coding != compression.Brotli || first.NotAcceptable {
+	if first != second || first.Coding != compression.Brotli {
 		t.Fatalf("compression decisions = %#v/%#v, want one br winner", first, second)
 	}
 }

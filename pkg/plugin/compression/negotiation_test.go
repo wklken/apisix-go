@@ -69,7 +69,6 @@ func TestNegotiationMatrix(t *testing.T) {
 		acceptEncoding []string
 		offers         []Offer
 		wantCoding     Coding
-		wantNA         bool
 		wantVary       bool
 	}{
 		{
@@ -102,7 +101,7 @@ func TestNegotiationMatrix(t *testing.T) {
 			name:           "invalid explicit q remains unavailable",
 			acceptEncoding: []string{"gzip;q=1.0000, *;q=0"},
 			offers:         allOffers(),
-			wantNA:         true,
+			wantCoding:     Identity,
 		},
 		{
 			name:           "invalid duplicate does not erase valid q",
@@ -135,7 +134,7 @@ func TestNegotiationMatrix(t *testing.T) {
 			name:           "all representations excluded",
 			acceptEncoding: []string{"gzip;q=0, deflate;q=0, br;q=0, identity;q=0"},
 			offers:         allOffers(),
-			wantNA:         true,
+			wantCoding:     Identity,
 		},
 	}
 
@@ -151,10 +150,7 @@ func TestNegotiationMatrix(t *testing.T) {
 				Status: http.StatusOK,
 				Header: http.Header{"Content-Type": []string{"text/plain"}},
 			})
-			if decision.NotAcceptable != tt.wantNA {
-				t.Fatalf("NotAcceptable = %t, want %t (%#v)", decision.NotAcceptable, tt.wantNA, decision)
-			}
-			if !tt.wantNA && decision.Coding != tt.wantCoding {
+			if decision.Coding != tt.wantCoding {
 				t.Fatalf("Coding = %q, want %q (%#v)", decision.Coding, tt.wantCoding, decision)
 			}
 			if decision.Vary != tt.wantVary {
@@ -221,8 +217,8 @@ func TestNegotiationBodylessStatusesDoNotParticipate(t *testing.T) {
 				},
 			})
 			decision := state.Decide(ResponseMeta{Method: http.MethodGet, Status: tt.status, Header: make(http.Header)})
-			if decision.Coding != Identity || decision.NotAcceptable || decision.Vary != tt.wantVary {
-				t.Fatalf("decision = %#v, want identity/notAcceptable=false/vary=%t", decision, tt.wantVary)
+			if decision.Coding != Identity || decision.Vary != tt.wantVary {
+				t.Fatalf("decision = %#v, want identity/vary=%t", decision, tt.wantVary)
 			}
 		})
 	}
@@ -243,7 +239,7 @@ func TestNegotiationPreservesAcceptedExistingCoding(t *testing.T) {
 		Status: http.StatusOK,
 		Header: http.Header{"Content-Encoding": []string{"br"}},
 	})
-	if decision.Coding != Brotli || decision.NotAcceptable || decision.Vary {
+	if decision.Coding != Brotli || decision.Vary {
 		t.Fatalf("decision = %#v, want br pass-through without plugin-added Vary", decision)
 	}
 }

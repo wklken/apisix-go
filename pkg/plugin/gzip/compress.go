@@ -100,19 +100,18 @@ func releaseCompressionWriter(enc encoding, level int, writer resettableWriteClo
 
 type maybeCompressResponseWriter struct {
 	http.ResponseWriter
-	w              io.Writer
-	compressor     resettableWriteCloser
-	encoding       encoding
-	contentTypes   map[string]struct{}
-	level          int
-	wroteHeader    bool
-	wildcardType   bool
-	minLength      int
-	requestMethod  string
-	status         int
-	state          *compression.State
-	hijacked       bool
-	bodySuppressed bool
+	w             io.Writer
+	compressor    resettableWriteCloser
+	encoding      encoding
+	contentTypes  map[string]struct{}
+	level         int
+	wroteHeader   bool
+	wildcardType  bool
+	minLength     int
+	requestMethod string
+	status        int
+	state         *compression.State
+	hijacked      bool
 }
 
 var (
@@ -152,15 +151,6 @@ func (w *maybeCompressResponseWriter) WriteHeader(code int) {
 	}
 	if decision.Vary {
 		base.AppendVaryToken(w.Header(), "Accept-Encoding")
-	}
-	if decision.NotAcceptable {
-		code = http.StatusNotAcceptable
-		w.status = code
-		w.bodySuppressed = true
-		base.InvalidateBodyDerivedHeaders(w.Header())
-		w.w = w.ResponseWriter
-		w.ResponseWriter.WriteHeader(code)
-		return
 	}
 
 	// Existing representations are never encoded again.  304 keeps upstream
@@ -219,9 +209,6 @@ func (w *maybeCompressResponseWriter) Write(p []byte) (int, error) {
 			return len(p), nil
 		}
 		return 0, http.ErrBodyNotAllowed
-	}
-	if w.bodySuppressed {
-		return len(p), nil
 	}
 	return w.w.Write(p)
 }

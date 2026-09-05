@@ -834,10 +834,11 @@ func TestBrotliNegotiationVaryStatusAndHead(t *testing.T) {
 			wantBody: "body",
 		},
 		{
-			name:           "not acceptable",
+			name:           "all codings excluded",
 			method:         http.MethodGet,
 			acceptEncoding: "*;q=0",
-			status:         http.StatusNotAcceptable,
+			status:         http.StatusOK,
+			wantBody:       "body",
 		},
 		{
 			name:           "head advertises",
@@ -901,9 +902,6 @@ func TestBrotliNegotiationVaryStatusAndHead(t *testing.T) {
 					res.Header().Get("Content-Length"),
 				)
 			}
-			if tt.status == http.StatusNotAcceptable && res.Body.Len() != 0 {
-				t.Fatalf("406 body length = %d, want empty", res.Body.Len())
-			}
 			if tt.wantBody != "" && res.Body.String() != tt.wantBody &&
 				tt.status == http.StatusOK && tt.method != http.MethodHead {
 				if got := decodeBrotli(t, res.Body.Bytes()); got != tt.wantBody {
@@ -914,33 +912,25 @@ func TestBrotliNegotiationVaryStatusAndHead(t *testing.T) {
 	}
 }
 
-func TestBrotliNotAcceptableInvalidatesBodyDerivedHeaders(t *testing.T) {
+func TestBrotliUnselectedCompressionPreservesBodyAndHeaders(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept-Encoding", "*;q=0")
 	res := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		for _, field := range []string{
-			"Content-Length", "Content-Range", "Content-MD5",
-			"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
-		} {
-			w.Header()[field] = []string{"stale"}
-			w.Header()[strings.ToLower(field)] = []string{"lowercase stale"}
-		}
 		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "8")
+		w.Header().Set("ETag", `"original"`)
+		w.Header().Set("Content-Digest", "original-digest")
+		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte("upstream"))
 	})).ServeHTTP(res, req)
-	if res.Code != http.StatusNotAcceptable || res.Body.Len() != 0 {
-		t.Fatalf("response = %d/%d bytes, want empty 406", res.Code, res.Body.Len())
+	if res.Code != http.StatusCreated || res.Body.String() != "upstream" {
+		t.Fatalf("response = %d/%q, want 201/upstream", res.Code, res.Body.String())
 	}
-	for actual := range res.Header() {
-		for _, field := range []string{
-			"Content-Length", "Content-Range", "Content-MD5",
-			"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
-		} {
-			if strings.EqualFold(actual, field) {
-				t.Errorf("body-derived header %q remains on 406", actual)
-			}
+	for name, want := range map[string]string{"Content-Length": "8", "ETag": `"original"`, "Content-Digest": "original-digest"} {
+		if got := res.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
 }

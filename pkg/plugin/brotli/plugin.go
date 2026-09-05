@@ -365,10 +365,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if decision.Vary {
 			base.AppendVaryToken(recorder.Header(), "Accept-Encoding")
 		}
-		if decision.NotAcceptable {
-			recorder.ReplaceBody(nil)
-			recorder.SetStatusCode(http.StatusNotAcceptable)
-		} else if decision.Coding == compression.Brotli && p.shouldCompressResponse(recorder) {
+		if decision.Coding == compression.Brotli && p.shouldCompressResponse(recorder) {
 			if err := p.compressResponse(recorder); err != nil {
 				logger.Errorf("brotli compress response fail: %s", err)
 			}
@@ -493,7 +490,7 @@ func (w *boundedResponseWriter) commit(chunk []byte) {
 	}
 	identityForbiddenBrotliFallback := decision.Coding == compression.Brotli &&
 		!decision.IdentityAllowed && headerValue(w.header, "Content-Encoding") == ""
-	if decision.NotAcceptable || identityForbiddenBrotliFallback {
+	if identityForbiddenBrotliFallback {
 		w.bodySuppressed = true
 		base.InvalidateBodyDerivedHeaders(w.header)
 		w.replaceBaseHeaders()

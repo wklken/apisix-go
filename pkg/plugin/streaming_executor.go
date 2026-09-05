@@ -943,9 +943,6 @@ func (f *streamingFinish) applyCompression(
 	if decision.Vary {
 		base.AppendVaryToken(w.Header(), "Accept-Encoding")
 	}
-	if decision.NotAcceptable {
-		return newNotAcceptableResponseWriter(w), nil
-	}
 	if decision.Coding == compression.Identity {
 		return w, nil
 	}
@@ -980,52 +977,6 @@ func (f *streamingFinish) applyCompression(
 		return guardStreamingOwnerWriter(entry.factory, entry.phase, wrapped), nil
 	}
 	return w, nil
-}
-
-func newNotAcceptableResponseWriter(w http.ResponseWriter) http.ResponseWriter {
-	var committed atomic.Bool
-	reject := func() {
-		if !committed.CompareAndSwap(false, true) {
-			return
-		}
-		base.InvalidateBodyDerivedHeaders(w.Header())
-		w.WriteHeader(http.StatusNotAcceptable)
-	}
-	return httpsnoop.Wrap(w, httpsnoop.Hooks{
-		WriteHeader: func(httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
-			return func(int) { reject() }
-		},
-		Write: func(httpsnoop.WriteFunc) httpsnoop.WriteFunc {
-			return func(body []byte) (int, error) {
-				reject()
-				return len(body), nil
-			}
-		},
-		WriteString: func(httpsnoop.WriteStringFunc) httpsnoop.WriteStringFunc {
-			return func(value string) (int, error) {
-				reject()
-				return len(value), nil
-			}
-		},
-		ReadFrom: func(httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
-			return func(reader io.Reader) (int64, error) {
-				reject()
-				return io.Copy(io.Discard, reader)
-			}
-		},
-		Flush: func(httpsnoop.FlushFunc) httpsnoop.FlushFunc {
-			return func() {
-				reject()
-				_ = http.NewResponseController(w).Flush()
-			}
-		},
-		FlushError: func(httpsnoop.FlushErrorFunc) httpsnoop.FlushErrorFunc {
-			return func() error {
-				reject()
-				return http.NewResponseController(w).Flush()
-			}
-		},
-	})
 }
 
 // CommitResponse composes Plan 16 header/body adapters after bounded Plan 15

@@ -173,6 +173,7 @@ func (s *responseExecution) selectRequestResponseMode(r *http.Request) error {
 	}
 	selected := base.RequestResponseMode(0)
 	dualCount := 0
+	allDualMode := responseBindingsAreDualMode(s.plan)
 	for _, binding := range s.plan {
 		if !binding.Descriptor.resolved {
 			return fmt.Errorf("factory %q has no resolved descriptor", binding.factoryKey)
@@ -182,6 +183,13 @@ func (s *responseExecution) selectRequestResponseMode(r *http.Request) error {
 			Plugin: binding.Plugin, Descriptor: binding.Descriptor,
 			Scope: binding.Scope, Provenance: binding.Provenance,
 		}, capability) {
+			continue
+		}
+		// A selectable header adapter can run at the final buffered commit.
+		// It must not force a cache/store owner to switch the whole response
+		// into streaming mode.
+		if !allDualMode && binding.Descriptor.HasResponseOwner(ResponseOwnerStreamingHeaderFilter) &&
+			!capability.StreamingBodyFilter && compatibleBoundedAdapter(Binding{Descriptor: binding.Descriptor}, capability) {
 			continue
 		}
 		selector := binding.Plugin.(base.RequestResponseModeSelector)

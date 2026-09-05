@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -50,7 +52,7 @@ func WithRetriesTimeout(
 	timeout time.Duration,
 	next RetryTarget,
 ) *http.Request {
-	if request == nil || count <= 0 || next == nil || !retryRequestAllowed(request) {
+	if request == nil || count <= 0 || next == nil || !retryRequestReplayable(request) {
 		return request
 	}
 	state := &retryState{count: count, next: next}
@@ -60,24 +62,46 @@ func WithRetriesTimeout(
 	return request.WithContext(context.WithValue(request.Context(), retryContextKey{}, state))
 }
 
-// retryRequestAllowed reports whether a request may be retried after a
-// transport error. Safe methods retry when the body can be replayed or there
-// is no body. POST and PATCH additionally require an idempotency key because
-// replaying them without one can duplicate side effects.
-func retryRequestAllowed(request *http.Request) bool {
-	if request == nil {
-		return false
+// retryRequestReplayable only checks whether another attempt can obtain the
+// body. Non-idempotent methods additionally depend on per-attempt send progress.
+func retryRequestReplayable(request *http.Request) bool {
+	return request != nil && request.Method != http.MethodConnect &&
+		(request.Body == nil || request.Body == http.NoBody || request.GetBody != nil)
+}
+
+func nonIdempotentUpstreamMethod(method string) bool {
+	// NGINX's default proxy_next_upstream excludes these methods once sent.
+	return method == http.MethodPost || method == http.MethodPatch || method == "LOCK"
+}
+
+// roundTripAttempt tracks entering the write phase, including partial writes.
+// Dial/TLS failures have not entered this phase and may fail over for any method.
+func (transport *retryTransport) roundTripAttempt(request *http.Request) (*http.Response, error, bool) {
+	if !nonIdempotentUpstreamMethod(request.Method) {
+		response, err := transport.base.RoundTrip(request)
+		return response, err, false
 	}
-	switch request.Method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace,
-		http.MethodPut, http.MethodDelete:
-		return request.Body == nil || request.Body == http.NoBody || request.GetBody != nil
-	case http.MethodPost, http.MethodPatch:
-		keyed := request.Header.Get("Idempotency-Key") != "" || request.Header.Get("X-Idempotency-Key") != ""
-		return keyed && (request.Body == nil || request.Body == http.NoBody || request.GetBody != nil)
-	default:
-		return false
+	var sent atomic.Bool
+	trace := &httptrace.ClientTrace{
+		WroteHeaders: func() { sent.Store(true) },
+		WroteRequest: func(httptrace.WroteRequestInfo) { sent.Store(true) },
 	}
+	attempt := request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
+	// net/http recognizes these exact canonical map keys as permission to
+	// replay a sent request on a pooled connection. Preserve the wire headers
+	// using legal lowercase field names, without granting that permission.
+	// The pooled-connection regression guards this Go transport assumption.
+	for _, key := range []string{"Idempotency-Key", "X-Idempotency-Key"} {
+		if _, ok := attempt.Header[key]; !ok {
+			continue
+		}
+		attempt.Header = attempt.Header.Clone()
+		lower := strings.ToLower(key)
+		attempt.Header[lower] = append(attempt.Header[lower], attempt.Header[key]...)
+		delete(attempt.Header, key)
+	}
+	response, err := transport.base.RoundTrip(attempt)
+	return response, err, sent.Load()
 }
 
 // NewRetryTransport wraps a transport with bounded retries for connection and
@@ -100,16 +124,20 @@ func NewRetryTransportWithObserver(base http.RoundTripper, observe func(string))
 func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	state, _ := request.Context().Value(retryContextKey{}).(*retryState)
 	if state == nil {
-		response, err := transport.base.RoundTrip(request)
+		response, err, _ := transport.roundTripAttempt(request)
 		recordUpstreamTransportFailure(request, err)
 		transport.observeResult(err, false)
 		return response, err
 	}
 
-	response, err := transport.base.RoundTrip(request)
+	response, err, sent := transport.roundTripAttempt(request)
 	recordUpstreamTransportFailure(request, err)
 	stopped := false
 	for remaining := state.count; err != nil && remaining > 0; remaining-- {
+		if sent {
+			stopped = true
+			break
+		}
 		if !state.deadline.IsZero() && !time.Now().Before(state.deadline) {
 			stopped = true
 			break
@@ -125,7 +153,7 @@ func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Respons
 		}
 		state.attempts++
 		apisixctx.RegisterRequestVar(request, "$retry_count", state.attempts)
-		response, err = transport.base.RoundTrip(request)
+		response, err, sent = transport.roundTripAttempt(request)
 		recordUpstreamTransportFailure(request, err)
 	}
 	transport.observeResult(err, stopped)

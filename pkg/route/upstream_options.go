@@ -55,10 +55,6 @@ func durationOrDefault(seconds float64) time.Duration {
 	return defaultUpstreamTimeout
 }
 
-func upstreamTLSInsecureSkipVerify(upstream resource.Upstream) bool {
-	return upstream.TLS == nil || !upstream.TLS.Verify
-}
-
 type sslResolver func(string) (resource.SSL, error)
 
 func upstreamUsesTLS(upstream resource.Upstream) bool {
@@ -137,7 +133,8 @@ func buildTransportOptionWithSSLResolver(
 		WithDialTimeout(timeouts.connect).
 		WithResponseHeaderTimeout(timeouts.responseHeader).
 		WithIdleConnTimeout(30 * time.Second).
-		WithInsecureSkipVerify(upstreamTLSInsecureSkipVerify(upstream))
+		// APISIX 3.17 upstream.tls.verify applies only to Kafka.
+		WithInsecureSkipVerify(true)
 
 	if upstreamUsesTLS(upstream) {
 		certificate, err := resolveUpstreamClientCertificate(upstream, resolveSSL)

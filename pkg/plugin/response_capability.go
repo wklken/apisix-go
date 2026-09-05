@@ -478,7 +478,7 @@ func compatibleBoundedAdapter(binding Binding, capability ResponseCapability) bo
 		return false
 	}
 	switch binding.Descriptor.Factory {
-	case "gzip", "brotli", "cors", "response-rewrite":
+	case "gzip", "brotli", "cors", "csrf", "response-rewrite":
 		return true
 	default:
 		return false

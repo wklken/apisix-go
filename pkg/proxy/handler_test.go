@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"strings"
 	"testing"
@@ -93,7 +94,7 @@ func TestRetryTransportRetriesTransportErrorsWithNextTargets(t *testing.T) {
 	}
 }
 
-func TestRetryTransportRestoresPOSTBodyForEveryAttempt(t *testing.T) {
+func TestRetryTransportRestoresPUTBodyForEveryAttempt(t *testing.T) {
 	var bodies []string
 	attempts := 0
 	transport := NewRetryTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
@@ -108,11 +109,10 @@ func TestRetryTransportRestoresPOSTBodyForEveryAttempt(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Request: request}, nil
 	}))
-	request, err := http.NewRequest(http.MethodPost, "http://upstream.example/submit", strings.NewReader("payload"))
+	request, err := http.NewRequest(http.MethodPut, "http://upstream.example/submit", strings.NewReader("payload"))
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	request.Header.Set("Idempotency-Key", "order-123")
 	request = WithRetries(request, 2, func(*http.Request) bool { return true })
 
 	response, err := transport.RoundTrip(request)
@@ -125,9 +125,10 @@ func TestRetryTransportRestoresPOSTBodyForEveryAttempt(t *testing.T) {
 	}
 }
 
-func TestRetryTransportDoesNotRetryReplayableGRPCPostWithoutIdempotencyKey(t *testing.T) {
+func TestRetryTransportDoesNotRetrySentReplayableGRPCPost(t *testing.T) {
 	attempts := 0
 	transport := NewRetryTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		httptrace.ContextClientTrace(request.Context()).WroteHeaders()
 		attempts++
 		if attempts == 1 {
 			return nil, errors.New("connection reset")
@@ -155,7 +156,8 @@ func TestRetryTransportDoesNotRetryReplayableGRPCPostWithoutIdempotencyKey(t *te
 
 func TestRetryTransportDoesNotRetryUnsafePOST(t *testing.T) {
 	attempts := 0
-	transport := NewRetryTransport(roundTripperFunc(func(*http.Request) (*http.Response, error) {
+	transport := NewRetryTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		httptrace.ContextClientTrace(request.Context()).WroteHeaders()
 		attempts++
 		return nil, errors.New("connection reset")
 	}))
@@ -178,7 +180,7 @@ func replayableRequest(method string) *http.Request {
 	return request
 }
 
-func TestRetryRequestAllowedAdmitsOnlyReplaySafeRequests(t *testing.T) {
+func TestRetryRequestReplayableRequiresReconstructableBody(t *testing.T) {
 	keyed := func(request *http.Request, name string) *http.Request {
 		request.Header.Set(name, "order-123")
 		return request
@@ -229,30 +231,30 @@ func TestRetryRequestAllowedAdmitsOnlyReplaySafeRequests(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "POST with unary gRPC content type still requires idempotency key",
+			name:    "POST with unary gRPC content type is replayable before sending",
 			request: withContentType(replayableRequest(http.MethodPost), "application/grpc+proto; charset=utf-8"),
-			want:    false,
+			want:    true,
 		},
 		{
-			name:    "POST with gRPC-Web content type still requires idempotency key",
+			name:    "POST with gRPC-Web content type is replayable before sending",
 			request: withContentType(replayableRequest(http.MethodPost), "application/grpc-web+proto"),
-			want:    false,
+			want:    true,
 		},
 		{
 			name:    "PATCH with X-Idempotency-Key",
 			request: keyed(replayableRequest(http.MethodPatch), "X-Idempotency-Key"),
 			want:    true,
 		},
-		{name: "POST without key", request: replayableRequest(http.MethodPost), want: false},
-		{name: "PATCH without key", request: replayableRequest(http.MethodPatch), want: false},
+		{name: "POST without key", request: replayableRequest(http.MethodPost), want: true},
+		{name: "PATCH without key", request: replayableRequest(http.MethodPatch), want: true},
 		{name: "PUT without replayable body", request: nonReplayable(), want: false},
 		{name: "CONNECT", request: httptest.NewRequest(http.MethodConnect, "http://upstream.test/", nil), want: false},
 		{name: "nil request", request: nil, want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := retryRequestAllowed(test.request); got != test.want {
-				t.Fatalf("retryRequestAllowed() = %v, want %v", got, test.want)
+			if got := retryRequestReplayable(test.request); got != test.want {
+				t.Fatalf("retryRequestReplayable() = %v, want %v", got, test.want)
 			}
 		})
 	}

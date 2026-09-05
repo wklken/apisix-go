@@ -37,7 +37,6 @@ type Offer struct {
 
 type Decision struct {
 	Coding          Coding
-	NotAcceptable   bool
 	Vary            bool
 	IdentityAllowed bool
 }
@@ -163,10 +162,9 @@ func decide(headerValues []string, offers []Offer, meta ResponseMeta) Decision {
 	if best.set {
 		return Decision{Coding: best.coding, Vary: vary, IdentityAllowed: identityAllowed}
 	}
-	if identityAllowed {
-		return Decision{Coding: Identity, Vary: vary, IdentityAllowed: true}
-	}
-	return Decision{NotAcceptable: true, Vary: vary}
+	// APISIX compression filters pass through the upstream response when no
+	// configured coding is selected, even when identity has q=0.
+	return Decision{Coding: Identity, Vary: vary, IdentityAllowed: identityAllowed}
 }
 
 func responseContentCoding(header http.Header) Coding {

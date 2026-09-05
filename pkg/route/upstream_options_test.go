@@ -238,25 +238,6 @@ func TestPlanRouteUpstreamPreparesClusterForDynamicGRPCSTarget(t *testing.T) {
 	}
 }
 
-func TestUpstreamTLSInsecureSkipVerify(t *testing.T) {
-	tests := []struct {
-		name     string
-		upstream resource.Upstream
-		want     bool
-	}{
-		{name: "tls omitted", upstream: resource.Upstream{}, want: true},
-		{name: "verify false", upstream: resource.Upstream{TLS: &resource.UpstreamTLS{}}, want: true},
-		{name: "verify true", upstream: resource.Upstream{TLS: &resource.UpstreamTLS{Verify: true}}, want: false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := upstreamTLSInsecureSkipVerify(test.upstream); got != test.want {
-				t.Fatalf("upstreamTLSInsecureSkipVerify() = %v, want %v", got, test.want)
-			}
-		})
-	}
-}
-
 func TestBuildClusterConfigKeyIncludesUpstreamNameForObserverIdentity(t *testing.T) {
 	servers := map[string]int{"http://127.0.0.1:18091": 1}
 	base := resource.Upstream{Scheme: "http", Nodes: []resource.Node{

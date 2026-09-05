@@ -150,12 +150,12 @@ func TestProxyFaultHandling(t *testing.T) {
 			wantAttempts: 1,
 		},
 		{
-			name:         "keyed POST retries the only node after reset",
+			name:         "keyed POST does not retry after reset",
 			method:       http.MethodPost,
 			idempotency:  "order-123",
 			mode:         faultReset,
 			wantStatus:   http.StatusBadGateway,
-			wantAttempts: 2,
+			wantAttempts: 1,
 		},
 		{
 			name:         "header inactivity maps to 504",

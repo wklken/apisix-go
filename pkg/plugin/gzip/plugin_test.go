@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -237,7 +236,7 @@ func TestHandlerHonorsAcceptEncodingQuality(t *testing.T) {
 			name:           "wildcard disabled",
 			acceptEncoding: "*;q=0",
 			wantEncoding:   "",
-			wantStatus:     http.StatusNotAcceptable,
+			wantStatus:     http.StatusOK,
 		},
 		{
 			name:           "wildcard applies without explicit coding",
@@ -287,9 +286,6 @@ func TestHandlerHonorsAcceptEncodingQuality(t *testing.T) {
 				}
 			default:
 				wantBody := "compress me please"
-				if tt.wantStatus == http.StatusNotAcceptable {
-					wantBody = ""
-				}
 				if got := res.Body.String(); got != wantBody {
 					t.Fatalf("body = %q, want %q", got, wantBody)
 				}
@@ -313,7 +309,7 @@ func decodeGzip(t *testing.T, body []byte) string {
 	return string(decoded)
 }
 
-func TestNegotiationWithoutVaryIdentityAndNotAcceptable(t *testing.T) {
+func TestNegotiationWithoutVaryPreservesIdentity(t *testing.T) {
 	tests := []struct {
 		name           string
 		acceptEncoding string
@@ -322,7 +318,7 @@ func TestNegotiationWithoutVaryIdentityAndNotAcceptable(t *testing.T) {
 	}{
 		{name: "missing", status: http.StatusOK, body: "identity"},
 		{name: "disabled", acceptEncoding: "gzip;q=0", status: http.StatusOK, body: "identity"},
-		{name: "not acceptable", acceptEncoding: "*;q=0", status: http.StatusNotAcceptable},
+		{name: "all codings excluded", acceptEncoding: "*;q=0", status: http.StatusOK, body: "identity"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -349,33 +345,25 @@ func TestNegotiationWithoutVaryIdentityAndNotAcceptable(t *testing.T) {
 	}
 }
 
-func TestNotAcceptableInvalidatesBodyDerivedHeaders(t *testing.T) {
+func TestUnselectedCompressionPreservesBodyAndHeaders(t *testing.T) {
 	p := newTestPlugin(t, Config{Types: []string{"text/plain"}, MinLength: new(1)})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept-Encoding", "*;q=0")
 	res := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		for _, field := range []string{
-			"Content-Length", "Content-Range", "Content-MD5",
-			"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
-		} {
-			w.Header()[field] = []string{"stale"}
-			w.Header()[strings.ToLower(field)] = []string{"lowercase stale"}
-		}
 		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "8")
+		w.Header().Set("ETag", `"original"`)
+		w.Header().Set("Content-Digest", "original-digest")
+		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte("upstream"))
 	})).ServeHTTP(res, req)
-	if res.Code != http.StatusNotAcceptable || res.Body.Len() != 0 {
-		t.Fatalf("response = %d/%d bytes, want empty 406", res.Code, res.Body.Len())
+	if res.Code != http.StatusCreated || res.Body.String() != "upstream" {
+		t.Fatalf("response = %d/%q, want 201/upstream", res.Code, res.Body.String())
 	}
-	for actual := range res.Header() {
-		for _, field := range []string{
-			"Content-Length", "Content-Range", "Content-MD5",
-			"Digest", "Content-Digest", "Repr-Digest", "ETag", "Last-Modified",
-		} {
-			if strings.EqualFold(actual, field) {
-				t.Errorf("body-derived header %q remains on 406", actual)
-			}
+	for name, want := range map[string]string{"Content-Length": "8", "ETag": `"original"`, "Content-Digest": "original-digest"} {
+		if got := res.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
 }

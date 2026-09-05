@@ -12,6 +12,7 @@ import (
 
 	"github.com/rs/cors"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -135,6 +136,8 @@ const metadataSchema = `
 }`
 
 type Config struct {
+	maxAgeSet bool
+
 	AllowOrigins    string `json:"allow_origins"`
 	AllowMethods    string `json:"allow_methods"`
 	AllowHeaders    string `json:"allow_headers"`
@@ -147,6 +150,24 @@ type Config struct {
 	AllowOriginsByMetadata    []string `json:"allow_origins_by_metadata"`
 	TimingAllowOrigins        *string  `json:"timing_allow_origins,omitempty"`
 	TimingAllowOriginsByRegex []string `json:"timing_allow_origins_by_regex"`
+}
+
+// UnmarshalJSON preserves an explicit zero, which disables preflight reuse.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configJSON Config
+	var decoded struct {
+		configJSON
+		MaxAge *int `json:"max_age"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = Config(decoded.configJSON)
+	c.maxAgeSet = decoded.MaxAge != nil
+	if c.maxAgeSet {
+		c.MaxAge = *decoded.MaxAge
+	}
+	return nil
 }
 
 type Metadata struct {
@@ -192,7 +213,7 @@ func (p *Plugin) PostInit() error {
 		p.config.AllowHeaders = "*"
 	}
 
-	if p.config.MaxAge == 0 {
+	if !p.config.maxAgeSet && p.config.MaxAge == 0 {
 		p.config.MaxAge = 5
 	}
 	for _, rule := range p.config.AllowOriginsByRegex {

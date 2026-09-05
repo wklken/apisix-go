@@ -11,7 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/gzip"
 )
 
-func TestGzipStreamingNotAcceptableIsBodyless406(t *testing.T) {
+func TestGzipStreamingPreservesUpstreamWithoutAcceptedCoding(t *testing.T) {
 	p := &gzip.Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -36,13 +36,13 @@ func TestGzipStreamingNotAcceptableIsBodyless406(t *testing.T) {
 	response := httptest.NewRecorder()
 	executor.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte("must be suppressed"))
+		_, _ = w.Write([]byte("upstream response"))
 	})).ServeHTTP(response, request)
-	if response.Code != http.StatusNotAcceptable {
-		t.Fatalf("status = %d, want 406", response.Code)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
 	}
-	if response.Body.Len() != 0 {
-		t.Fatalf("body length = %d, want 0", response.Body.Len())
+	if response.Body.String() != "upstream response" {
+		t.Fatalf("body = %q, want upstream response", response.Body.String())
 	}
 }
 

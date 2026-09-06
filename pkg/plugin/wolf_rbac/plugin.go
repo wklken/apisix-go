@@ -114,7 +114,7 @@ func (p *Plugin) PostInit() error {
 		p.config.HeaderPrefix = "X-"
 	}
 	if p.config.SSLVerify == nil {
-		p.config.SSLVerify = new(true)
+		p.config.SSLVerify = new(false)
 	}
 	if p.client == nil {
 		p.client = &http.Client{Transport: httpclient.NewTransport(), Timeout: 10 * time.Second}
@@ -324,16 +324,6 @@ func (p *Plugin) checkPermission(
 	if resp.StatusCode != http.StatusOK {
 		return resp.StatusCode, body.Reason, body.Data.UserInfo, nil
 	}
-	if !body.OK {
-		reason := strings.TrimSpace(body.Reason)
-		if reason == "" {
-			reason = "permission denied"
-		}
-		return http.StatusForbidden, reason, nil, nil
-	}
-	if err := validateUserInfo(body.Data.UserInfo); err != nil {
-		return http.StatusForbidden, err.Error(), nil, nil
-	}
 	return resp.StatusCode, body.Reason, body.Data.UserInfo, nil
 }
 
@@ -342,7 +332,7 @@ func remoteClientIP(r *http.Request) string {
 }
 
 func (p *Plugin) clientForConfig(cfg consumerConfig) *http.Client {
-	if cfg.SSLVerify == nil || *cfg.SSLVerify {
+	if cfg.SSLVerify != nil && *cfg.SSLVerify {
 		return p.client
 	}
 	// The insecure client is immutable and shared: build it once instead of
@@ -372,25 +362,17 @@ func insecureWolfClient(base *http.Client) *http.Client {
 }
 
 func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix string, userInfo map[string]any) error {
-	if len(userInfo) == 0 {
-		return fmt.Errorf("wolf-rbac userinfo is missing")
+	if userInfo == nil {
+		return nil
 	}
 
 	userID, err := identityFieldString(userInfo["id"], "id")
 	if err != nil {
 		return err
 	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "id")
-	}
 	username, err := identityFieldString(userInfo["username"], "username")
 	if err != nil {
 		return err
-	}
-	username = strings.TrimSpace(username)
-	if username == "" {
-		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "username")
 	}
 	nickname := username
 	if userInfo["nickname"] != nil {
@@ -398,10 +380,9 @@ func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix s
 		if err != nil {
 			return err
 		}
-		nickname = strings.TrimSpace(nickname)
-		if nickname == "" {
-			nickname = username
-		}
+	}
+	if userInfo["nickname"] == nil && userInfo["username"] == nil {
+		return fmt.Errorf("wolf-rbac userinfo nickname and username are missing")
 	}
 	escapedNickname := url.QueryEscape(nickname)
 
@@ -413,33 +394,6 @@ func (p *Plugin) setUserHeaders(w http.ResponseWriter, r *http.Request, prefix s
 	for key, value := range headers {
 		w.Header().Set(key, value)
 		r.Header.Set(key, value)
-	}
-	return nil
-}
-
-func validateUserInfo(userInfo map[string]any) error {
-	if len(userInfo) == 0 {
-		return fmt.Errorf("wolf-rbac userinfo is missing")
-	}
-
-	userID, err := identityFieldString(userInfo["id"], "id")
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(userID) == "" {
-		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "id")
-	}
-	username, err := identityFieldString(userInfo["username"], "username")
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(username) == "" {
-		return fmt.Errorf("wolf-rbac userinfo field %q is missing", "username")
-	}
-	if nickname, exists := userInfo["nickname"]; exists && nickname != nil {
-		if _, err := identityFieldString(nickname, "nickname"); err != nil {
-			return err
-		}
 	}
 	return nil
 }

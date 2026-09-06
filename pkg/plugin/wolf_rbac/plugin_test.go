@@ -182,8 +182,8 @@ func TestPostInitAppliesOfficialDefaults(t *testing.T) {
 	if p.config.HeaderPrefix != "X-" {
 		t.Fatalf("header_prefix = %q, want X-", p.config.HeaderPrefix)
 	}
-	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
-		t.Fatalf("ssl_verify = %v, want true", p.config.SSLVerify)
+	if p.config.SSLVerify == nil || *p.config.SSLVerify {
+		t.Fatalf("ssl_verify = %v, want false", p.config.SSLVerify)
 	}
 }
 
@@ -207,8 +207,12 @@ func TestClientForConfigTLSSecurityMatrix(t *testing.T) {
 		wantErr            bool
 	}{
 		{
-			name:           "default nil rejects untrusted server",
+			name:           "default nil accepts untrusted server",
 			consumerConfig: consumerConfig{Server: wolf.URL},
+		},
+		{
+			name:           "explicit true rejects untrusted server",
+			consumerConfig: consumerConfig{Server: wolf.URL, SSLVerify: new(true)},
 			wantErr:        true,
 		},
 		{
@@ -222,6 +226,7 @@ func TestClientForConfigTLSSecurityMatrix(t *testing.T) {
 		},
 		{
 			name:               "consumer nil inherits route true",
+			pluginConfig:       Config{SSLVerify: new(true)},
 			injectedClient:     true,
 			consumerConfig:     consumerConfig{Server: wolf.URL},
 			applyPluginDefault: true,
@@ -597,7 +602,7 @@ func TestHandlerPropagatesWolfDenial(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsSuccessfulHTTPResponsesWithoutWolfPermission(t *testing.T) {
+func TestHandlerUsesHTTPStatusForWolfPermission(t *testing.T) {
 	cases := []struct {
 		name string
 		body map[string]any
@@ -650,19 +655,13 @@ func TestHandlerRejectsSuccessfulHTTPResponsesWithoutWolfPermission(t *testing.T
 				nextCalls++
 			})).ServeHTTP(rr, req)
 
-			if rr.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+			wantStatus, wantCalls := http.StatusOK, 1
+			if tc.name == "empty user info" {
+				wantStatus = http.StatusInternalServerError
+				wantCalls = 0
 			}
-			if nextCalls != 0 {
-				t.Fatalf("next calls = %d, want 0", nextCalls)
-			}
-			for _, header := range []string{"X-UserId", "X-Username", "X-Nickname"} {
-				if got := rr.Header().Get(header); got != "" {
-					t.Fatalf("response %s = %q, want empty", header, got)
-				}
-				if got := req.Header.Get(header); got != "" {
-					t.Fatalf("request %s = %q, want empty", header, got)
-				}
+			if rr.Code != wantStatus || nextCalls != wantCalls {
+				t.Fatalf("status=%d next=%d want=%d/%d", rr.Code, nextCalls, wantStatus, wantCalls)
 			}
 		})
 	}
@@ -741,8 +740,8 @@ func TestHandlerRejectsEmptyUserInfo(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rr.Code, rr.Body.String())
 	}
 	if nextCalled {
 		t.Fatal("next handler was called for an empty Wolf userInfo response")
@@ -1163,16 +1162,17 @@ func TestSetUserHeadersRejectsUnsupportedIdentityFieldTypes(t *testing.T) {
 	}
 }
 
-func TestSetUserHeadersRejectsIncompleteIdentity(t *testing.T) {
+func TestSetUserHeadersAllowsAbsentIDButRequiresNicknameSource(t *testing.T) {
 	plugin := &Plugin{}
 	cases := []struct {
 		name     string
 		userInfo map[string]any
+		wantErr  bool
 	}{
-		{name: "empty user info", userInfo: map[string]any{}},
+		{name: "empty user info", userInfo: map[string]any{}, wantErr: true},
 		{name: "missing id", userInfo: map[string]any{"username": "alice"}},
 		{name: "blank id", userInfo: map[string]any{"id": "  ", "username": "alice"}},
-		{name: "missing username", userInfo: map[string]any{"id": "u-1"}},
+		{name: "missing username", userInfo: map[string]any{"id": "u-1"}, wantErr: true},
 		{name: "blank username", userInfo: map[string]any{"id": "u-1", "username": "  "}},
 	}
 
@@ -1180,8 +1180,8 @@ func TestSetUserHeadersRejectsIncompleteIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest(http.MethodGet, "/", nil)
-			if err := plugin.setUserHeaders(w, r, "X-", tc.userInfo); err == nil {
-				t.Fatalf("setUserHeaders() error = nil, want incomplete identity error")
+			if err := plugin.setUserHeaders(w, r, "X-", tc.userInfo); (err != nil) != tc.wantErr {
+				t.Fatalf("setUserHeaders() error = %v, want error=%t", err, tc.wantErr)
 			}
 		})
 	}

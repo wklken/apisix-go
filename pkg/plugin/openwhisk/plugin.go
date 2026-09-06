@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -158,9 +160,9 @@ func (p *Plugin) PostInit() error {
 		logger.Warn("Using openwhisk api_host with no TLS is a security risk")
 	}
 	if p.client == nil {
+		timeout := time.Duration(p.config.Timeout) * time.Millisecond
 		p.client = &http.Client{
-			Timeout:   time.Duration(p.config.Timeout) * time.Millisecond,
-			Transport: p.transport(),
+			Transport: proxy.NewProgressTimeoutTransport(p.transport(), timeout, timeout),
 		}
 	}
 
@@ -169,6 +171,10 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) transport() *http.Transport {
 	transport := httpclient.NewTransport()
+	timeout := time.Duration(p.config.Timeout) * time.Millisecond
+	transport.DialContext = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext
+	transport.ResponseHeaderTimeout = timeout
+	transport.TLSHandshakeTimeout = timeout
 	transport.DisableKeepAlives = !*p.config.Keepalive
 	transport.IdleConnTimeout = time.Duration(p.config.KeepaliveTimeout) * time.Millisecond
 	transport.MaxIdleConnsPerHost = p.config.KeepalivePool

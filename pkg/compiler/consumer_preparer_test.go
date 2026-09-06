@@ -220,7 +220,7 @@ func TestConsumerBindingPreparerSkipsMissingOptionalDeclaredFields(t *testing.T)
 		resourceValue(
 			"consumers",
 			"jwt-consumer",
-			`{"username":"jwt-consumer","plugins":{"jwt-auth":{"key":"$ENV://JWT_KEY","exp":60}}}`,
+			`{"username":"jwt-consumer","plugins":{"jwt-auth":{"key":"$ENV://JWT_KEY","exp":60,"secret":"synthetic-secret"}}}`,
 		),
 	}, nil)
 	prepared, err := factory.prepareGenerationSecrets(
@@ -684,3 +684,54 @@ var (
 	_ testutil.SecretResolver = (*consumerPreparationBroker)(nil)
 	_ ConsumerPreparer        = (*consumerBindingPreparer)(nil)
 )
+
+func TestConsumerJWTAlgorithmReferenceValidatesResolvedCredential(t *testing.T) {
+	for _, algorithm := range []string{"HS256", "RS256"} {
+		for _, present := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/credential=%t", algorithm, present), func(t *testing.T) {
+				broker := &consumerPreparationBroker{resolved: map[string]string{"$ENV://JWT_ALGORITHM": algorithm}}
+				factory, _ := newConsumerAttemptFactory(t, broker)
+				credential := ""
+				if present {
+					field := "public_key"
+					if algorithm == "HS256" {
+						field = "secret"
+					}
+					credential = fmt.Sprintf(`,%q:"synthetic-credential"`, field)
+				}
+				desired := mustGenerationSnapshot(t, 55, []generation.Resource{
+					resourceValue(
+						"consumers",
+						"jwt-consumer",
+						`{"username":"jwt-consumer","plugins":{"jwt-auth":{"key":"jwt-key","algorithm":"$ENV://JWT_ALGORITHM"`+credential+`}}}`,
+					),
+				}, nil)
+				prepared, err := factory.prepareGenerationSecrets(
+					context.Background(),
+					ticketForSnapshot(desired, generation.DomainHTTP),
+					desired,
+					nil,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := prepared.Close(context.Background()); err != nil {
+						t.Error(err)
+					}
+				})
+				lookup := newConsumerLookupView(prepared.consumers, prepared.preparation, factory.consumers.catalog)
+				called := false
+				used, err := base.UseConsumerCredential(context.Background(), lookup, "jwt-auth", "jwt-key",
+					func(resource.Consumer, resource.PluginConfig) error { called = true; return nil })
+				if present {
+					if err != nil || !used || !called {
+						t.Fatalf("valid resolved credential = %t/%t/%v", used, called, err)
+					}
+				} else if err == nil || used || called {
+					t.Fatalf("missing resolved credential = %t/%t/%v", used, called, err)
+				}
+			})
+		}
+	}
+}

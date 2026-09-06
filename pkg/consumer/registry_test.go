@@ -37,7 +37,11 @@ func TestValidateResolvedPreservesConsumerSchemaBehavior(t *testing.T) {
 	}{
 		{name: "key auth", factory: "key-auth", config: map[string]any{"key": "key", "extra": 1}},
 		{name: "basic auth", factory: "basic-auth", config: map[string]any{"username": "u", "password": "p"}},
-		{name: "jwt auth", factory: "jwt-auth", config: map[string]any{"key": "k", "algorithm": "RS256"}},
+		{
+			name:    "jwt auth",
+			factory: "jwt-auth",
+			config:  map[string]any{"key": "k", "algorithm": "RS256", "public_key": "synthetic"},
+		},
 		{name: "hmac auth", factory: "hmac-auth", config: map[string]any{"key_id": "k", "secret_key": "s"}},
 		{name: "ldap auth", factory: "ldap-auth", config: map[string]any{"user_dn": "cn=user"}},
 		{

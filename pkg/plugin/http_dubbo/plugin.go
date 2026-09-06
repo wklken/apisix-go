@@ -211,7 +211,11 @@ func writeDubboResult(w http.ResponseWriter, r *http.Request, result dubbo.Resul
 			logger.Errorf("%s", result.Err)
 		}
 	}
-	dubbo.WriteError(w, dubbo.ErrorStatus(r.Context(), result.Err), result.Err.Error())
+	status := http.StatusInternalServerError
+	if result.ConnectFailed {
+		status = http.StatusBadGateway
+	}
+	dubbo.WriteError(w, status, result.Err.Error())
 }
 
 func applyDefaults(cfg *Config) {

@@ -261,20 +261,6 @@ func planUpstreamNodes(upstream resource.Upstream) (map[string]int, map[string]i
 		targets[target] = weight
 		priorities[target] = node.Priority
 	}
-	if len(targets) > 0 {
-		positive := false
-		for _, weight := range targets {
-			if weight > 0 {
-				positive = true
-				break
-			}
-		}
-		if !positive {
-			return nil, nil, fmt.Errorf(
-				"invalid upstream node weights: at least one upstream node must have a positive weight",
-			)
-		}
-	}
 	return targets, priorities, nil
 }
 

@@ -334,15 +334,15 @@ func TestServeDubboWithRetriesDoesNotRetryAfterRequestWrite(t *testing.T) {
 		return upstream, nil
 	}, p.config, 1)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 	if attempts != 1 {
 		t.Fatalf("target attempts = %d, want 1 after request write", attempts)
 	}
 }
 
-func TestServeDubboReturnsGatewayTimeoutOnReadTimeout(t *testing.T) {
+func TestServeDubboReturnsInternalServerErrorOnReadTimeout(t *testing.T) {
 	upstream, _ := startSilentDubboServer(t)
 	p := newTestPlugin(t, Config{
 		ServiceName:    "svc",
@@ -355,12 +355,12 @@ func TestServeDubboReturnsGatewayTimeoutOnReadTimeout(t *testing.T) {
 
 	p.ServeDubbo(rr, req, upstream)
 
-	if rr.Code != http.StatusGatewayTimeout {
-		t.Fatalf("response code = %d, want 504; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
-func TestServeDubboReturnsBadGatewayOnMalformedResponse(t *testing.T) {
+func TestServeDubboReturnsInternalServerErrorOnMalformedResponse(t *testing.T) {
 	upstream, _ := startDubboTestServer(t, []byte("not-a-dubbo-frame"))
 	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
@@ -368,13 +368,13 @@ func TestServeDubboReturnsBadGatewayOnMalformedResponse(t *testing.T) {
 
 	p.ServeDubbo(rr, req, upstream)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
 func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
-	upstream, accepted := startSilentDubboServer(t)
+	upstream, requestStarted := startSilentDubboServer(t)
 	p := newTestPlugin(t, Config{
 		ServiceName:    "svc",
 		ServiceVersion: "0.0.0",
@@ -382,6 +382,7 @@ func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
 		ReadTimeout:    1000,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`)).WithContext(ctx)
 	rr := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -391,9 +392,9 @@ func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
 	}()
 
 	select {
-	case <-accepted:
+	case <-requestStarted:
 	case <-time.After(time.Second):
-		t.Fatal("silent Dubbo server did not accept the connection")
+		t.Fatal("silent Dubbo server did not receive request bytes")
 	}
 	cancel()
 	select {
@@ -401,12 +402,12 @@ func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ServeDubbo did not stop after request cancellation")
 	}
-	if rr.Code != http.StatusGatewayTimeout {
-		t.Fatalf("response code = %d, want 504 after cancellation; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500 after cancellation; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
-func TestServeDubboReturnsBadGatewayOnOversizedResponse(t *testing.T) {
+func TestServeDubboReturnsInternalServerErrorOnOversizedResponse(t *testing.T) {
 	response := make([]byte, 16)
 	response[0], response[1], response[3] = 0xda, 0xbb, 20
 	binary.BigEndian.PutUint32(response[12:16], maxDubboResponsePayload+1)
@@ -417,8 +418,8 @@ func TestServeDubboReturnsBadGatewayOnOversizedResponse(t *testing.T) {
 
 	p.ServeDubbo(rr, req, upstream)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
@@ -569,17 +570,22 @@ func startSilentDubboServer(t *testing.T) (string, <-chan struct{}) {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	accepted := make(chan struct{})
+	requestStarted := make(chan struct{})
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		close(accepted)
 		defer func() { _ = conn.Close() }()
+		// Accept alone can precede the client's DialContext completion. Receiving
+		// request bytes guarantees cancellation exercises the post-connect path.
+		if _, err := io.CopyN(io.Discard, conn, 1); err != nil {
+			return
+		}
+		close(requestStarted)
 		_, _ = io.Copy(io.Discard, conn)
 	}()
-	return ln.Addr().String(), accepted
+	return ln.Addr().String(), requestStarted
 }
 
 func startClosingDubboServer(t *testing.T) string {

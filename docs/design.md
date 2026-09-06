@@ -130,6 +130,12 @@ Cleanup is retryable and ordered: stop work, finalize resources, then release
 generation secrets. A timeout or residual task retains ownership for a later retry; it
 does not permit the generation to be detached early.
 
+Local rate-limit counters and MCP session lookup are shared through compiler-owned
+resource leases. Unrelated HTTP publication does not reset an active quota or
+disconnect an existing MCP session. The SSE request still owns its subprocess
+and request tasks; sharing lookup does not transfer that request to a successor
+generation. The final resource lease closes the shared registry.
+
 ## Serving and leases
 
 `GenerationEngine` publishes one atomic bundle with independent HTTP and stream
@@ -184,7 +190,7 @@ re-panic decision.
 | Area | Current boundary |
 | --- | --- |
 | HTTP | APISIX-compatible route, service, consumer, upstream, and plugin pipeline. |
-| Frontend TLS | TLS 1.2/1.3, exact/wildcard/fallback SNI certificates, session tickets, and the configured client-CA policy. |
+| Frontend TLS | Explicit TLS 1.1 with compatible ciphers, TLS 1.2/1.3, exact/wildcard/fallback SNI certificates, session tickets, and the configured client-CA policy. |
 | Stream | Raw TCP with immutable route snapshots and at most one `mqtt-proxy` protocol binding. |
 | Not implemented | UDP, stream TLS/mTLS, PROXY protocol, service discovery, general stream-plugin chaining, external plugin runners, WASM, XRPC, QUIC, and HTTP/3. |
 
@@ -208,6 +214,11 @@ Protocol-specific transports remain plugin owned:
 Secret declarations in `pkg/capability/declarations.go` are runtime authority. Each
 prepared generation gets a read-only view scoped by generation, domain, plugin
 factory, resource, source, and field.
+
+Managed references dispatch to Vault, AWS Secrets Manager, or GCP Secret Manager
+using the secret resources supplied in the publication closure. Backend
+credentials, OAuth tokens, and resolved-value caches remain owned by that
+generation; remote error bodies are not exposed in resolver diagnostics.
 
 The resolver can read only the exact publication closure. Cross-generation,
 cross-domain, cross-resource, and undeclared access fail before backend use.
@@ -239,3 +250,4 @@ qualification state.
 | --- | --- | --- |
 | [0004](architecture/adr/0004-runtime-safety-boundaries.md) | accepted | Bound ambiguous stream routing and embedded Lua execution. |
 | [0005](architecture/adr/0005-credential-log-redaction.md) | accepted | Redact credential material from authentication logs. |
+| [0006](architecture/adr/0006-frontend-tls-cipher-boundary.md) | accepted | Preserve the Go TLS cipher boundary, including unsupported finite-field DHE. |

@@ -698,9 +698,9 @@ func TestValidatePreMaterializationValidatesTerminalReturnCode(t *testing.T) {
 		wantErr bool
 	}{
 		{code: http.StatusContinue - 1, wantErr: true},
-		{code: http.StatusContinue, wantErr: true},
-		{code: http.StatusEarlyHints, wantErr: true},
-		{code: 199, wantErr: true},
+		{code: http.StatusContinue},
+		{code: http.StatusEarlyHints},
+		{code: 199},
 		{code: http.StatusOK},
 		{code: 599},
 		{code: 600, wantErr: true},

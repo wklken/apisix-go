@@ -39,14 +39,14 @@ func TestBuildReverseHandlerValidatesUpstreamNodeWeights(t *testing.T) {
 			wantNoErr: true,
 		},
 		{
-			name:    "all zero list weights",
-			config:  `{"nodes":[{"host":"127.0.0.1","port":8080,"weight":0}]}`,
-			wantErr: "at least one upstream node must have a positive weight",
+			name:      "all zero list weights",
+			config:    `{"nodes":[{"host":"127.0.0.1","port":8080,"weight":0}]}`,
+			wantNoErr: true,
 		},
 		{
-			name:    "all zero map weights",
-			config:  `{"nodes":{"127.0.0.1:8080":0,"127.0.0.2:8080":0}}`,
-			wantErr: "at least one upstream node must have a positive weight",
+			name:      "all zero map weights",
+			config:    `{"nodes":{"127.0.0.1:8080":0,"127.0.0.2:8080":0}}`,
+			wantNoErr: true,
 		},
 		{
 			name: "duplicate address leaves zero final weight",
@@ -54,7 +54,7 @@ func TestBuildReverseHandlerValidatesUpstreamNodeWeights(t *testing.T) {
 				{"host":"127.0.0.1","port":8080,"weight":1},
 				{"host":"[127.0.0.1]","port":8080,"weight":0}
 			]}`,
-			wantErr: "at least one upstream node must have a positive weight",
+			wantNoErr: true,
 		},
 		{
 			name:      "empty nodes",

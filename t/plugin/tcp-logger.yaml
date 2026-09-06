@@ -255,7 +255,7 @@ cases:
     output:
       logs:
         matches: 'validate plugin tcp-logger metadata:.*log_format.*expected object.*got string'
-      status: 502
+      status: 503
 
   - name: metadata-add-and-clear-rebuilds-existing-route
     config:

@@ -15,16 +15,17 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
 )
 
-// storeIntent is the request-local, immutable decision made by a cache miss.
+// storeIntent keeps the request-local cache-miss decision and response policy.
 // It intentionally contains no request, writer, lifecycle, body, or trailer.
 type storeIntent struct {
-	key               string
-	requestHeader     http.Header
-	ttl               time.Duration
-	cacheControl      bool
-	cacheSetCookie    bool
-	hideCacheHeaders  bool
-	cacheHTTPStatuses []int
+	key                  string
+	requestHeader        http.Header
+	ttl                  time.Duration
+	cacheControl         bool
+	cacheSetCookie       bool
+	hideCacheHeaders     bool
+	cacheHTTPStatuses    []int
+	responseCacheHeaders http.Header
 }
 
 type storeIntentHolder struct {
@@ -204,6 +205,27 @@ func publishCacheHit(r *http.Request, entry cacheEntry, status string) *http.Req
 	return r
 }
 
+// RunHeaderFilter hides client cache headers while retaining their upstream
+// values for the later store's cacheability and TTL decisions.
+func (p *Plugin) RunHeaderFilter(r *http.Request, state *base.ResponseState) error {
+	if state == nil || !p.config.HideCacheHeaders {
+		return nil
+	}
+	holder := storeIntentHolderFromRequest(r)
+	if holder == nil {
+		return nil
+	}
+	holder.mu.Lock()
+	if intent, ok := holder.intents[p]; ok {
+		intent.responseCacheHeaders = cacheutil.CloneHeader(state.Header)
+		holder.intents[p] = intent
+	}
+	holder.mu.Unlock()
+	deleteHeaderFold(state.Header, "Cache-Control")
+	deleteHeaderFold(state.Header, "Expires")
+	return nil
+}
+
 func (p *Plugin) RunFinalResponseStore(r *http.Request, state base.ResponseState) error {
 	holder := storeIntentHolderFromRequest(r)
 	if holder == nil {
@@ -222,15 +244,19 @@ func (p *Plugin) RunFinalResponseStore(r *http.Request, state base.ResponseState
 
 	canonical := base.CloneResponseState(state)
 	removeDerivedCacheHeaders(canonical.Header)
+	policyHeaders := canonical.Header
+	if intent.responseCacheHeaders != nil {
+		policyHeaders = intent.responseCacheHeaders
+	}
 	if !slices.Contains(intent.cacheHTTPStatuses, canonical.Status) ||
-		responseCacheControlSkipsStore(canonical.Header) ||
+		responseCacheControlSkipsStore(policyHeaders) ||
 		(!intent.cacheSetCookie && headerHasField(canonical.Header, "Set-Cookie")) {
 		return nil
 	}
 	ttl := intent.ttl
 	if intent.cacheControl {
 		var cacheable bool
-		ttl, cacheable = responseCacheControlTTL(canonical.Header)
+		ttl, cacheable = responseCacheControlTTL(policyHeaders)
 		if !cacheable {
 			return nil
 		}

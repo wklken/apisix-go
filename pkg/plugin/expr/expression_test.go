@@ -249,3 +249,21 @@ func TestRequestValueFallsBackToUnsplitRemoteAddressAndStringifiesCollections(t 
 		t.Fatalf("String(nil) = %q, want empty", got)
 	}
 }
+
+func TestNullEqualityDistinguishesEmptyString(t *testing.T) {
+	for _, operator := range []string{"==", "~="} {
+		expression, err := Compile([]any{[]any{"value", operator, nil}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range []any{nil, "", "present"} {
+			want := value == nil
+			if operator == "~=" {
+				want = !want
+			}
+			if got := expression.Eval(func(string) any { return value }); got != want {
+				t.Fatalf("%#v %s null = %v want %v", value, operator, got, want)
+			}
+		}
+	}
+}

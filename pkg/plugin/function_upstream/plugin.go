@@ -92,8 +92,9 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) newClient() *http.Client {
 	timeout := time.Duration(p.Config.Timeout) * time.Millisecond
 	return &http.Client{
-		Timeout:   0,
-		Transport: proxy.NewProgressTimeoutTransport(p.transport(), timeout, timeout),
+		Timeout:       0,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Transport:     proxy.NewProgressTimeoutTransport(p.transport(), timeout, timeout),
 	}
 }
 

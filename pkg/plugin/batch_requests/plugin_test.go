@@ -62,14 +62,11 @@ func TestMetadataSchemaRejectsNonpositiveLimits(t *testing.T) {
 			t.Fatalf("metadata %#v validated, want positive-limit rejection", metadata)
 		}
 	}
-	if got := applyLimitDefaults(Limits{}).maxTimeout; got != defaultMaxTimeout {
-		t.Fatalf("default max timeout = %d, want %d", got, defaultMaxTimeout)
+	if got := applyLimitDefaults(Limits{}).defaultTimeout; got != defaultBatchTimeout {
+		t.Fatalf("default max timeout = %d, want %d", got, defaultBatchTimeout)
 	}
 	if got := applyLimitDefaults(Limits{}).MaxPipelineItems; got != 1000 {
 		t.Fatalf("default max pipeline items = %d, want APISIX default 1000", got)
-	}
-	if got := applyLimitDefaults(Limits{maxTimeout: hardMaxTimeout + 1}).maxTimeout; got != hardMaxTimeout {
-		t.Fatalf("capped max timeout = %d, want %d", got, hardMaxTimeout)
 	}
 }
 
@@ -85,12 +82,12 @@ func TestLegacyMetadataFieldsCannotChangeInternalLimits(t *testing.T) {
 		t.Fatalf("Decode() error = %v", err)
 	}
 	limits = applyLimitDefaults(limits)
-	if limits.maxConcurrency != 8 || limits.maxResponseBodySize != 4*1024*1024 || limits.maxTimeout != 30000 {
+	if limits.maxConcurrency != 8 || limits.maxResponseBodySize != 4*1024*1024 || limits.defaultTimeout != 30000 {
 		t.Fatalf(
 			"internal limits = concurrency %d, response bytes %d, timeout %d; want fixed defaults",
 			limits.maxConcurrency,
 			limits.maxResponseBodySize,
-			limits.maxTimeout,
+			limits.defaultTimeout,
 		)
 	}
 }
@@ -129,7 +126,7 @@ func TestHandlerRejectsNestedBatchBeforeConcurrencyLease(t *testing.T) {
 }
 
 func TestHandlerEnforcesTimeoutBounds(t *testing.T) {
-	const maxTimeout = 25
+	const defaultTimeout = 25
 	observed := make(chan time.Duration, 2)
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		deadline, ok := r.Context().Deadline()
@@ -140,7 +137,7 @@ func TestHandlerEnforcesTimeoutBounds(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	handler := NewHandlerWithLimits(dispatcher, Limits{maxTimeout: maxTimeout})
+	handler := NewHandlerWithLimits(dispatcher, Limits{defaultTimeout: defaultTimeout})
 
 	for _, body := range []string{
 		`{"pipeline":[{"path":"/omitted"}]}`,
@@ -167,9 +164,9 @@ func TestHandlerEnforcesTimeoutBounds(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsTimeoutAboveConfiguredMaximum(t *testing.T) {
-	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{maxTimeout: 25})
-	for _, timeout := range []string{"26", "99999999999999999999999999999999"} {
+func TestHandlerRejectsUnrepresentableTimeout(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{defaultTimeout: 25})
+	for _, timeout := range []string{"99999999999999999999999999999999"} {
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, DefaultURI,
 			strings.NewReader(fmt.Sprintf(`{"timeout":%s,"pipeline":[{"path":"/inner"}]}`, timeout))))

@@ -845,3 +845,27 @@ func TestStreamingHeaderFilterUsesOriginCapturedBeforeRequestRewrite(t *testing.
 		t.Fatalf("allow origin = %q, want original request origin", got)
 	}
 }
+
+func TestStreamingHeaderFilterPreservesOriginThroughStaticAuthentication(t *testing.T) {
+	for _, origin := range []string{"https://original.example", ""} {
+		t.Run(origin, func(t *testing.T) {
+			p := newTestPlugin(t, Config{AllowOrigins: "https://original.example", AllowMethods: http.MethodGet})
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+			req.Header.Set("Origin", origin)
+			p.Handler(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				r.Header.Set("Origin", "https://rewritten.example")
+				if origin == "" {
+					r.Header.Set("Origin", "https://original.example")
+				}
+				result := p.RunRequestPhase(httptest.NewRecorder(), r)
+				state := base.StreamingResponseState{Header: make(http.Header)}
+				if err := p.RunStreamingHeaderFilter(result.Request, &state); err != nil {
+					t.Fatal(err)
+				}
+				if got := state.Header.Get("Access-Control-Allow-Origin"); got != origin {
+					t.Fatalf("allow origin = %q, want %q", got, origin)
+				}
+			})).ServeHTTP(httptest.NewRecorder(), req)
+		})
+	}
+}

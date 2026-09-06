@@ -54,10 +54,8 @@ const schema = `
     {
       "not": {
         "anyOf": [
-          {"required": ["model_path"]},
-          {"required": ["policy_path"]},
-          {"required": ["model"]},
-          {"required": ["policy"]}
+          {"required": ["model_path", "policy_path"]},
+          {"required": ["model", "policy"]}
         ]
       }
     }

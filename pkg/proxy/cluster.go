@@ -235,7 +235,14 @@ func newOwnedClusterWithTransport(
 	maxInFlight := config.MaxInFlight
 
 	var lb LoadBalancer
-	if len(config.Targets) > 0 {
+	hasPositiveTarget := false
+	for _, weight := range config.Targets {
+		if weight > 0 {
+			hasPositiveTarget = true
+			break
+		}
+	}
+	if hasPositiveTarget {
 		lb, err = newUpstreamLoadBalanceWithPriorities(config.Targets, config.Priorities, config.Checks)
 		if err != nil {
 			return nil, err

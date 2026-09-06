@@ -1440,6 +1440,11 @@ func (p *Plugin) writeProviderResponse(
 	started time.Time,
 	resp *http.Response,
 ) {
+	if resp.StatusCode == http.StatusTooManyRequests ||
+		(resp.StatusCode >= http.StatusInternalServerError && resp.StatusCode < 600) {
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
 	copyProviderContentType(w.Header(), resp.Header)
 	if isStreamingProviderResponse(resp, prepared.providerProtocol) {
 		flushInterval := time.Duration(*p.config.StreamingFlushIntervalMS) * time.Millisecond

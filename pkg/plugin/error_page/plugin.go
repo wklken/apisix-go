@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/wklken/apisix-go/pkg/json"
+
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
@@ -73,6 +75,7 @@ type Metadata struct {
 type ErrorPage struct {
 	Body        string `json:"body,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
+	bodySet     bool
 }
 
 func (p *Plugin) Init() error {
@@ -195,7 +198,7 @@ func defaultErrorPage(page *ErrorPage, title string) {
 	if page.ContentType == "" {
 		page.ContentType = "text/html"
 	}
-	if page.Body == "" {
+	if page.Body == "" && !page.bodySet {
 		page.Body = fmt.Sprintf(`<html>
 <head><title>%s</title></head>
 <body>
@@ -204,4 +207,19 @@ func defaultErrorPage(page *ErrorPage, title string) {
 </body>
 </html>`, title, title)
 	}
+}
+
+func (page *ErrorPage) UnmarshalJSON(data []byte) error {
+	type plain ErrorPage
+	var value plain
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*page = ErrorPage(value)
+	_, page.bodySet = fields["body"]
+	return nil
 }

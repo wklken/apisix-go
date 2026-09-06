@@ -172,9 +172,8 @@ func parseValue(dest reflect.Value, source any) error {
 }
 
 type parseFieldInfo struct {
-	index     int
-	jsonName  string
-	fieldName string
+	index    int
+	jsonName string
 }
 
 var parseFieldsCache sync.Map // reflect.Type -> []parseFieldInfo
@@ -195,9 +194,8 @@ func parseFieldsForType(t reflect.Type) []parseFieldInfo {
 			name = field.Name
 		}
 		fields = append(fields, parseFieldInfo{
-			index:     i,
-			jsonName:  name,
-			fieldName: field.Name,
+			index:    i,
+			jsonName: name,
 		})
 	}
 	parseFieldsCache.Store(t, fields)
@@ -206,7 +204,7 @@ func parseFieldsForType(t reflect.Type) []parseFieldInfo {
 
 func parseStructFields(dest reflect.Value, object map[string]any) error {
 	for _, field := range parseFieldsForType(dest.Type()) {
-		value, ok := lookupJSONField(object, field.jsonName, field.fieldName)
+		value, ok := lookupJSONField(object, field.jsonName)
 		if !ok {
 			continue
 		}
@@ -217,14 +215,9 @@ func parseStructFields(dest reflect.Value, object map[string]any) error {
 	return nil
 }
 
-func lookupJSONField(object map[string]any, jsonName, fieldName string) (any, bool) {
+func lookupJSONField(object map[string]any, jsonName string) (any, bool) {
 	if value, ok := object[jsonName]; ok {
 		return value, true
-	}
-	if jsonName != fieldName {
-		if value, ok := object[fieldName]; ok {
-			return value, true
-		}
 	}
 	for key, value := range object {
 		if strings.EqualFold(key, jsonName) {

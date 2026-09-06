@@ -470,6 +470,9 @@ func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedRespo
 }
 
 func (p *Plugin) storageKey(r *http.Request, key string) string {
+	if p.memoryStore != nil {
+		return p.memoryStore.VariantKey(key, r.Header)
+	}
 	p.lock.RLock()
 	index, ok := p.vary[key]
 	p.lock.RUnlock()
@@ -661,6 +664,9 @@ func (registry *Registry) handlePurge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) purge(key string) bool {
+	if p.memoryStore != nil {
+		return p.memoryStore.DeleteVariants(key)
+	}
 	p.lock.Lock()
 	storageKeys := []string{key}
 	if index, ok := p.vary[key]; ok {

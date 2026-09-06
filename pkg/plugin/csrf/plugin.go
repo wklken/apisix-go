@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -50,8 +49,7 @@ const schema = `
 	"properties": {
 	  "key": {
 		"description": "use to generate csrf token",
-		"type": "string",
-		"minLength": 1
+		"type": "string"
 	  },
 	  "expires": {
 		"description": "expires time(s) for csrf token",
@@ -133,11 +131,7 @@ func (p *Plugin) MaterializeScopedSecrets(
 	if err != nil {
 		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
 	}
-	if err := value.Use(func(plaintext string) error {
-		return validateCSRFKey(plaintext)
-	}); err != nil {
-		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
-	}
+
 	descriptor, err := value.Descriptor(capability.SecretPluginConfig)
 	if err != nil {
 		return fmt.Errorf("csrf key: %w", secret.ErrCredentialUnavailable)
@@ -320,13 +314,6 @@ func (p *Plugin) Stop() {
 	p.secretMu.Lock()
 	defer p.secretMu.Unlock()
 	p.key = nil
-}
-
-func validateCSRFKey(value string) error {
-	if strings.TrimSpace(value) == "" {
-		return errors.New("csrf key must not be empty")
-	}
-	return nil
 }
 
 func (p *Plugin) expires() int64 {

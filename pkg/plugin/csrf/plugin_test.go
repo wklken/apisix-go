@@ -391,50 +391,30 @@ func TestMaterializeScopedSecretsFailureIsAtomicAndRedacted(t *testing.T) {
 	}
 }
 
-func TestMaterializeScopedSecretsRejectsEmptyAdmittedKeyAndRetriesAtomically(t *testing.T) {
+func TestMaterializeScopedSecretsPreservesEmptyAndWhitespaceKeys(t *testing.T) {
 	const raw = "$ENV://CSRF_EMPTY"
 	for _, resolved := range []string{"", "   "} {
 		t.Run(fmt.Sprintf("resolved-%q", resolved), func(t *testing.T) {
-			secrets, scope, broker, closeAttempt := newCSRFScopedSecretHarness(
-				t, 9, "csrf-empty", raw, resolved,
-			)
+			secrets, scope, _, closeAttempt := newCSRFScopedSecretHarness(t, 9, "csrf-empty", raw, resolved)
 			defer closeAttempt()
 			p := &Plugin{config: Config{Key: raw}}
 			if err := p.Init(); err != nil {
 				t.Fatal(err)
 			}
-			err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p)
-			if err == nil {
-				t.Fatal("empty admitted key materialized successfully")
-			}
-			if strings.Contains(err.Error(), raw) ||
-				(resolved != "" && strings.Contains(err.Error(), resolved)) {
-				t.Fatalf("empty-key error leaked secret details: %v", err)
-			}
-			if p.config.Key != raw || p.key != nil {
-				t.Fatalf(
-					"failed empty-key materialization retained state: config=%q key=%#v",
-					p.config.Key,
-					p.key,
-				)
-			}
-
-			broker.mu.Lock()
-			broker.values[raw] = "retry-key"
-			broker.mu.Unlock()
 			if err := base.MaterializeScopedPluginSecrets(context.Background(), scope, secrets, p); err != nil {
-				t.Fatalf("retry materialization error = %v", err)
+				t.Fatal(err)
 			}
-			assertCSRFSecretDescriptorFor(t, p.config.Key, "retry-key")
+			assertCSRFSecretDescriptorFor(t, p.config.Key, resolved)
 			if err := p.PostInit(); err != nil {
-				t.Fatalf("PostInit() after retry error = %v", err)
+				t.Fatal(err)
 			}
-			var got string
 			if err := p.useKey(func(value string) error {
-				got = value
+				if value != resolved {
+					t.Fatal("admitted key was changed")
+				}
 				return nil
-			}); err != nil || got != "retry-key" {
-				t.Fatalf("retried private key = %q, err = %v, want retry-key", got, err)
+			}); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

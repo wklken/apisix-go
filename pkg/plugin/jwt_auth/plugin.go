@@ -56,9 +56,12 @@ const schema = `
       "default": false
     },
     "realm": {
-      "type": "string",
-      "default": "jwt"
-    },
+		"type": "string",
+		"default": "jwt",
+		"minLength": 1,
+		"maxLength": 128,
+		"pattern": "^[\\x20-\\x21\\x23-\\x5B\\x5D-\\x7E]+$"
+	  },
     "anonymous_consumer": {
       "type": "string",
       "minLength": 1

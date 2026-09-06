@@ -35,8 +35,7 @@ const (
 	defaultMaxResponseSize   = 4 * 1024 * 1024
 	defaultMaxPipelineItems  = 1000
 	defaultMaxConcurrency    = 8
-	defaultMaxTimeout        = 30000
-	hardMaxTimeout           = 60000
+	defaultBatchTimeout      = 30000
 	maxBufferedResponses     = 20
 	retainedHeaderEntrySize  = 64
 	retainedSliceHeaderSize  = 24
@@ -71,11 +70,40 @@ type Limits struct {
 
 	maxResponseBodySize int64
 	maxConcurrency      int
-	maxTimeout          int
+	defaultTimeout      int
+}
+
+// QueryValues retains repeated arguments while accepting APISIX's scalar
+// string shorthand on the JSON boundary.
+type QueryValues map[string][]string
+
+func (values *QueryValues) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	decoded := make(QueryValues, len(fields))
+	for key, raw := range fields {
+		if len(raw) > 0 && raw[0] == '[' {
+			var items []string
+			if err := json.Unmarshal(raw, &items); err != nil {
+				return fmt.Errorf("query %q: %w", key, err)
+			}
+			decoded[key] = items
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return fmt.Errorf("query %q: %w", key, err)
+		}
+		decoded[key] = []string{value}
+	}
+	*values = decoded
+	return nil
 }
 
 type Request struct {
-	Query    map[string]string `json:"query,omitempty"`
+	Query    QueryValues       `json:"query,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"`
 	Timeout  *int              `json:"timeout,omitempty"`
 	Pipeline []PipelineRequest `json:"pipeline"`
@@ -85,7 +113,7 @@ type PipelineRequest struct {
 	Version   float64           `json:"version,omitempty"`
 	Method    string            `json:"method,omitempty"`
 	Path      string            `json:"path"`
-	Query     map[string]string `json:"query,omitempty"`
+	Query     QueryValues       `json:"query,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	Body      string            `json:"body,omitempty"`
 	SSLVerify bool              `json:"ssl_verify,omitempty"`
@@ -263,13 +291,13 @@ func handleBatchRequest(
 		return nil, http.StatusBadRequest, fmt.Errorf("bad request body: %w", err)
 	}
 
-	timeoutMilliseconds := limits.maxTimeout
+	timeoutMilliseconds := limits.defaultTimeout
 	if req.Timeout != nil {
 		timeoutMilliseconds = *req.Timeout
 	}
-	// applyLimitDefaults caps maxTimeout at hardMaxTimeout, so this conversion
-	// cannot overflow time.Duration.
-	timeout := time.Duration(timeoutMilliseconds) * time.Millisecond
+	// APISIX sets no schema maximum. Saturate only at the representable
+	// duration boundary so very large positive values cannot wrap negative.
+	timeout := time.Duration(min(int64(timeoutMilliseconds), math.MaxInt64/int64(time.Millisecond))) * time.Millisecond
 
 	responses := make([]PipelineResponse, 0, len(req.Pipeline))
 	remainingResponseBytes := limits.maxResponseBodySize * maxBufferedResponses
@@ -384,9 +412,6 @@ func validateRequest(req Request, limits Limits) error {
 		if *req.Timeout < 1 {
 			return fmt.Errorf("timeout must be at least 1 millisecond")
 		}
-		if *req.Timeout > limits.maxTimeout {
-			return fmt.Errorf("timeout must not exceed %d milliseconds", limits.maxTimeout)
-		}
 	}
 	if len(req.Pipeline) == 0 {
 		return fmt.Errorf("pipeline must contain at least one request")
@@ -433,11 +458,8 @@ func applyLimitDefaults(limits Limits) Limits {
 	if limits.maxConcurrency <= 0 {
 		limits.maxConcurrency = defaultMaxConcurrency
 	}
-	if limits.maxTimeout <= 0 {
-		limits.maxTimeout = defaultMaxTimeout
-	}
-	if limits.maxTimeout > hardMaxTimeout {
-		limits.maxTimeout = hardMaxTimeout
+	if limits.defaultTimeout <= 0 {
+		limits.defaultTimeout = defaultBatchTimeout
 	}
 	return limits
 }
@@ -759,13 +781,13 @@ func flattenHeaders(header http.Header) map[string]any {
 	return out
 }
 
-func mergeQuery(common map[string]string, item map[string]string) url.Values {
+func mergeQuery(common QueryValues, item QueryValues) url.Values {
 	values := url.Values{}
 	for key, value := range common {
-		values.Set(key, value)
+		values[key] = append([]string(nil), value...)
 	}
 	for key, value := range item {
-		values.Set(key, value)
+		values[key] = append([]string(nil), value...)
 	}
 	return values
 }

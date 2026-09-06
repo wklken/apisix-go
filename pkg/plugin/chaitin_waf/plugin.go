@@ -114,6 +114,7 @@ type Config struct {
 	AppendWAFRespHeader  *bool       `json:"append_waf_resp_header,omitempty"`
 	AppendWAFDebugHeader *bool       `json:"append_waf_debug_header,omitempty"`
 	Config               WAFConfig   `json:"config"`
+	configSet            bool
 
 	Nodes []Node `json:"nodes,omitempty"`
 }
@@ -213,7 +214,14 @@ func (p *Plugin) PostInit() error {
 	if len(routeConfig.Nodes) > 0 {
 		p.effective.Nodes = append([]Node(nil), routeConfig.Nodes...)
 	}
-	p.effective.Config = mergeWAFConfig(p.effective.Config, routeConfig.Config)
+	if routeConfig.configSet || routeConfig.Config != (WAFConfig{}) {
+		replaced := applyWAFConfigDefaults(routeConfig.Config)
+		// APISIX inherits this flag separately even when the route supplies config.
+		if routeConfig.Config.RealClientIP == nil {
+			replaced.RealClientIP = p.effective.Config.RealClientIP
+		}
+		p.effective.Config = replaced
+	}
 	p.match = p.match[:0]
 	for index, rule := range p.config.Match {
 		expression, err := pluginexpr.Compile(normalizeMatchVars(rule.Vars))
@@ -227,35 +235,6 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) Config() any {
 	return &p.config
-}
-
-func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		code, body, headers, responseHeaders := p.doAccess(r)
-		for key, values := range responseHeaders {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-		if !*p.config.AppendWAFDebugHeader {
-			delete(headers, HeaderChaitinWAFError)
-			delete(headers, HeaderChaitinWAFServer)
-		}
-		if *p.config.AppendWAFRespHeader {
-			for key, value := range headers {
-				w.Header().Set(key, value)
-			}
-		}
-		if code != 0 {
-			w.WriteHeader(code)
-			if body != "" {
-				_, _ = w.Write([]byte(body))
-			}
-			return
-		}
-		next.ServeHTTP(w, r)
-	}
-	return http.HandlerFunc(fn)
 }
 
 func (p *Plugin) Stop() {
@@ -377,31 +356,6 @@ func (p *Plugin) doAccess(r *http.Request) (int, string, map[string]string, http
 		return 0, "", headers, decision.ResponseHeaders
 	}
 	return 0, "", headers, nil
-}
-
-func mergeWAFConfig(baseConfig, override WAFConfig) WAFConfig {
-	if override.ConnectTimeout != 0 {
-		baseConfig.ConnectTimeout = override.ConnectTimeout
-	}
-	if override.SendTimeout != 0 {
-		baseConfig.SendTimeout = override.SendTimeout
-	}
-	if override.ReadTimeout != 0 {
-		baseConfig.ReadTimeout = override.ReadTimeout
-	}
-	if override.ReqBodySize != 0 {
-		baseConfig.ReqBodySize = override.ReqBodySize
-	}
-	if override.KeepaliveSize != 0 {
-		baseConfig.KeepaliveSize = override.KeepaliveSize
-	}
-	if override.KeepaliveTimeout != 0 {
-		baseConfig.KeepaliveTimeout = override.KeepaliveTimeout
-	}
-	if override.RealClientIP != nil {
-		baseConfig.RealClientIP = override.RealClientIP
-	}
-	return baseConfig
 }
 
 func (p *Plugin) askWAF(r *http.Request, node Node, cfg WAFConfig) (wafDecision, time.Duration, error) {

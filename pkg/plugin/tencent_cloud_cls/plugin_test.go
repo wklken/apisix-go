@@ -1430,7 +1430,7 @@ func TestBuildBatchPayloadReportsTruncatedFieldCount(t *testing.T) {
 	p.sourceIP = "192.0.2.10"
 
 	big := strings.Repeat("v", maxSingleValueSize+10)
-	payload, err := p.buildBatchPayload([]map[string]any{{"big": big}})
+	payload, _, err := p.buildBatchPayload([]map[string]any{{"big": big}})
 	if err != nil {
 		t.Fatalf("buildBatchPayload() error = %v", err)
 	}
@@ -1461,7 +1461,7 @@ func TestBuildBatchPayloadReportsOverLimitEntryDrops(t *testing.T) {
 	for i := range 6 {
 		huge["f"+string(rune('a'+i))] = strings.Repeat("v", maxSingleValueSize)
 	}
-	payload, err := p.buildBatchPayload([]map[string]any{huge})
+	payload, _, err := p.buildBatchPayload([]map[string]any{huge})
 	if err != nil {
 		t.Fatalf("buildBatchPayload() error = %v", err)
 	}
@@ -1475,35 +1475,27 @@ func TestBuildBatchPayloadReportsOverLimitEntryDrops(t *testing.T) {
 	}
 }
 
-func TestBuildBatchPayloadReportsDroppedBatchRemainder(t *testing.T) {
-	entries := make(chan logger.Entry, 2)
-	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
-		entries <- entry
-	})
-	t.Cleanup(stop)
-
+func TestBuildBatchPayloadReturnsUnsentRemainder(t *testing.T) {
 	p := &Plugin{}
 	p.applyDefaults()
 	p.sourceIP = "192.0.2.10"
-
-	// Six 1MB entries exceed the 5MB group limit; the last two are dropped
-	// and the remaining batch is still sent.
-	big := strings.Repeat("v", maxSingleValueSize)
-	logs := make([]map[string]any, 0, 6)
-	for range 6 {
-		logs = append(logs, map[string]any{"v": big})
+	logs := make([]map[string]any, 6)
+	for i := range logs {
+		logs[i] = map[string]any{"v": strings.Repeat("v", maxSingleValueSize)}
 	}
-	payload, err := p.buildBatchPayload(logs)
+	payload, consumed, err := p.buildBatchPayload(logs)
 	if err != nil {
-		t.Fatalf("buildBatchPayload() error = %v", err)
+		t.Fatal(err)
 	}
-	if len(payload) == 0 {
-		t.Fatal("buildBatchPayload() = nil, want the accepted entries' payload")
+	if consumed != 4 || len(decodeCLSBody(t, payload)) != 4 {
+		t.Fatalf("first group consumed=%d, want four", consumed)
 	}
-
-	entry := waitCLSEntry(t, entries, "dropped")
-	if !strings.Contains(entry.Message, "2") {
-		t.Fatalf("drop diagnostic = %q, want the dropped remainder count", entry.Message)
+	payload, consumed, err = p.buildBatchPayload(logs[consumed:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed != 2 || len(decodeCLSBody(t, payload)) != 2 {
+		t.Fatalf("remainder consumed=%d, want two", consumed)
 	}
 }
 

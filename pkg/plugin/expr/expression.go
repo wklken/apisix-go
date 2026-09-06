@@ -286,6 +286,9 @@ func (c *condition) eval(resolve Resolver) bool {
 }
 
 func equal(left any, right any) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
 	switch right.(type) {
 	case float64, float32, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64, json.Number:

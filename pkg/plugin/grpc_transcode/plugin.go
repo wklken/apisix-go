@@ -1214,7 +1214,7 @@ func (p *Plugin) decodeStatusDetails(encoded string, binding *methodBinding) ([]
 
 func (p *Plugin) protoJSONMarshalOptions() protojson.MarshalOptions {
 	return protojson.MarshalOptions{
-		UseProtoNames:  false,
+		UseProtoNames:  true,
 		UseEnumNumbers: p.enumAsValue(),
 	}
 }

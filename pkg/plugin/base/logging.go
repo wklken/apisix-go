@@ -59,13 +59,17 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 
 	result := false
 	hasOperand := false
-	pendingOp := "AND"
+	groupOp := "AND"
+	pendingOp := groupOp
 	for _, condition := range conditions {
 		op, isOperator, valid := expressionOperator(condition, nested)
 		if !valid {
 			return false
 		}
 		if isOperator {
+			if !hasOperand {
+				groupOp = op
+			}
 			pendingOp = op
 			continue
 		}
@@ -80,7 +84,7 @@ func ExprMatched(r *http.Request, expressions any, status int) bool {
 		} else {
 			result = result && matched
 		}
-		pendingOp = "AND"
+		pendingOp = groupOp
 	}
 	return hasOperand && result
 }

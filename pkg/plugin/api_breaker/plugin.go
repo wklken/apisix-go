@@ -260,7 +260,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	if p.shouldBreak(key) {
 		if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
 			for _, header := range p.config.BreakResponseHeaders {
-				w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
+				addBreakResponseHeader(w.Header(), header.Key, resolveHeaderValue(r, header.Value))
 			}
 		}
 		w.WriteHeader(p.config.BreakResponseCode)
@@ -312,7 +312,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.shouldBreak(key) {
 			if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
 				for _, header := range p.config.BreakResponseHeaders {
-					w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
+					addBreakResponseHeader(w.Header(), header.Key, resolveHeaderValue(r, header.Value))
 				}
 			}
 			w.WriteHeader(p.config.BreakResponseCode)
@@ -497,4 +497,13 @@ func resolveHeaderValue(r *http.Request, value string) string {
 	return base.ResolveRequestVariables(value, func(name string) string {
 		return base.RequestVar(r, name, 0)
 	})
+}
+
+// NGINX keeps Content-Type as a single value even when add_header is used.
+func addBreakResponseHeader(headers http.Header, key, value string) {
+	if strings.EqualFold(key, "Content-Type") {
+		headers.Set(key, value)
+		return
+	}
+	headers.Add(key, value)
 }

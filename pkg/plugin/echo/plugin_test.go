@@ -246,8 +246,9 @@ func TestSchemaMatchesOfficialBodyAndHeaderRequirements(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:   "headers only is accepted",
-			config: map[string]any{"headers": map[string]any{"X-Echo": "yes"}},
+			name:    "headers only is rejected",
+			wantErr: true,
+			config:  map[string]any{"headers": map[string]any{"X-Echo": "yes"}},
 		},
 		{
 			name: "string and number headers are accepted with body config",

@@ -277,7 +277,7 @@ cases:
       output:
         logs:
             matches: 'validate plugin udp-logger metadata:.*log_format.*expected object.*got string'
-        status: 502
+        status: 503
 
     - name: metadata-custom-log-format-is-delivered
       config:

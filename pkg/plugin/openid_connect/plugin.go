@@ -68,7 +68,6 @@ const (
 const schema = `
 {
   "type": "object",
-	"additionalProperties": false,
   "properties": {
     "client_id": {
       "type": "string",

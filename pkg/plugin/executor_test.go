@@ -330,7 +330,7 @@ func TestRequestPipelineStaticHookPerRequest(t *testing.T) {
 	}
 }
 
-func TestRequestPipelineConsumerOverridesRouteRewriteBeforeExecution(t *testing.T) {
+func TestRequestPipelineRunsOriginalRewriteBeforeConsumerOverride(t *testing.T) {
 	order := []string{}
 	route := newExecutorRequestPlugin(
 		"route",
@@ -364,7 +364,7 @@ func TestRequestPipelineConsumerOverridesRouteRewriteBeforeExecution(t *testing.
 		httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/", nil),
 	)
-	if got, want := order, []string{"consumer", "terminal"}; !reflect.DeepEqual(got, want) {
+	if got, want := order, []string{"route", "consumer", "terminal"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("consumer override order = %v, want %v", got, want)
 	}
 }
@@ -422,7 +422,10 @@ func TestRequestPipelinePropagatesEveryReplacementRequest(t *testing.T) {
 	rewrite := newExecutorRequestPlugin(
 		"rewrite",
 		1,
-		func(_ http.ResponseWriter, _ *http.Request) base.RequestPhaseResult {
+		func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+			if r != first {
+				t.Fatalf("rewrite request = %p, want auth replacement %p", r, first)
+			}
 			return base.ContinueRequest(second)
 		},
 	)
@@ -431,8 +434,8 @@ func TestRequestPipelinePropagatesEveryReplacementRequest(t *testing.T) {
 		pipelineBinding("jwt-auth", auth, ScopeRoute, 1),
 		pipelineBinding("proxy-rewrite", rewrite, ScopeRoute, 1),
 	}, func(r *http.Request) (ConsumerResolution, error) {
-		if r != first {
-			t.Fatalf("resolver request = %p, want auth replacement %p", r, first)
+		if r != second {
+			t.Fatalf("resolver request = %p, want rewrite replacement %p", r, second)
 		}
 		return ConsumerResolution{Request: r, Resolved: true}, nil
 	})
@@ -727,7 +730,7 @@ func TestPostResolutionHookRunsAfterWinnerMergeBeforeAnyLaterStage(t *testing.T)
 		}
 	}
 	auth := newExecutorRequestPlugin("auth", 500, phase("auth"))
-	routeRewrite := newExecutorRequestPlugin("route-rewrite", 400, phase("route-loser"))
+	routeRewrite := newExecutorRequestPlugin("route-rewrite", 400, phase("route-original"))
 	consumerRewrite := newExecutorRequestPlugin("consumer-rewrite", 400, phase("consumer-rewrite"))
 	access := newExecutorRequestPlugin("access", 300, phase("access"))
 	before := newResponseTestPlugin(
@@ -761,7 +764,16 @@ func TestPostResolutionHookRunsAfterWinnerMergeBeforeAnyLaterStage(t *testing.T)
 			return r, nil
 		},
 	).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-	want := []string{"auth", "resolver", "hook", "consumer-rewrite", "access", "before-proxy", "terminal"}
+	want := []string{
+		"auth",
+		"route-original",
+		"resolver",
+		"hook",
+		"consumer-rewrite",
+		"access",
+		"before-proxy",
+		"terminal",
+	}
 	if !reflect.DeepEqual(order, want) {
 		t.Fatalf("order = %v, want %v", order, want)
 	}

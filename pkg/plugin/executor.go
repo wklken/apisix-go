@@ -65,6 +65,7 @@ type Binding struct {
 	InstanceKey  InstanceKey
 	logPolicy    base.LogCapturePolicy
 	logPolicySet bool
+	fromConsumer bool
 }
 
 type ConsumerIdentity struct {
@@ -223,7 +224,7 @@ func (p RequestPipeline) ThenWithPostResolutionHook(
 		handler:   p.buildPostResolutionHandler(staticEffective, terminal, nil),
 	}
 	plainAfterAuthentication := p.buildPlainResolvedHandler(terminal, hook, &preparedStatic)
-	plainHandler := p.wrapAuthentication(plainAfterAuthentication)
+	plainHandler := p.wrapStaticRewrite(plainAfterAuthentication)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request := r
 		if p.logExecutor != nil {
@@ -262,7 +263,7 @@ func (p RequestPipeline) ThenWithPostResolutionHook(
 		afterAuthentication := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p.runResolved(w, r, terminal, hook, execution)
 		})
-		p.wrapAuthentication(afterAuthentication).ServeHTTP(execution.writer, request)
+		p.wrapStaticRewrite(afterAuthentication).ServeHTTP(execution.writer, request)
 		execution.complete()
 		p.sealAndRegisterAfterRequest(w, request, execution)
 	})
@@ -287,43 +288,27 @@ func chainPostResolutionHooks(first, second PostResolutionHook) PostResolutionHo
 	}
 }
 
-func (p RequestPipeline) wrapAuthentication(next http.Handler) http.Handler {
+// wrapStaticRewrite runs the original system/global/route rewrite list,
+// including authentication, before consumer overrides are resolved.
+func (p RequestPipeline) wrapStaticRewrite(next http.Handler) http.Handler {
 	bindings := make([]Binding, 0)
 	corsBindings := make([]Binding, 0)
-	preAuthentication := make([]Binding, 0)
-	globalRewrite := make([]Binding, 0)
-	systemRewrite := make([]Binding, 0)
 	for _, binding := range p.bindings {
-		if binding.Scope == ScopeSystem || binding.Scope == ScopeGlobal || binding.Scope == ScopeRoute {
-			if binding.Descriptor.Factory == "cors" {
-				if binding.Plugin != nil {
-					corsBindings = append(corsBindings, binding)
-				}
-				continue
+		if binding.Scope != ScopeSystem && binding.Scope != ScopeGlobal && binding.Scope != ScopeRoute {
+			continue
+		}
+		if binding.Descriptor.Factory == "cors" {
+			if binding.Plugin != nil {
+				corsBindings = append(corsBindings, binding)
 			}
-			if binding.Descriptor.authenticatesConsumer {
-				bindings = append(bindings, binding)
-				continue
-			}
-			if binding.Descriptor.preAuthentication {
-				preAuthentication = append(preAuthentication, binding)
-				continue
-			}
-			if binding.Descriptor.requestStage == RequestStageRewrite {
-				switch binding.Scope {
-				case ScopeGlobal:
-					globalRewrite = append(globalRewrite, binding)
-				case ScopeSystem:
-					systemRewrite = append(systemRewrite, binding)
-				}
-			}
+			continue
+		}
+		if binding.Descriptor.authenticatesConsumer || binding.Descriptor.preAuthentication ||
+			binding.Descriptor.requestStage == RequestStageRewrite {
+			bindings = append(bindings, binding)
 		}
 	}
-	next = wrapAuthenticationWithStaticCORS(next, bindings, corsBindings)
-	next = wrapRequestStageBindings(next, preAuthentication)
-	next = wrapRequestStageBindings(next, globalRewrite)
-	next = wrapRequestStageBindings(next, systemRewrite)
-	return next
+	return wrapAuthenticationWithStaticCORS(next, bindings, corsBindings)
 }
 
 func isStaticPreAuthenticationBinding(binding Binding) bool {
@@ -341,6 +326,10 @@ func (p RequestPipeline) postAuthenticationBindings(bindings []Binding) []Bindin
 		}
 	}
 	return slices.DeleteFunc(bindings, func(binding Binding) bool {
+		if !binding.fromConsumer && binding.Scope != ScopeConsumer &&
+			binding.Descriptor.requestStage == RequestStageRewrite && binding.Descriptor.Factory != "cors" {
+			return true
+		}
 		if !binding.Descriptor.preAuthentication {
 			return false
 		}
@@ -905,6 +894,7 @@ func mergeEffectiveBindingSet(static, resolved []Binding, overrideFactories []st
 		// route bindings. Keep their exact provenance while allowing one
 		// stage-local priority sort to order all effective winners.
 		binding.Scope = ScopeRoute
+		binding.fromConsumer = true
 		appendEffectiveBinding(&merged, indexes, binding)
 	}
 	return EffectiveBindingSet{global: global, merged: merged}

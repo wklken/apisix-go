@@ -293,7 +293,7 @@ func TestPostInitRejectsInvalidVarsExpressions(t *testing.T) {
 	}
 }
 
-func TestSchemaRejectsAbortStatusAboveHTTPMaximum(t *testing.T) {
+func TestSchemaAdmitsAbortStatusWithoutUpperBound(t *testing.T) {
 	p := &Plugin{}
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -304,8 +304,8 @@ func TestSchemaRejectsAbortStatusAboveHTTPMaximum(t *testing.T) {
 			"http_status": 1000,
 		},
 	}
-	if err := util.Validate(config, p.GetSchema()); err == nil {
-		t.Fatal("abort.http_status=1000 should fail schema validation")
+	if err := util.Validate(config, p.GetSchema()); err != nil {
+		t.Fatalf("abort.http_status=1000 should pass schema validation: %v", err)
 	}
 }
 

@@ -187,6 +187,29 @@ type Config struct {
 	BufferDuration    int    `json:"buffer_duration,omitempty"`
 	InactiveTimeout   int    `json:"inactive_timeout,omitempty"`
 	MaxPendingEntries int    `json:"max_pending_entries,omitempty"`
+	retryDelaySet     bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type config Config
+
+	var parsed struct {
+		config
+		RetryDelay json.RawMessage `json:"retry_delay"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*c = Config(parsed.config)
+	if len(parsed.RetryDelay) > 0 {
+		c.retryDelaySet = true
+		if string(parsed.RetryDelay) != "null" {
+			if err := json.Unmarshal(parsed.RetryDelay, &c.RetryDelay); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type TCPConfig struct {
@@ -333,6 +356,7 @@ func (p *Plugin) PostInit() error {
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
+		RetryDelaySet:      p.config.retryDelaySet,
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,
@@ -673,7 +697,7 @@ func (p *Plugin) applyDefaults() {
 	if p.config.BatchMaxSize == 0 {
 		p.config.BatchMaxSize = 1000
 	}
-	if p.config.RetryDelay == 0 {
+	if p.config.RetryDelay == 0 && !p.config.retryDelaySet {
 		p.config.RetryDelay = 1
 	}
 	if p.config.BufferDuration == 0 {

@@ -15,6 +15,7 @@ import (
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
 type Plugin struct {
@@ -42,7 +43,7 @@ const schema = `
 	  "response_status": {
 		"type": "integer",
 		"default": 200,
-		"minimum": 200,
+		"minimum": 100,
 		"maximum": 999
 	  },
 	  "content_type": {
@@ -168,8 +169,7 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 
 	// mock header
 	if *p.config.WithMockHeader {
-		// FIXME: change 0.0.1 to real version
-		w.Header().Add("x-mock-by", "APISIX-GO/0.0.1")
+		w.Header().Add("x-mock-by", "APISIX/"+version.Version)
 	}
 
 	w.WriteHeader(p.config.ResponseStatus)

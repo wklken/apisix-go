@@ -266,7 +266,9 @@ func (p *Plugin) Config() any {
 // RunRequestPhase owns CORS OPTIONS handling. Preflight and bare OPTIONS are
 // local responses and therefore stop the request pipeline exactly once.
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-	*r = *r.WithContext(context.WithValue(r.Context(), originalOriginKey{}, r.Header.Get("Origin")))
+	if _, captured := r.Context().Value(originalOriginKey{}).(string); !captured {
+		*r = *r.WithContext(context.WithValue(r.Context(), originalOriginKey{}, r.Header.Get("Origin")))
+	}
 	if r.Method != http.MethodOptions {
 		return base.ContinueRequest(r)
 	}
@@ -315,6 +317,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	}
 	handler := p.cors.Handler(corsNext)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Static CORS runs before authentication; retain its origin for the
+		// request phase that runs after consumer resolution.
+		if _, captured := r.Context().Value(originalOriginKey{}).(string); !captured {
+			*r = *r.WithContext(context.WithValue(r.Context(), originalOriginKey{}, r.Header.Get("Origin")))
+		}
 		// Capture request headers before downstream plugins (e.g. proxy-rewrite)
 		// can rewrite them: the CORS response headers must reflect the original
 		// request, not a rewritten one.

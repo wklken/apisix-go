@@ -16,6 +16,8 @@ import (
 )
 
 var tls12CipherSuites = map[string]uint16{
+	"ECDHE-ECDSA-AES128-SHA":        tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+	"ECDHE-RSA-AES128-SHA":          tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
 	"ECDHE-ECDSA-AES128-GCM-SHA256": tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 	"ECDHE-RSA-AES128-GCM-SHA256":   tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 	"ECDHE-ECDSA-AES256-GCM-SHA384": tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
@@ -97,7 +99,7 @@ func CompileBase(input BaseInput) (*Snapshot, error) {
 
 func compileBase(input BaseInput) (*tls.Config, compiledSettings, error) {
 	settings := frontendSettings(input.Config)
-	minVersion, maxVersion, _, err := parseProtocols(settings.protocols, settings.enabled, false)
+	minVersion, maxVersion, _, err := parseProtocols(settings.protocols, settings.enabled)
 	if err != nil {
 		return nil, compiledSettings{}, fmt.Errorf("frontend TLS protocols: %w", err)
 	}
@@ -154,7 +156,7 @@ func frontendSettings(cfg *config.Config) compiledSettings {
 	return settings
 }
 
-func parseProtocols(raw string, required bool, allowTLS11 bool) (uint16, uint16, map[uint16]struct{}, error) {
+func parseProtocols(raw string, required bool) (uint16, uint16, map[uint16]struct{}, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		if required {
@@ -174,9 +176,6 @@ func parseProtocols(raw string, required bool, allowTLS11 bool) (uint16, uint16,
 		var version uint16
 		switch token {
 		case "TLSv1.1":
-			if !allowTLS11 {
-				return 0, 0, nil, fmt.Errorf("unsupported protocol %q", token)
-			}
 			version = tls.VersionTLS11
 		case "TLSv1.2":
 			version = tls.VersionTLS12
@@ -205,9 +204,6 @@ func parseCipherSuites(raw string, minVersion uint16, required bool) ([]uint16, 
 			return nil, fmt.Errorf("TLS 1.2 requires a non-empty cipher list")
 		}
 		return nil, nil
-	}
-	if minVersion == tls.VersionTLS13 {
-		return nil, fmt.Errorf("TLS 1.3-only configuration must not set TLS 1.2 cipher suites")
 	}
 
 	parts := strings.Split(raw, ":")
@@ -282,7 +278,6 @@ func compileCertificateIndex(ssls map[string]resource.SSL) (*certificateIndex, e
 			if len(ssl.SSLProtocols) > 0 {
 				minVersion, maxVersion, protocols, err = parseProtocols(
 					strings.Join(ssl.SSLProtocols, " "),
-					true,
 					true,
 				)
 				if err != nil {

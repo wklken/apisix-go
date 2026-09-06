@@ -256,6 +256,29 @@ type Config struct {
 	RetryDelay        int `json:"retry_delay,omitempty"`
 	MaxRetryCount     int `json:"max_retry_count,omitempty"`
 	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
+	retryDelaySet     bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type config Config
+
+	var parsed struct {
+		config
+		RetryDelay json.RawMessage `json:"retry_delay"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*c = Config(parsed.config)
+	if len(parsed.RetryDelay) > 0 {
+		c.retryDelaySet = true
+		if string(parsed.RetryDelay) != "null" {
+			if err := json.Unmarshal(parsed.RetryDelay, &c.RetryDelay); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type FieldConfig struct {
@@ -405,7 +428,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.BatchMaxSize == 0 {
 		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
 	}
-	if p.config.RetryDelay == 0 {
+	if p.config.RetryDelay == 0 && !p.config.retryDelaySet {
 		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
 	}
 	if p.config.BufferDuration == 0 {
@@ -443,6 +466,7 @@ func (p *Plugin) PostInit() error {
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
+		RetryDelaySet:      p.config.retryDelaySet,
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,

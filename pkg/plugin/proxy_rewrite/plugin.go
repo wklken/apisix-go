@@ -204,7 +204,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		data := map[string]any{
 			"uri":     uri,
-			"method":  p.config.Method,
 			"host":    p.config.Host,
 			"scheme":  p.config.Scheme,
 			"headers": p.config.Headers,
@@ -213,6 +212,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		rewritten := r.WithContext(context.WithValue(ctx, apisixctx.ProxyRewriteKey, data))
 		apisixctx.FinalizeProxyRewrite(rewritten)
 		p.config.Headers.apply(rewritten, captures)
+		// APISIX expands header variables after the URI rewrite but before
+		// changing the request method.
+		data["method"] = p.config.Method
+		if p.config.Method != "" {
+			rewritten.Method = p.config.Method
+		}
 
 		next.ServeHTTP(w, rewritten)
 	}

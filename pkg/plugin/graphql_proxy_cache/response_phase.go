@@ -250,15 +250,15 @@ func (p *Plugin) storeStateWithHeader(
 	}
 	entry.expiresAt = entry.storedAt.Add(entry.ttl)
 	removeDerivedGraphQLCacheHeaders(entry.header)
+	if p.memoryStore != nil {
+		p.memoryStore.StoreVariant(key, requestHeader, sharedCacheEntry(entry))
+		return nil
+	}
 	storageKey, staleKeys := p.prepareStorageKey(requestHeader, key, varyHeaders)
 	for _, staleKey := range staleKeys {
 		p.deleteStorageKey(staleKey)
 	}
 	shared := sharedCacheEntry(entry)
-	if p.memoryStore != nil {
-		p.memoryStore.Store(storageKey, shared)
-		return nil
-	}
 	if p.diskStore != nil {
 		return p.diskStore.Store(storageKey, shared)
 	}

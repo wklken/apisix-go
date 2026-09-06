@@ -156,7 +156,9 @@ func (p *Plugin) rewriteGET(r *http.Request) {
 		variables := map[string]string{}
 		source := r.URL.Query()
 		for _, name := range p.config.Variables {
-			variables[name] = source.Get(name)
+			if source.Has(name) {
+				variables[name] = source.Get(name)
+			}
 		}
 		encoded, err := json.Marshal(variables)
 		if err == nil {
@@ -169,7 +171,9 @@ func (p *Plugin) rewriteGET(r *http.Request) {
 func (p *Plugin) pickVariables(body map[string]any) map[string]any {
 	variables := make(map[string]any, len(p.config.Variables))
 	for _, name := range p.config.Variables {
-		variables[name] = body[name]
+		if value, exists := body[name]; exists {
+			variables[name] = value
+		}
 	}
 	return variables
 }

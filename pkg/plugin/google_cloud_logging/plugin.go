@@ -409,7 +409,7 @@ func googleSnapshotDefaultLogFields(snapshot base.LogSnapshot) map[string]any {
 		defaultResponseSizeField:  snapshot.Outcome.Bytes,
 		defaultUserAgentField:     snapshot.Request.Header.Get("User-Agent"),
 		defaultRemoteIPField:      remoteIP,
-		defaultServerIPField:      snapshot.Request.Host,
+		defaultServerIPField:      base.SnapshotUpstreamAddress(snapshot),
 		defaultLatencyField:       latencyString(latency),
 		defaultInsertIDField:      snapshot.Request.Header.Get("X-Request-ID"),
 	}

@@ -85,7 +85,7 @@ func BuildAccessLogFromSnapshot(snapshot LogSnapshot, routeID string, serverAddr
 		"client_ip":  fmt.Sprint(SnapshotValue(snapshot, "$remote_addr")),
 		"start_time": float64(snapshot.Started.UnixNano()) / float64(time.Millisecond),
 		"latency":    latency, "upstream_latency": upstreamLatency, "apisix_latency": apisixLatency,
-		"upstream":        snapshotUpstreamAddress(snapshot),
+		"upstream":        SnapshotUpstreamAddress(snapshot),
 		"request_id":      snapshot.Request.ID,
 		"node_id":         snapshot.NodeID,
 		"response_source": string(snapshot.Source),
@@ -118,7 +118,7 @@ func snapshotAccessURL(snapshot LogSnapshot, serverAddr ...string) string {
 	return scheme + "://" + authority + snapshot.Request.URI
 }
 
-func snapshotUpstreamAddress(snapshot LogSnapshot) string {
+func SnapshotUpstreamAddress(snapshot LogSnapshot) string {
 	if address := fmt.Sprint(SnapshotValue(snapshot, "$upstream_addr")); address != "" {
 		return address
 	}

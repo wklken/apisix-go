@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/logger"
+	"github.com/wklken/apisix-go/pkg/plugin/expr"
 	"github.com/wklken/apisix-go/pkg/resource"
 )
 
@@ -115,6 +116,9 @@ type routeRegistrar struct {
 	notFound              http.Handler
 	dispatchers           map[string]*wildcardDispatcher
 	nextRegistrationIndex uint64
+	hasVars               bool
+	graphqlMaxSize        int
+	fallbackPaths         routeFallbackNode
 }
 
 func newRouteRegistrar(mux *chi.Mux, notFoundHandlers ...http.Handler) *routeRegistrar {
@@ -135,6 +139,7 @@ func (r *routeRegistrar) registerRouteWithHosts(
 	uri string,
 	hosts []string,
 	handler http.Handler,
+	expressions ...*expr.Expression,
 ) error {
 	converted, err := convertURI(uri)
 	if err != nil {
@@ -142,18 +147,12 @@ func (r *routeRegistrar) registerRouteWithHosts(
 	}
 	registrationIndex := r.nextRegistrationIndex
 	r.nextRegistrationIndex++
-	if strings.ContainsRune(uri, '*') || len(hosts) > 0 || !strings.ContainsRune(uri, ':') {
-		r.registerWildcardRoute(methods, converted, uri, hosts, handler, registrationIndex)
-		return nil
+	var vars *expr.Expression
+	if len(expressions) > 0 {
+		vars = expressions[0]
 	}
-	if len(methods) == 0 {
-		r.mux.Handle(converted, withMatchedRoute(handler, uri, ""))
-		return nil
-	}
-	for _, method := range methods {
-		logger.Debugf("add route: %s %s", method, converted)
-		r.mux.Method(method, converted, withMatchedRoute(handler, uri, ""))
-	}
+	r.hasVars = r.hasVars || vars != nil
+	r.registerWildcardRoute(methods, converted, uri, hosts, handler, registrationIndex, vars)
 	return nil
 }
 
@@ -164,6 +163,8 @@ type wildcardRoute struct {
 	hosts             []string
 	handler           http.Handler
 	registrationIndex uint64
+	vars              *expr.Expression
+	graphqlMaxSize    int
 }
 
 type wildcardDispatcher struct {
@@ -171,11 +172,13 @@ type wildcardDispatcher struct {
 	notFound    http.Handler
 	nonEmbedded *routeDecisionIndex
 	embedded    map[string]*routeDecisionIndex
+	registrar   *routeRegistrar
 }
 
 type routeCandidate struct {
-	route wildcardRoute
-	valid bool
+	route    wildcardRoute
+	valid    bool
+	previous *routeCandidate
 }
 
 type routeHostDecision struct {
@@ -285,20 +288,50 @@ func (d *routeDecisionIndex) add(route wildcardRoute) {
 }
 
 func (d *routeHostDecision) add(route wildcardRoute) {
-	candidate := routeCandidate{route: route, valid: true}
 	if route.method == "*" {
-		if !d.wildcard.valid || d.wildcard.route.registrationIndex < route.registrationIndex {
-			d.wildcard = candidate
-		}
+		d.wildcard = insertRouteCandidate(d.wildcard, route)
 		return
 	}
 	if d.exact == nil {
 		d.exact = make(map[string]routeCandidate)
 	}
-	current, ok := d.exact[route.method]
-	if !ok || current.route.registrationIndex < route.registrationIndex {
-		d.exact[route.method] = candidate
+	d.exact[route.method] = insertRouteCandidate(d.exact[route.method], route)
+}
+
+func insertRouteCandidate(current routeCandidate, route wildcardRoute) routeCandidate {
+	if !current.valid || current.route.registrationIndex < route.registrationIndex {
+		candidate := routeCandidate{route: route, valid: true}
+		// Only conditional winners need to retain lower-priority alternatives.
+		if route.vars != nil && current.valid {
+			candidate.previous = &current
+		}
+		return candidate
 	}
+	if current.route.vars != nil {
+		var previous routeCandidate
+		if current.previous != nil {
+			previous = *current.previous
+		}
+		previous = insertRouteCandidate(previous, route)
+		current.previous = &previous
+	}
+	return current
+}
+
+func (candidate routeCandidate) match(request *http.Request) routeCandidate {
+	for candidate.valid {
+		if candidate.route.vars == nil ||
+			candidate.route.vars.Eval(func(name string) any {
+				return routeVariableValue(request, name, candidate.route.pattern, candidate.route.graphqlMaxSize)
+			}) {
+			return candidate
+		}
+		if candidate.previous == nil {
+			break
+		}
+		candidate = *candidate.previous
+	}
+	return routeCandidate{}
 }
 
 func (d *routeDecisionIndex) lookup(
@@ -306,7 +339,7 @@ func (d *routeDecisionIndex) lookup(
 	wildcardHost string,
 	hostRank int,
 	methodIndex int,
-	method string,
+	request *http.Request,
 ) (routeCandidate, bool, bool) {
 	if hostRank == 1 {
 		var selected routeCandidate
@@ -317,10 +350,10 @@ func (d *routeDecisionIndex) lookup(
 			}
 			hasRoutes = true
 			if methodIndex == 1 {
-				selected = decision.wildcard
+				selected = decision.wildcard.match(request)
 				return !selected.valid
 			}
-			selected = decision.exact[method]
+			selected = decision.exact[request.Method].match(request)
 			return !selected.valid
 		})
 		return selected, hasRoutes, selected.valid
@@ -333,10 +366,11 @@ func (d *routeDecisionIndex) lookup(
 		return routeCandidate{}, false, false
 	}
 	if methodIndex == 1 {
-		return decision.wildcard, true, decision.wildcard.valid
+		candidate := decision.wildcard.match(request)
+		return candidate, true, candidate.valid
 	}
-	candidate, ok := decision.exact[method]
-	return candidate, true, ok
+	candidate := decision.exact[request.Method].match(request)
+	return candidate, true, candidate.valid
 }
 
 func (d *routeHostDecision) hasRoutes() bool {
@@ -404,16 +438,19 @@ func (r *routeRegistrar) registerWildcardRoute(
 	hosts []string,
 	handler http.Handler,
 	registrationIndex uint64,
+	vars *expr.Expression,
 ) {
-	dispatcher := r.dispatchers[converted]
+	identity := effectiveRouteURI(converted)
+	dispatcher := r.dispatchers[identity]
 	if dispatcher == nil {
 		dispatcher = &wildcardDispatcher{
-			prefix:   strings.TrimSuffix(converted, "*"),
-			notFound: r.notFound,
-			embedded: make(map[string]*routeDecisionIndex),
+			prefix:    strings.TrimSuffix(converted, "*"),
+			notFound:  r.notFound,
+			registrar: r,
+			embedded:  make(map[string]*routeDecisionIndex),
 		}
 		r.mux.Handle(converted, dispatcher)
-		r.dispatchers[converted] = dispatcher
+		r.dispatchers[identity] = dispatcher
 	}
 
 	embedded := strings.Contains(pattern, "/*/")
@@ -425,6 +462,8 @@ func (r *routeRegistrar) registerWildcardRoute(
 			hosts:             hosts,
 			handler:           handler,
 			registrationIndex: registrationIndex,
+			vars:              vars,
+			graphqlMaxSize:    r.graphqlMaxSize,
 		})
 		return
 	}
@@ -437,6 +476,8 @@ func (r *routeRegistrar) registerWildcardRoute(
 			hosts:             hosts,
 			handler:           handler,
 			registrationIndex: registrationIndex,
+			vars:              vars,
+			graphqlMaxSize:    r.graphqlMaxSize,
 		})
 	}
 }
@@ -462,12 +503,22 @@ func (d *wildcardDispatcher) add(route wildcardRoute) {
 }
 
 func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	route, matched := d.selectRoute(request)
+	if !matched && d.registrar != nil && d.registrar.hasVars {
+		route, matched = d.registrar.fallbackPaths.match(request.URL.Path, request, d)
+	}
+	if matched {
+		serveMatchedRoute(writer, request, route, requestHostname(request.Host))
+		return
+	}
+	d.notFound.ServeHTTP(writer, request)
+}
+
+func (d *wildcardDispatcher) selectRoute(request *http.Request) (wildcardRoute, bool) {
 	host := requestHostname(request.Host)
 	wildcardHost := wildcardHostKey(host)
 	nonEmbeddedPathMatched := d.nonEmbedded != nil &&
 		matchesRoutePath(d.nonEmbedded.pattern, request.URL.Path)
-	pathMatched := false
-	hostMatched := false
 	for embeddedIndex := range 2 {
 		for _, hostRank := range []int{2, 1, 0} {
 			for methodIndex := range 2 {
@@ -475,22 +526,19 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 					if len(d.embedded) == 0 {
 						continue
 					}
-					route, matched, matchedPath, matchedHost := d.matchEmbeddedRoute(
+					route, matched, _, _ := d.matchEmbeddedRoute(
 						request,
 						host,
 						wildcardHost,
 						hostRank,
 						methodIndex,
 					)
-					pathMatched = pathMatched || matchedPath
-					hostMatched = hostMatched || matchedHost
 					if matched {
-						serveMatchedRoute(writer, request, route, host)
-						return
+						return route, true
 					}
 					continue
 				}
-				route, matched, matchedPath, matchedHost := d.matchNonEmbeddedRoute(
+				route, matched, _, _ := d.matchNonEmbeddedRoute(
 					request,
 					host,
 					wildcardHost,
@@ -498,26 +546,13 @@ func (d *wildcardDispatcher) ServeHTTP(writer http.ResponseWriter, request *http
 					methodIndex,
 					nonEmbeddedPathMatched,
 				)
-				pathMatched = pathMatched || matchedPath
-				hostMatched = hostMatched || matchedHost
 				if matched {
-					serveMatchedRoute(writer, request, route, host)
-					return
+					return route, true
 				}
 			}
 		}
 	}
-	if pathMatched && hostMatched {
-		d.notFound.ServeHTTP(writer, request)
-		return
-	}
-	d.notFound.ServeHTTP(writer, request)
-}
-
-func withMatchedRoute(next http.Handler, uri string, host string) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		next.ServeHTTP(writer, apisixctx.WithMatchedRoute(request, uri, host))
-	})
+	return wildcardRoute{}, false
 }
 
 func serveMatchedRoute(
@@ -526,6 +561,7 @@ func serveMatchedRoute(
 	route wildcardRoute,
 	requestHost string,
 ) {
+	setMatchedRouteParameters(request, route.pattern)
 	route.handler.ServeHTTP(
 		writer,
 		apisixctx.WithMatchedRoute(request, route.pattern, matchedRouteHost(route.hosts, requestHost)),
@@ -579,7 +615,7 @@ func (d *wildcardDispatcher) matchEmbeddedRoute(
 				wildcardHost,
 				hostRank,
 				methodIndex,
-				request.Method,
+				request,
 			)
 			hostMatched = hostMatched || matchedHost
 			if ok && (!bestFound || candidate.route.registrationIndex > bestIndex) {
@@ -612,7 +648,7 @@ func (d *wildcardDispatcher) matchNonEmbeddedRoute(
 		wildcardHost,
 		hostRank,
 		methodIndex,
-		request.Method,
+		request,
 	)
 	if !ok {
 		return wildcardRoute{}, false, true, matchedHost

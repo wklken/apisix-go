@@ -1132,15 +1132,9 @@ func resolveLimitCountKey(r *http.Request, keyType, configuredKey string) string
 	case "constant":
 		key = configuredKey
 	case "var_combination":
-		resolved := 0
-		key = varPattern.ReplaceAllStringFunc(configuredKey, func(match string) string {
-			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
-			name = strings.TrimSuffix(name, "}")
-			value := limitCountRequestVar(r, name)
-			if value != "" {
-				resolved++
-			}
-			return value
+		var resolved int
+		key, resolved = limitbase.ResolveVars(configuredKey, func(name string) string {
+			return limitCountRequestVar(r, name)
 		})
 		if resolved == 0 {
 			key = ""

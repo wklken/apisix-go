@@ -24,8 +24,7 @@ type Plugin struct {
 	base.BasePlugin
 	config Config
 
-	mu       sync.Mutex
-	sessions map[string]*session
+	state *SessionRegistry
 
 	pingInterval time.Duration
 }
@@ -106,8 +105,8 @@ func (p *Plugin) Init() error {
 
 func (p *Plugin) PostInit() error {
 	p.config.BaseURI = strings.TrimRight(p.config.BaseURI, "/")
-	if p.sessions == nil {
-		p.sessions = map[string]*session{}
+	if p.state == nil {
+		p.state = NewSessionRegistry()
 	}
 	if p.pingInterval <= 0 {
 		p.pingInterval = 30 * time.Second
@@ -318,9 +317,9 @@ func (p *Plugin) startSession(parent context.Context) (*session, error) {
 		return nil, p.failStartSession(sess, cmd, stdin, accepted, err)
 	}
 
-	p.mu.Lock()
-	p.sessions[id] = sess
-	p.mu.Unlock()
+	p.state.mu.Lock()
+	p.state.sessions[id] = sess
+	p.state.mu.Unlock()
 	close(registered)
 
 	return sess, nil
@@ -331,9 +330,9 @@ func (p *Plugin) lookupSession(id string) *session {
 		return nil
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.sessions[id]
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	return p.state.sessions[id]
 }
 
 func (p *Plugin) closeSession(sess *session) {
@@ -341,48 +340,21 @@ func (p *Plugin) closeSession(sess *session) {
 		return
 	}
 
-	p.mu.Lock()
-	if current := p.sessions[sess.id]; current == sess {
-		delete(p.sessions, sess.id)
+	p.state.mu.Lock()
+	if current := p.state.sessions[sess.id]; current == sess {
+		delete(p.state.sessions, sess.id)
 	}
-	p.mu.Unlock()
+	p.state.mu.Unlock()
 
 	sess.close()
 }
 
 func (p *Plugin) removeSession(sess *session) {
-	p.mu.Lock()
-	if current := p.sessions[sess.id]; current == sess {
-		delete(p.sessions, sess.id)
+	p.state.mu.Lock()
+	if current := p.state.sessions[sess.id]; current == sess {
+		delete(p.state.sessions, sess.id)
 	}
-	p.mu.Unlock()
-}
-
-func (p *Plugin) closeAll() {
-	p.mu.Lock()
-	sessions := make([]*session, 0, len(p.sessions))
-	for _, sess := range p.sessions {
-		sessions = append(sessions, sess)
-	}
-	p.sessions = map[string]*session{}
-	p.mu.Unlock()
-
-	var firstPanic any
-	panicked := false
-	for _, sess := range sessions {
-		func() {
-			defer func() {
-				if recovered := recover(); recovered != nil && !panicked {
-					panicked = true
-					firstPanic = recovered
-				}
-			}()
-			sess.close()
-		}()
-	}
-	if panicked {
-		panic(firstPanic)
-	}
+	p.state.mu.Unlock()
 }
 
 func (p *Plugin) failStartSession(

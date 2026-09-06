@@ -670,6 +670,9 @@ func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
 			// it as an upstream failure instead of a client cancellation.
 			err = directorErr
 			status = http.StatusBadGateway
+			if errors.Is(err, errEmptyUpstream) {
+				status = http.StatusServiceUnavailable
+			}
 			directorFailed = true
 		} else if !errors.Is(err, context.Canceled) {
 			var netErr net.Error

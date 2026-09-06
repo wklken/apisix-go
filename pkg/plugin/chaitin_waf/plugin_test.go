@@ -590,8 +590,11 @@ func TestChaitinRouteConfigOverridesMetadataThenDefaults(t *testing.T) {
 	if len(p.effective.Nodes) != 1 || p.effective.Nodes[0].Host != "metadata.example" {
 		t.Fatalf("effective nodes = %#v, want metadata nodes", p.effective.Nodes)
 	}
-	if p.effective.Config.ReadTimeout != 25 {
-		t.Fatalf("effective read timeout = %d, want metadata value 25", p.effective.Config.ReadTimeout)
+	if p.effective.Config.ReadTimeout != 1000 {
+		t.Fatalf(
+			"effective read timeout = %d, want default 1000 after route replacement",
+			p.effective.Config.ReadTimeout,
+		)
 	}
 	if p.effective.Config.ReqBodySize != 7 {
 		t.Fatalf("effective request body size = %d, want route value 7", p.effective.Config.ReqBodySize)

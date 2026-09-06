@@ -571,6 +571,11 @@ func (e *StreamingResponseExecutor) PostResolutionHook(
 		if err != nil {
 			return r, err
 		}
+		if capability.CompressionOffer && !capability.StreamingResponseOwner &&
+			capability.ExclusiveProtocol == ProtocolNone {
+			dynamicBindings = append(dynamicBindings, binding)
+			continue
+		}
 		if isDualModeResponseBinding(binding, capability) &&
 			!capability.CompressionOffer && !capability.StreamingResponseOwner &&
 			capability.ExclusiveProtocol == ProtocolNone && len(buffered) > 0 {
@@ -878,7 +883,10 @@ func (e streamingSetupError) Error() string { return e.err.Error() }
 func (e *StreamingResponseExecutor) registerCompressionOffers(
 	r *http.Request,
 ) (*http.Request, *streamingCompression, error) {
-	bindings := e.phaseBindings(func(capability ResponseCapability) bool { return capability.CompressionOffer })
+	bindings := e.phaseBindingsFor(
+		mergeStreamingBindings(e.bindings, dynamicStreamingBindings(r)),
+		func(capability ResponseCapability) bool { return capability.CompressionOffer },
+	)
 	if len(bindings) == 0 {
 		return r, nil, nil
 	}
@@ -1047,10 +1055,6 @@ func (e *StreamingResponseExecutor) CommitResponse(
 	return nil
 }
 
-func (e *StreamingResponseExecutor) phaseBindings(want func(ResponseCapability) bool) []Binding {
-	return e.phaseBindingsFor(e.bindings, want)
-}
-
 func (e *StreamingResponseExecutor) phaseBindingsFor(
 	bindings []Binding,
 	want func(ResponseCapability) bool,
@@ -1094,9 +1098,6 @@ func compareBindings(a, b Binding) int {
 	if a.Scope != b.Scope {
 		return cmp.Compare(a.Scope, b.Scope)
 	}
-	if phase := compareDescriptorPhase(a.Descriptor, b.Descriptor); phase != 0 {
-		return phase
-	}
 	if priority := cmp.Compare(b.Priority, a.Priority); priority != 0 {
 		return priority
 	}
@@ -1107,10 +1108,6 @@ func compareBindings(a, b Binding) int {
 		return kind
 	}
 	return cmp.Compare(a.Provenance.ID, b.Provenance.ID)
-}
-
-func compareDescriptorPhase(a, b Descriptor) int {
-	return cmp.Compare(a.requestStage, b.requestStage)
 }
 
 func (e *StreamingResponseExecutor) RunExclusiveProtocol(

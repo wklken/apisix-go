@@ -302,6 +302,7 @@ func openGenerationResolverView(
 	t *testing.T,
 	secretConfig []byte,
 	client *http.Client,
+	backend ...string,
 ) (*generationSecretView, Scope) {
 	t.Helper()
 	service, _ := testService(t, false)
@@ -311,7 +312,7 @@ func openGenerationResolverView(
 	}
 	t.Cleanup(func() { _ = resolver.Close(context.Background()) })
 	routeKey := generation.ResourceKey{Kind: "routes", ID: "route-1"}
-	set := generationResolverPublication(t, 9, routeKey, secretConfig)
+	set := generationResolverPublication(t, 9, routeKey, secretConfig, backend...)
 	opened, err := resolver.OpenGeneration(context.Background(), 9, set)
 	if err != nil {
 		t.Fatal(err)
@@ -326,6 +327,7 @@ func generationResolverPublication(
 	revision uint64,
 	routeKey generation.ResourceKey,
 	secretConfig []byte,
+	backend ...string,
 ) generation.PublicationSet {
 	t.Helper()
 	resources := []generation.Resource{{Key: routeKey, Value: []byte("route")}}
@@ -334,7 +336,11 @@ func generationResolverPublication(
 		{Key: routeKey, Disposition: generation.DispositionPublished, Code: "ok"},
 	}
 	if secretConfig != nil {
-		secretKey := generation.ResourceKey{Kind: "secrets", ID: "vault/test1"}
+		manager := "vault"
+		if len(backend) > 0 {
+			manager = backend[0]
+		}
+		secretKey := generation.ResourceKey{Kind: "secrets", ID: manager + "/test1"}
 		resources = append(resources, generation.Resource{Key: secretKey, Value: secretConfig})
 		closure = append(closure, secretKey)
 		decisions = append(

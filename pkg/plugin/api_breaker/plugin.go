@@ -260,7 +260,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	if p.shouldBreak(key) {
 		if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
 			for _, header := range p.config.BreakResponseHeaders {
-				w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
+				w.Header().Add(header.Key, resolveHeaderValue(r, header.Value))
 			}
 		}
 		w.WriteHeader(p.config.BreakResponseCode)
@@ -312,7 +312,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		if p.shouldBreak(key) {
 			if p.config.BreakResponseBody != nil && p.config.BreakResponseHeaders != nil {
 				for _, header := range p.config.BreakResponseHeaders {
-					w.Header().Set(header.Key, resolveHeaderValue(r, header.Value))
+					w.Header().Add(header.Key, resolveHeaderValue(r, header.Value))
 				}
 			}
 			w.WriteHeader(p.config.BreakResponseCode)

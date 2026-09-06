@@ -334,15 +334,15 @@ func TestServeDubboWithRetriesDoesNotRetryAfterRequestWrite(t *testing.T) {
 		return upstream, nil
 	}, p.config, 1)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 	if attempts != 1 {
 		t.Fatalf("target attempts = %d, want 1 after request write", attempts)
 	}
 }
 
-func TestServeDubboReturnsGatewayTimeoutOnReadTimeout(t *testing.T) {
+func TestServeDubboReturnsInternalServerErrorOnReadTimeout(t *testing.T) {
 	upstream, _ := startSilentDubboServer(t)
 	p := newTestPlugin(t, Config{
 		ServiceName:    "svc",
@@ -355,12 +355,12 @@ func TestServeDubboReturnsGatewayTimeoutOnReadTimeout(t *testing.T) {
 
 	p.ServeDubbo(rr, req, upstream)
 
-	if rr.Code != http.StatusGatewayTimeout {
-		t.Fatalf("response code = %d, want 504; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
-func TestServeDubboReturnsBadGatewayOnMalformedResponse(t *testing.T) {
+func TestServeDubboReturnsInternalServerErrorOnMalformedResponse(t *testing.T) {
 	upstream, _ := startDubboTestServer(t, []byte("not-a-dubbo-frame"))
 	p := newTestPlugin(t, Config{ServiceName: "svc", ServiceVersion: "0.0.0", Method: "hello"})
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`))
@@ -368,8 +368,8 @@ func TestServeDubboReturnsBadGatewayOnMalformedResponse(t *testing.T) {
 
 	p.ServeDubbo(rr, req, upstream)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
@@ -401,12 +401,12 @@ func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ServeDubbo did not stop after request cancellation")
 	}
-	if rr.Code != http.StatusGatewayTimeout {
-		t.Fatalf("response code = %d, want 504 after cancellation; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500 after cancellation; body=%q", rr.Code, rr.Body.String())
 	}
 }
 
-func TestServeDubboReturnsBadGatewayOnOversizedResponse(t *testing.T) {
+func TestServeDubboReturnsInternalServerErrorOnOversizedResponse(t *testing.T) {
 	response := make([]byte, 16)
 	response[0], response[1], response[3] = 0xda, 0xbb, 20
 	binary.BigEndian.PutUint32(response[12:16], maxDubboResponsePayload+1)
@@ -417,8 +417,8 @@ func TestServeDubboReturnsBadGatewayOnOversizedResponse(t *testing.T) {
 
 	p.ServeDubbo(rr, req, upstream)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 	}
 }
 

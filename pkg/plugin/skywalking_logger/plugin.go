@@ -426,7 +426,13 @@ func (p *Plugin) serviceInstanceName() string {
 }
 
 func (p *Plugin) endpointURL() string {
-	return strings.TrimRight(p.config.EndpointAddr, "/") + "/v3/logs"
+	endpoint, err := url.Parse(p.config.EndpointAddr)
+	if err != nil {
+		return ""
+	}
+	endpoint.Path = "/v3/logs"
+	endpoint.RawPath, endpoint.RawQuery, endpoint.Fragment = "", "", ""
+	return endpoint.String()
 }
 
 func parseTraceContext(header string) (*traceContext, error) {

@@ -819,15 +819,9 @@ func (p *Plugin) decreaseLocal(key string, latency *time.Duration) {
 func (p *Plugin) resolveKey(r *http.Request) string {
 	var key string
 	if p.config.KeyType == "var_combination" {
-		resolved := 0
-		key = limitbase.VarPattern.ReplaceAllStringFunc(p.config.Key, func(match string) string {
-			name := strings.TrimPrefix(strings.TrimPrefix(match, "${"), "$")
-			name = strings.TrimSuffix(name, "}")
-			value := requestLimitKey(r, name)
-			if value != "" {
-				resolved++
-			}
-			return value
+		var resolved int
+		key, resolved = limitbase.ResolveVars(p.config.Key, func(name string) string {
+			return requestLimitKey(r, name)
 		})
 		if resolved == 0 {
 			key = ""

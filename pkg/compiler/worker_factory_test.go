@@ -123,8 +123,8 @@ func TestWorkerCompilerFactoryPrepareGenerationCompilesSystemOnlyHTTPSnapshot(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := factory.registry.Len(); got != 2 {
-		t.Fatalf("resource leases after preparation = %d, want api-breaker and rate-limit states", got)
+	if got := factory.registry.Len(); got != 3 {
+		t.Fatalf("resource leases after preparation = %d, want api-breaker, rate-limit and MCP session states", got)
 	}
 	if prepared.ConsumerLookup() == nil || prepared.PublicationSet().DesiredRevision != desired.Revision() ||
 		prepared.HTTP() == nil || prepared.HTTP().Revision() != desired.Revision() {

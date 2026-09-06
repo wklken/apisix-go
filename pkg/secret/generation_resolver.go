@@ -252,19 +252,24 @@ func (view *generationSecretView) ResolveReference(
 		return "", ErrCredentialUnavailable
 	}
 	parts := strings.SplitN(strings.TrimPrefix(reference, generationManagedSecretPrefix), "/", 3)
-	if len(parts) != 3 || parts[0] != "vault" || parts[1] == "" || parts[2] == "" {
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return "", ErrCredentialUnavailable
 	}
-	lastSlash := strings.LastIndexByte(parts[2], '/')
-	if lastSlash <= 0 || lastSlash == len(parts[2])-1 {
-		return "", ErrCredentialUnavailable
-	}
-	resourceKey := generation.ResourceKey{Kind: "secrets", ID: "vault/" + parts[1]}
+	resourceKey := generation.ResourceKey{Kind: "secrets", ID: parts[0] + "/" + parts[1]}
 	configBytes, ok := view.resources[scope.Domain][resourceKey]
 	if !ok {
 		return "", ErrCapabilityScopeMismatch
 	}
-	return view.resolveVault(ctx, resourceKey.ID, parts[2], configBytes)
+	switch parts[0] {
+	case "vault":
+		return view.resolveVault(ctx, resourceKey.ID, parts[2], configBytes)
+	case "aws":
+		return view.resolveAWS(ctx, resourceKey.ID, parts[2], configBytes)
+	case "gcp":
+		return view.resolveGCP(ctx, resourceKey.ID, parts[2], configBytes)
+	default:
+		return "", ErrCredentialUnavailable
+	}
 }
 
 func resolveGenerationEnvironmentSecret(ctx context.Context, reference string) (string, error) {
@@ -397,7 +402,7 @@ func (view *generationSecretView) resolveVault(
 	if err := requestCtx.Err(); err != nil {
 		return "", err
 	}
-	if len(body) > 1<<20 || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+	if len(body) > 1<<20 {
 		return "", ErrCredentialUnavailable
 	}
 	var payload struct {

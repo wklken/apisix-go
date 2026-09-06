@@ -50,7 +50,7 @@ const schema = `
     },
     "tls_verify": {
       "type": "boolean",
-      "default": true
+      "default": false
     },
     "uid": {
       "type": "string",
@@ -91,6 +91,11 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if p.config.TLSVerify == nil {
+		verify := false
+		p.config.TLSVerify = &verify
+	}
+
 	if p.config.TLSVerify != nil && !*p.config.TLSVerify {
 		logger.Warn("Keeping tls_verify disabled in ldap-auth configuration is a security risk")
 	}
@@ -100,10 +105,6 @@ func (p *Plugin) PostInit() error {
 	if p.config.HideCredentials == nil {
 		hideCredentials := false
 		p.config.HideCredentials = &hideCredentials
-	}
-	if p.config.TLSVerify == nil {
-		verify := true
-		p.config.TLSVerify = &verify
 	}
 	if p.config.UID == "" {
 		p.config.UID = "cn"
@@ -257,7 +258,7 @@ func defaultLDAPAuthenticate(username, password string, cfg Config) error {
 }
 
 func ldapTLSConfig(cfg Config) (*tls.Config, error) {
-	verify := true
+	verify := false
 	if cfg.TLSVerify != nil {
 		verify = *cfg.TLSVerify
 	}

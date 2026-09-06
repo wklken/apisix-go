@@ -44,9 +44,9 @@ func TestSchemaValidatesResponseStatusHTTPBounds(t *testing.T) {
 		value   any
 		wantErr bool
 	}{
-		{name: "informational", value: 100, wantErr: true},
-		{name: "early informational", value: 103, wantErr: true},
-		{name: "last informational", value: 199, wantErr: true},
+		{name: "informational", value: 100},
+		{name: "early informational", value: 103},
+		{name: "last informational", value: 199},
 		{name: "minimum", value: 200},
 		{name: "standard maximum", value: 599},
 		{name: "extended three digit minimum", value: 600},

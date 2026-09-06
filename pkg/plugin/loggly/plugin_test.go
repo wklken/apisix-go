@@ -1253,7 +1253,7 @@ func TestMetadataSchemaAcceptsEndpointAndLogFormat(t *testing.T) {
 	if err := util.Validate(map[string]any{
 		"host":       "logs.example.com",
 		"port":       -1,
-		"protocol":   "custom",
+		"protocol":   "syslog",
 		"timeout":    0,
 		"log_format": map[string]any{"generation": "$route_id"},
 	}, p.GetMetadataSchema()); err != nil {

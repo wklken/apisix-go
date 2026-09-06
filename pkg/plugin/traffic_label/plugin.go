@@ -218,10 +218,10 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			}
 
 			action := p.nextAction(ruleIndex)
-			if action != nil {
+			if action != nil && action.SetHeaders != nil {
 				applyAction(r, *action)
+				break
 			}
-			break
 		}
 
 		next.ServeHTTP(w, r)

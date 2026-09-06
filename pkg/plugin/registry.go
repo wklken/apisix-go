@@ -596,7 +596,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"uri-blocker": {
 		create:              func() Plugin { return &uri_blocker.Plugin{} },
-		phases:              phaseAccess,
+		phases:              phaseRewrite,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,
@@ -660,7 +660,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"chaitin-waf": {
 		create:              func() Plugin { return &chaitin_waf.Plugin{} },
-		phases:              phaseAccess,
+		phases:              phaseAccess | phaseHeaderFilter,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,
@@ -716,7 +716,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"proxy-cache": {
 		create:              func() Plugin { return &proxy_cache.Plugin{} },
-		phases:              phaseAccess | phaseBodyFilter,
+		phases:              phaseAccess | phaseHeaderFilter | phaseBodyFilter,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,

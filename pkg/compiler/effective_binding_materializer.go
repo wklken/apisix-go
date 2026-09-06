@@ -21,6 +21,7 @@ import (
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
+	"github.com/wklken/apisix-go/pkg/plugin/mcp_bridge"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -78,6 +79,7 @@ type effectiveBindingRuntimeContext struct {
 	protoResolver     grpc_transcode.ProtoResolver
 	apiBreakerState   *api_breaker.State
 	rateLimitState    *limitbase.State
+	mcpSessions       *mcp_bridge.SessionRegistry
 }
 
 type effectiveBindingSpec struct {
@@ -829,6 +831,11 @@ func (operations effectiveBindingOps) withDefaults(generationNumber uint64) effe
 				value.apiBreakerState != nil {
 				setter.SetState(value.apiBreakerState)
 			}
+			if setter, ok := instance.(interface {
+				SetSessionRegistry(*mcp_bridge.SessionRegistry)
+			}); ok && value.mcpSessions != nil {
+				setter.SetSessionRegistry(value.mcpSessions)
+			}
 			if setter, ok := instance.(interface{ SetRateLimitState(*limitbase.State) }); ok &&
 				value.rateLimitState != nil {
 				setter.SetRateLimitState(value.rateLimitState)
@@ -1123,6 +1130,7 @@ func cloneEffectiveBindingRuntimeContext(
 		protoResolver:     value.protoResolver,
 		apiBreakerState:   value.apiBreakerState,
 		rateLimitState:    value.rateLimitState,
+		mcpSessions:       value.mcpSessions,
 	}, nil
 }
 

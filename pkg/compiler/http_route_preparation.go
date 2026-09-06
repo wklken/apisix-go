@@ -124,6 +124,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForNotFound(
 		protoResolver:     plan.protoResolver,
 		apiBreakerState:   plan.apiBreakerState,
 		rateLimitState:    plan.rateLimitState,
+		mcpSessions:       plan.mcpSessions,
 	}, nil
 }
 

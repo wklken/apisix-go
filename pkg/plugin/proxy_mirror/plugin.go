@@ -376,7 +376,7 @@ func (p *Plugin) mirrorURL(r *http.Request) (string, error) {
 	mirrorPath, rawQuery := r.URL.Path, r.URL.RawQuery
 	if p.config.Path != "" {
 		if p.config.PathConcatMode == "prefix" {
-			mirrorPath = strings.TrimRight(p.config.Path, "/") + "/" + strings.TrimLeft(mirrorPath, "/")
+			mirrorPath = p.config.Path + mirrorPath
 		} else {
 			mirrorPath = p.config.Path
 		}

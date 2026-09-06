@@ -187,6 +187,13 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
+// Stop releases pooled connections after the generation's requests have drained.
+func (p *Plugin) Stop() {
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+	}
+}
+
 func (p *Plugin) transport() *http.Transport {
 	transport := httpclient.NewTransport()
 	transport.DisableKeepAlives = !*p.config.Keepalive

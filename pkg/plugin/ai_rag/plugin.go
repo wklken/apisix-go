@@ -204,6 +204,10 @@ func parseAIRAG(body map[string]any) (map[string]any, string, string) {
 		return nil, "", `request body fails schema check: property "ai_rag" validation failed: property "embeddings" validation failed: property "input" is required`
 	}
 
+	if _, ok := embeddings["input"].(string); !ok {
+		return nil, "", `request body fails schema check: property "ai_rag" validation failed: property "embeddings" validation failed: property "input" must be a string`
+	}
+
 	return embeddings, fields, ""
 }
 

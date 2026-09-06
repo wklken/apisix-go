@@ -395,7 +395,7 @@ func TestHandlerRejectsNonTerminalActionStatus(t *testing.T) {
 	}
 }
 
-func TestPostInitAppliesKeepaliveTransportOptions(t *testing.T) {
+func TestTransportAppliesKeepaliveAndTLSOptions(t *testing.T) {
 	sslVerify := false
 	keepalive := false
 	p := newTestPlugin(t, Config{
@@ -409,10 +409,7 @@ func TestPostInitAppliesKeepaliveTransportOptions(t *testing.T) {
 		KeepalivePool:    7,
 	})
 
-	transport, ok := p.client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport = %T, want *http.Transport", p.client.Transport)
-	}
+	transport := p.transport()
 	if !transport.DisableKeepAlives {
 		t.Fatal("DisableKeepAlives = false, want true")
 	}

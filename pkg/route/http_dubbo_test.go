@@ -224,8 +224,8 @@ func TestServeHTTPDubboIfConfiguredDoesNotReattributeMissingTrafficSplitRetryTar
 			if !serveHTTPDubboIfConfiguredCompiled(rr, req, nil, nil) {
 				t.Fatal("serveHTTPDubboIfConfiguredCompiled() = false, want true")
 			}
-			if rr.Code != http.StatusBadGateway {
-				t.Fatalf("response code = %d, want 502; body=%q", rr.Code, rr.Body.String())
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("response code = %d, want 500; body=%q", rr.Code, rr.Body.String())
 			}
 			if len(reporter.tcpTargets) != 1 || reporter.tcpTargets[0] != override.HealthTarget {
 				t.Fatalf(

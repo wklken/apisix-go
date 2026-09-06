@@ -37,7 +37,10 @@ const schema = `
 	  },
 	  "realm": {
 		"type": "string",
-		"default": "basic"
+		"default": "basic",
+		"minLength": 1,
+		"maxLength": 128,
+		"pattern": "^[\\x20-\\x21\\x23-\\x5B\\x5D-\\x7E]+$"
 	  },
 	  "anonymous_consumer": {
 		"type": "string",

@@ -164,14 +164,16 @@ func (p *Plugin) persistVaryIndex(key string, index varyIndex) error {
 }
 
 func (p *Plugin) loadVaryIndexLocked(key string) {
-	if !p.diskEnabled || p.loaded[key] {
+	if !p.diskEnabled {
 		return
 	}
-	p.loaded[key] = true
+	delete(p.vary, key)
+	delete(p.loaded, key)
 	data, err := os.ReadFile(p.varyIndexPath(key))
 	if err != nil {
 		return
 	}
+	p.loaded[key] = true
 	var persisted diskVaryIndex
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		_ = os.Remove(p.varyIndexPath(key))

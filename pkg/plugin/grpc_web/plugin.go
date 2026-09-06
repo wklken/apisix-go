@@ -230,12 +230,13 @@ func transformRequest(r *http.Request, encoding string) error {
 }
 
 type streamingResponseWriter struct {
-	writer      http.ResponseWriter
-	mime        string
-	encoding    string
-	ensure      func(http.Header)
-	wroteHeader bool
-	wroteBody   bool
+	writer       http.ResponseWriter
+	mime         string
+	encoding     string
+	ensure       func(http.Header)
+	wroteHeader  bool
+	wroteBody    bool
+	trailersOnly bool
 }
 
 func newStreamingResponseWriter(
@@ -267,6 +268,7 @@ func (w *streamingResponseWriter) WriteHeader(statusCode int) {
 	}
 	w.writer.Header().Set("Content-Type", w.mime)
 	w.writer.Header().Del("Content-Length")
+	w.trailersOnly = w.writer.Header().Get("Grpc-Status") != ""
 	w.writer.WriteHeader(statusCode)
 	w.wroteHeader = true
 }
@@ -303,7 +305,7 @@ func (w *streamingResponseWriter) finish() error {
 	promoteGRPCTrailerMetadata(w.Header())
 	status := w.Header().Get("Grpc-Status")
 	message := w.Header().Get("Grpc-Message")
-	if !w.wroteBody && status != "" {
+	if !w.wroteBody && status != "" && (!w.wroteHeader || w.trailersOnly) {
 		if !w.wroteHeader {
 			w.WriteHeader(http.StatusOK)
 		}

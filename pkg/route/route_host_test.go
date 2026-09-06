@@ -27,7 +27,7 @@ func TestRouteDecisionIndexSelectsMostSpecificWildcardWithManyUnrelatedSuffixes(
 	})
 
 	host := strings.Repeat("a.", 4096) + "b.example.com"
-	candidate, matchedHost, ok := decision.lookup(host, "", 1, 1, http.MethodGet)
+	candidate, matchedHost, ok := decision.lookup(host, "", 1, 1, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !matchedHost || !ok || candidate.route.registrationIndex != 1002 {
 		t.Fatalf(
 			"wildcard lookup = index:%d matched:%v ok:%v, want latest matching index 1002",
@@ -47,7 +47,13 @@ func TestRouteDecisionIndexFallsBackToBroaderWildcardAfterSpecificMethodMiss(t *
 		method: http.MethodPost, hosts: []string{"*.b.example.com"}, registrationIndex: 1002,
 	})
 
-	candidate, matchedHost, ok := decision.lookup("a.b.example.com", "", 1, 0, http.MethodGet)
+	candidate, matchedHost, ok := decision.lookup(
+		"a.b.example.com",
+		"",
+		1,
+		0,
+		httptest.NewRequest(http.MethodGet, "/", nil),
+	)
 	if !matchedHost || !ok || candidate.route.registrationIndex != 2000 {
 		t.Fatalf(
 			"wildcard fallback = index:%d matched:%v ok:%v, want broad GET index 2000",

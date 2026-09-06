@@ -119,7 +119,7 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	if err := p.PostInit(); err != nil {
 		t.Fatalf("PostInit() error = %v", err)
 	}
-	t.Cleanup(p.closeAll)
+	t.Cleanup(p.state.Close)
 
 	return p
 }
@@ -188,9 +188,9 @@ func TestSSECommandStartFailureReturns500WithoutPublishingSession(t *testing.T) 
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", response.Code)
 	}
-	p.mu.Lock()
-	sessions := len(p.sessions)
-	p.mu.Unlock()
+	p.state.mu.Lock()
+	sessions := len(p.state.sessions)
+	p.state.mu.Unlock()
 	if sessions != 0 {
 		t.Fatalf("published sessions = %d, want 0 after command start failure", sessions)
 	}
@@ -298,9 +298,9 @@ func TestMessageEndpointAcceptsLargeBodyWithoutLocalLimit(t *testing.T) {
 		tasks:     runtime.NewRequestTaskGroup(context.Background(), "test/mcp-bridge"),
 		closeDone: make(chan struct{}),
 	}
-	p.mu.Lock()
-	p.sessions[sess.id] = sess
-	p.mu.Unlock()
+	p.state.mu.Lock()
+	p.state.sessions[sess.id] = sess
+	p.state.mu.Unlock()
 
 	body := strings.Repeat("x", 1<<20+1)
 	req := httptest.NewRequest(http.MethodPost, "/message?sessionId=session", strings.NewReader(body))
@@ -661,7 +661,7 @@ func TestCloseAllJoinsOutsideLock(t *testing.T) {
 
 	closeAllDone := make(chan struct{})
 	go func() {
-		p.closeAll()
+		p.state.Close()
 		close(closeAllDone)
 	}()
 	waitForMCPBridgeMapEmpty(t, p)
@@ -708,9 +708,9 @@ func TestStartSessionDoesNotPublishBeforeTaskAdmission(t *testing.T) {
 		result <- startResult{sess: sess, err: err}
 	}()
 	<-admissionStarted
-	p.mu.Lock()
-	visible := len(p.sessions)
-	p.mu.Unlock()
+	p.state.mu.Lock()
+	visible := len(p.state.sessions)
+	p.state.mu.Unlock()
 	close(releaseAdmission)
 
 	started := <-result
@@ -877,12 +877,12 @@ func waitForMCPBridgeSessionCount(t *testing.T, p *Plugin, count int) []*session
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		p.mu.Lock()
-		sessions := make([]*session, 0, len(p.sessions))
-		for _, sess := range p.sessions {
+		p.state.mu.Lock()
+		sessions := make([]*session, 0, len(p.state.sessions))
+		for _, sess := range p.state.sessions {
 			sessions = append(sessions, sess)
 		}
-		p.mu.Unlock()
+		p.state.mu.Unlock()
 		if len(sessions) == count {
 			return sessions
 		}

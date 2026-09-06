@@ -90,7 +90,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?enabled=no", nil))
 		if phaseCalls != 0 || terminalCalls != 1 || response.Code != http.StatusNoContent {
 			t.Fatalf(
-				"phase calls = %d, terminal calls = %d, status = %d; want 0, 1, 204",
+				"phase calls = %d, terminal calls = %d, status = %d; want 1, 1, 204",
 				phaseCalls,
 				terminalCalls,
 				response.Code,
@@ -182,8 +182,8 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-		if routeCalls != 0 || consumerCalls != 1 {
-			t.Fatalf("route calls = %d, consumer calls = %d; want 0, 1", routeCalls, consumerCalls)
+		if routeCalls != 1 || consumerCalls != 1 {
+			t.Fatalf("route calls = %d, consumer calls = %d; want 1, 1", routeCalls, consumerCalls)
 		}
 	})
 

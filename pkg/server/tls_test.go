@@ -285,12 +285,13 @@ func TestFrontendTLSProtocolConfigStrict(t *testing.T) {
 		wantMin   uint16
 		wantMax   uint16
 	}{
+		{name: "tls11", protocols: "TLSv1.1", wantMin: tls.VersionTLS11, wantMax: tls.VersionTLS11},
 		{name: "tls12", protocols: "TLSv1.2", wantMin: tls.VersionTLS12, wantMax: tls.VersionTLS12},
 		{name: "tls13", protocols: "TLSv1.3", wantMin: tls.VersionTLS13, wantMax: tls.VersionTLS13},
 		{name: "both", protocols: "TLSv1.2 TLSv1.3", wantMin: tls.VersionTLS12, wantMax: tls.VersionTLS13},
 		{name: "empty", protocols: "", wantErr: "protocol"},
 		{name: "duplicate", protocols: "TLSv1.2 TLSv1.2", wantErr: "duplicate"},
-		{name: "unknown", protocols: "TLSv1.1", wantErr: "unsupported"},
+		{name: "unknown", protocols: "TLSv9", wantErr: "unsupported"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -356,9 +357,10 @@ func TestFrontendTLSCipherConfigStrict(t *testing.T) {
 	cfg := &config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable: true, SslProtocols: "TLSv1.3", SslCiphers: frontendTLS12Cipher,
 	}}}
-	if _, err := buildGenerationFrontendTLSConfig(cfg, nil); err == nil ||
-		!strings.Contains(strings.ToLower(err.Error()), "tls 1.2") {
-		t.Fatalf("TLS 1.3-only cipher policy error = %v, want TLS 1.2 explanation", err)
+	if got, err := buildGenerationFrontendTLSConfig(cfg, nil); err != nil {
+		t.Fatalf("TLS 1.3-only cipher policy error = %v", err)
+	} else if got.MinVersion != tls.VersionTLS13 || got.MaxVersion != tls.VersionTLS13 {
+		t.Fatalf("TLS 1.3-only versions = %d/%d", got.MinVersion, got.MaxVersion)
 	}
 }
 
@@ -690,7 +692,7 @@ func TestStartHTTPListenersBuildsTLSBeforeBinding(t *testing.T) {
 	effective := &config.EffectiveConfig{Config: config.Config{Apisix: config.Apisix{Ssl: config.Ssl{
 		Enable:       true,
 		Listen:       []config.Listen{{Port: 9443}},
-		SslProtocols: "TLSv1.1",
+		SslProtocols: "TLSv9",
 		SslCiphers:   frontendTLS12Cipher,
 	}}}}
 	engine := &newServerTestEngine{}

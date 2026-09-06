@@ -489,6 +489,10 @@ func (p *Plugin) fetchAndMaybeStore(
 		(p.cacheSetCookieEnabled() || recorder.Header().Get("Set-Cookie") == "") {
 		_ = p.store(r, key, recorder, cacheTTL)
 	}
+	if p.config.HideCacheHeaders {
+		deleteHeaderFold(recorder.Header(), "Cache-Control")
+		deleteHeaderFold(recorder.Header(), "Expires")
+	}
 	recorder.Header().Set(cacheStatusHeader, cacheStatus)
 	recorder.Commit(w)
 }
@@ -501,11 +505,13 @@ func (p *Plugin) lookup(r *http.Request, key string) (cacheEntry, string) {
 	}
 	storageKey := p.storageKeyLocked(r, key)
 	entry, ok := p.entries[storageKey]
-	if !ok && p.diskEnabled {
-		if loaded, found := p.loadEntryLocked(storageKey); found {
-			entry = loaded
-			p.entries[storageKey] = loaded
-			ok = true
+	if p.diskEnabled {
+		// The shared file is authoritative across live plugin instances.
+		entry, ok = p.loadEntryLocked(storageKey)
+		if ok {
+			p.entries[storageKey] = entry
+		} else {
+			delete(p.entries, storageKey)
 		}
 	}
 	if p.diskEnabled {
@@ -553,6 +559,9 @@ func (p *Plugin) purgeAll(key string) bool {
 
 func (p *Plugin) purgeAllLocked(key string) bool {
 	_, baseOK := p.entries[key]
+	if p.diskEnabled {
+		_, baseOK = p.loadEntryLocked(key)
+	}
 	index, indexOK := p.vary[key]
 	for _, signature := range index.signatures {
 		delete(p.entries, key+"::"+signature)
@@ -663,7 +672,11 @@ func responseCacheControlSkipsStore(header http.Header) bool {
 }
 
 func responseCacheControlTTL(header http.Header) (time.Duration, bool) {
-	if value, ok := headerCacheControlDirectiveValue(header, "s-maxage", "max-age"); ok {
+	value, ok := headerCacheControlDirectiveValue(header, "s-maxage")
+	if !ok {
+		value, ok = headerCacheControlDirectiveValue(header, "max-age")
+	}
+	if ok {
 		seconds, err := strconv.Atoi(value)
 		if err != nil || seconds <= 0 {
 			return 0, false

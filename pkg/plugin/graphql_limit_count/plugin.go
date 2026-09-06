@@ -18,6 +18,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/cacheutil"
+	"github.com/wklken/apisix-go/pkg/plugin/limit_count"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -31,10 +32,12 @@ type Plugin struct {
 	counters *cacheutil.BoundedTTLMap[*counter]
 	now      func() time.Time
 
-	redisLimiter countLimiter
-	maxSize      int
-	routeID      string
-	metadata     Metadata
+	rateLimitState *limitbase.State
+	apisixContext  base.APISIXPluginContext
+	redisLimiter   countLimiter
+	maxSize        int
+	routeID        string
+	metadata       Metadata
 
 	clientRelease   func()
 	groupRegistered bool
@@ -419,7 +422,7 @@ func (p *Plugin) PostInit() error {
 	if err := p.registerGroup(); err != nil {
 		return err
 	}
-	if p.counters == nil {
+	if p.counters == nil && p.rateLimitState == nil {
 		p.counters = cacheutil.NewBoundedTTLMap[*counter](
 			defaultLocalCountersCapacity,
 			func() time.Time { return p.now() },
@@ -556,7 +559,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				if !p.applyLimit(
 					w,
 					r,
-					fmt.Sprintf("rule:%d:%s", i, key),
+					key,
 					int64(depth),
 					count,
 					timeWindow,
@@ -633,11 +636,13 @@ func (p *Plugin) applyLimit(
 		return true
 	}
 
-	rejectedMsg := "Limit exceeded"
 	if p.config.RejectedMsg != "" {
-		rejectedMsg = p.config.RejectedMsg
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(p.config.RejectedCode)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error_msg": p.config.RejectedMsg})
+	} else {
+		w.WriteHeader(p.config.RejectedCode)
 	}
-	http.Error(w, rejectedMsg, p.config.RejectedCode)
 	return false
 }
 
@@ -689,6 +694,14 @@ func (p *Plugin) incoming(
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
 		return p.redisLimiter.incoming(r, key, cost, count, timeWindow)
 	}
+	if p.rateLimitState != nil {
+		scopedKey, err := p.localCounterKey(key)
+		if err != nil {
+			return 0, 0, false, err
+		}
+		result := p.rateLimitState.FixedWindow(scopedKey, count, cost, time.Duration(timeWindow)*time.Second, true)
+		return max(result.Remaining, 0), int64(result.Reset.Seconds()), result.Allowed, nil
+	}
 	if p.config.Group != "" {
 		groupCounters.Lock()
 		defer groupCounters.Unlock()
@@ -721,7 +734,7 @@ func incomingLocal(
 	timeWindow int64,
 	now time.Time,
 ) (int64, int64, bool, error) {
-	counterKey := fmt.Sprintf("%d:%d:%s", count, timeWindow, key)
+	counterKey := key
 	c, ok := counters.Get(counterKey)
 	if !ok {
 		c = &counter{resetAt: now.Add(time.Duration(timeWindow) * time.Second)}
@@ -730,10 +743,10 @@ func incomingLocal(
 
 	reset := max(int64(c.resetAt.Sub(now).Seconds()), 0)
 
-	if c.used+cost > count {
+	c.used += cost
+	if c.used > count {
 		return 0, reset, false, nil
 	}
-	c.used += cost
 	return count - c.used, reset, true, nil
 }
 
@@ -885,11 +898,9 @@ func validateStaticLimitValue(value any, name string) error {
 
 func resolveLimitValue(r *http.Request, value any, name string) (int64, error) {
 	if expression, ok := value.(string); ok {
-		for _, variableName := range templateVariables(expression) {
-			resolved := requestVar(r, variableName)
-			expression = strings.ReplaceAll(expression, "${"+variableName+"}", resolved)
-			expression = strings.ReplaceAll(expression, "$"+variableName, resolved)
-		}
+		expression, _ = limitbase.ResolveVars(expression, func(variableName string) string {
+			return requestVar(r, variableName)
+		})
 		parsed, err := strconv.ParseInt(expression, 10, 64)
 		if err != nil || parsed <= 0 {
 			return 0, fmt.Errorf("%s must resolve to a positive integer", name)
@@ -918,16 +929,9 @@ func numericLimitValue(value any, name string) (int64, error) {
 }
 
 func resolveRuleKey(r *http.Request, rule Rule) (string, bool) {
-	key := rule.Key
-	resolved := 0
-	for _, variableName := range templateVariables(key) {
-		value := requestVar(r, variableName)
-		if value != "" {
-			resolved++
-		}
-		key = strings.ReplaceAll(key, "${"+variableName+"}", value)
-		key = strings.ReplaceAll(key, "$"+variableName, value)
-	}
+	key, resolved := limitbase.ResolveVars(rule.Key, func(variableName string) string {
+		return requestVar(r, variableName)
+	})
 	return key, resolved > 0 && key != ""
 }
 
@@ -936,16 +940,9 @@ func (p *Plugin) resolveKey(r *http.Request) string {
 	case "constant":
 		return p.config.Key
 	case "var_combination":
-		key := p.config.Key
-		resolved := 0
-		for _, name := range templateVariables(key) {
-			value := requestVar(r, name)
-			if value != "" {
-				resolved++
-			}
-			key = strings.ReplaceAll(key, "${"+name+"}", value)
-			key = strings.ReplaceAll(key, "$"+name, value)
-		}
+		key, resolved := limitbase.ResolveVars(p.config.Key, func(variableName string) string {
+			return requestVar(r, variableName)
+		})
 		if resolved > 0 {
 			return key
 		}
@@ -975,4 +972,36 @@ func requestVar(r *http.Request, key string) string {
 		}
 	}
 	return value
+}
+
+// SetRateLimitState receives the compiler's process-owned limiter state.
+// Direct package users keep the isolated local fallback.
+func (p *Plugin) SetRateLimitState(state *limitbase.State) {
+	p.rateLimitState = state
+}
+
+func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) error {
+	p.apisixContext = pluginContext.Clone()
+	return nil
+}
+
+func (p *Plugin) localCounterKey(key string) (string, error) {
+	pluginContext := p.apisixContext
+	document := pluginContext.SourceConfig
+	if document == nil {
+		encoded, err := json.Marshal(p.config)
+		if err != nil {
+			return "", err
+		}
+		if err := json.Unmarshal(encoded, &document); err != nil {
+			return "", err
+		}
+		pluginContext.SourceResourceKey = p.counterNamespace()
+	}
+	scoped, err := limit_count.BuildLocalKey(pluginContext, document, key)
+	if err != nil {
+		return "", err
+	}
+	// APISIX keeps GraphQL counters in its own plugin shared dictionary.
+	return name + ":" + scoped, nil
 }

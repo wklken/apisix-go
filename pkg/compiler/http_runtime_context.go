@@ -90,6 +90,7 @@ func (prepared *PreparedGeneration) httpRuntimeContextForRoute(
 		protoResolver:    plan.protoResolver,
 		apiBreakerState:  plan.apiBreakerState,
 		rateLimitState:   plan.rateLimitState,
+		mcpSessions:      plan.mcpSessions,
 	}, nil
 }
 

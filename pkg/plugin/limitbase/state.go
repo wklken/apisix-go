@@ -11,7 +11,7 @@ import (
 const defaultFixedWindowCapacity = 100000
 
 type fixedWindow struct {
-	remaining int64
+	consumed  int64
 	expiresAt time.Time
 }
 
@@ -137,12 +137,12 @@ func (state *State) FixedWindow(
 	var reset time.Duration
 	state.windows.Mutate(key, func(entry fixedWindow, now time.Time) (fixedWindow, time.Duration, bool) {
 		if entry.expiresAt.IsZero() {
-			entry = fixedWindow{remaining: limit, expiresAt: now.Add(window)}
+			entry = fixedWindow{expiresAt: now.Add(window)}
 		}
-		remaining = entry.remaining - cost
+		remaining = limit - entry.consumed - cost
 		reset = max(entry.expiresAt.Sub(now), 0)
 		if commit {
-			entry.remaining = remaining
+			entry.consumed += cost
 		}
 		return entry, reset, commit
 	})
@@ -167,7 +167,7 @@ func (state *State) FixedWindowSnapshot(
 		return FixedWindowState{Remaining: limit, Reset: window}
 	}
 	return FixedWindowState{
-		Exists: true, Remaining: entry.remaining, Reset: max(entry.expiresAt.Sub(state.now()), 0),
+		Exists: true, Remaining: limit - entry.consumed, Reset: max(entry.expiresAt.Sub(state.now()), 0),
 	}
 }
 
@@ -192,11 +192,11 @@ func (state *State) AdjustFixedWindow(
 			if !create {
 				return entry, 0, false
 			}
-			entry = fixedWindow{remaining: limit, expiresAt: now.Add(window)}
+			entry = fixedWindow{expiresAt: now.Add(window)}
 		}
-		entry.remaining = min(entry.remaining-delta, limit)
+		entry.consumed = max(entry.consumed+delta, 0)
 		reset := max(entry.expiresAt.Sub(now), 0)
-		result = FixedWindowState{Exists: true, Remaining: entry.remaining, Reset: reset}
+		result = FixedWindowState{Exists: true, Remaining: limit - entry.consumed, Reset: reset}
 		return entry, reset, true
 	})
 	return result

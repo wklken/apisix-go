@@ -336,13 +336,23 @@ func urlHostname(host string) string {
 	return host
 }
 
+var numericCaptureReplacement = regexp.MustCompile(`\$\$|\$[0-9]+`)
+
 func (p *Plugin) redirectRegexURI(r *http.Request) (string, bool) {
 	path := r.URL.Path
 	indexes := p.config.regexURI.FindStringSubmatchIndex(path)
 	if indexes == nil {
 		return "", false
 	}
-	replaced := p.config.regexURI.ExpandString(nil, p.config.RegexUri[1], path, indexes)
+	// ngx.re.sub ends numeric captures at the last digit, whereas Go also
+	// consumes a following name suffix unless the capture is braced.
+	replacement := numericCaptureReplacement.ReplaceAllStringFunc(p.config.RegexUri[1], func(capture string) string {
+		if capture == "$$" {
+			return capture
+		}
+		return "${" + capture[1:] + "}"
+	})
+	replaced := p.config.regexURI.ExpandString(nil, replacement, path, indexes)
 	return path[:indexes[0]] + string(replaced) + path[indexes[1]:], true
 }
 

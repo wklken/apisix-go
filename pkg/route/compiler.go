@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
+	"github.com/wklken/apisix-go/pkg/plugin/expr"
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
@@ -26,6 +27,7 @@ type PreparedRoute struct {
 	Route   resource.Route
 	Hosts   []string
 	Handler http.Handler
+	vars    *expr.Expression
 }
 
 // CompileInput contains only owned values and already-prepared handlers.
@@ -82,10 +84,15 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 		if err := validateRouteCompatibility(supplied.Route); err != nil {
 			return nil, fmt.Errorf("compile HTTP route %q: %w", supplied.Route.ID, err)
 		}
+		vars, err := compileRouteVars(supplied.Route.Vars)
+		if err != nil {
+			return nil, fmt.Errorf("compile HTTP route %q vars: %w", supplied.Route.ID, err)
+		}
 		routes[index] = PreparedRoute{
 			Route:   cloneCompileRoute(supplied.Route),
 			Hosts:   slices.Clone(supplied.Hosts),
 			Handler: supplied.Handler,
+			vars:    vars,
 		}
 	}
 	slices.SortStableFunc(routes, func(left, right PreparedRoute) int {
@@ -99,6 +106,9 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 	}
 	mux.MethodNotAllowed(input.NotFound.ServeHTTP)
 	registrar := newRouteRegistrar(mux, input.NotFound)
+	if input.StaticConfig != nil {
+		registrar.graphqlMaxSize = input.StaticConfig.GraphQL.MaxSize
+	}
 	for _, prepared := range routes {
 		if prepared.Route.Disabled() {
 			continue
@@ -135,9 +145,15 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 				uri,
 				hosts,
 				prepared.Handler,
+				prepared.vars,
 			); err != nil {
 				return nil, fmt.Errorf("compile HTTP route %q URI %q: %w", prepared.Route.ID, uri, err)
 			}
+		}
+	}
+	if registrar.hasVars {
+		for pattern, dispatcher := range registrar.dispatchers {
+			registrar.fallbackPaths.add(pattern, dispatcher)
 		}
 	}
 	mux.NotFound(input.NotFound.ServeHTTP)
@@ -276,10 +292,8 @@ func validateRouteSemantics(routeResource resource.Route) error {
 	if strings.TrimSpace(routeResource.FilterFunc) != "" {
 		return fmt.Errorf("route %q filter_func is unsupported by the Go data plane", routeResource.ID)
 	}
-	if vars := bytes.TrimSpace(routeResource.Vars); len(vars) > 0 &&
-		!bytes.Equal(vars, []byte("null")) &&
-		!bytes.Equal(vars, []byte("[]")) {
-		return fmt.Errorf("route %q vars is unsupported by the Go data plane", routeResource.ID)
+	if _, err := compileRouteVars(routeResource.Vars); err != nil {
+		return fmt.Errorf("route %q vars: %w", routeResource.ID, err)
 	}
 	for _, addr := range routeResource.RemoteAddrs {
 		if strings.TrimSpace(addr) != "" {

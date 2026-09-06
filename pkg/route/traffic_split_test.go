@@ -384,8 +384,8 @@ func TestEmptyUpstreamRouteReturnsClassifiedError(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://route.example.com/get", nil))
 
-	if response.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d without a picker panic", response.Code, http.StatusBadGateway)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d without a picker panic", response.Code, http.StatusServiceUnavailable)
 	}
 }
 

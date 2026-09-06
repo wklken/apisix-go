@@ -32,7 +32,10 @@ type basicAuth struct {
 }
 
 type jwtAuth struct {
-	Key string `json:"key"`
+	Key       string `json:"key"`
+	Algorithm string `json:"algorithm"`
+	Secret    string `json:"secret"`
+	PublicKey string `json:"public_key"`
 }
 
 type hmacAuth struct {
@@ -169,11 +172,7 @@ var definitions = []definition{
 			return key, nil
 		},
 	),
-	newSchemaDefinition(
-		"jwt-auth",
-		jwtAuthSchema,
-		lookupParsed(func(config jwtAuth) string { return config.Key }),
-	),
+	newJWTAuthDefinition(),
 	newSchemaDefinition(
 		"key-auth",
 		keyAuthSchema,
@@ -288,6 +287,37 @@ func LookupKey(factory string, config any) (string, error) {
 		return "", fmt.Errorf("consumer lookup is unsupported for plugin %q", factory)
 	}
 	return definition.lookup(config)
+}
+
+func newJWTAuthDefinition() definition {
+	entry := newSchemaDefinition(
+		"jwt-auth",
+		jwtAuthSchema,
+		lookupParsed(func(config jwtAuth) string { return config.Key }),
+	)
+	entry.validate = func(config any) error {
+		if err := entry.schema.Validate(config); err != nil {
+			return fmt.Errorf("jwt-auth consumer configuration: %w", err)
+		}
+		return validateJWTAuth(config)
+	}
+	return entry
+}
+
+// Algorithm-dependent credentials are checked after secret references resolve.
+func validateJWTAuth(config any) error {
+	var parsed jwtAuth
+	if err := util.Parse(config, &parsed); err != nil {
+		return err
+	}
+	if parsed.Algorithm == "" || strings.HasPrefix(parsed.Algorithm, "HS") {
+		if parsed.Secret == "" {
+			return fmt.Errorf("jwt-auth consumer secret is required for HS algorithms")
+		}
+	} else if parsed.PublicKey == "" {
+		return fmt.Errorf("jwt-auth consumer public key is required")
+	}
+	return nil
 }
 
 func validateJWEDecrypt(config jweDecrypt) error {

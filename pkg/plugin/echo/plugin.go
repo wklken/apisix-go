@@ -54,9 +54,6 @@ const schema = `
     },
     {
       "required": ["after_body"]
-    },
-    {
-      "required": ["headers"]
     }
   ],
   "minProperties": 1

@@ -461,17 +461,25 @@ func (p *Plugin) sendBatch(
 	if (!allowRetired && p.stopped.Load()) || !p.ready || p.client == nil {
 		return 0, secret.ErrCredentialUnavailable
 	}
-	payload, err := p.buildBatchPayload(entries)
-	if err != nil {
-		return 0, fmt.Errorf("resolve Tencent Cloud CLS source: %w", err)
+	for offset := 0; offset < len(entries); {
+		payload, consumed, err := p.buildBatchPayload(entries[offset:])
+		if err != nil {
+			return offset + 1, fmt.Errorf("resolve Tencent Cloud CLS source: %w", err)
+		}
+		if len(payload) > 0 {
+			if err := p.sendPayloadLocked(ctx, payload); err != nil {
+				return offset + 1, err
+			}
+		}
+		offset += consumed
 	}
-	defer clear(payload)
-	if len(payload) == 0 {
-		return 0, nil
-	}
+	return 0, nil
+}
 
+func (p *Plugin) sendPayloadLocked(ctx context.Context, payload []byte) error {
+	defer clear(payload)
 	endpoint := p.endpointURL()
-	err = p.useSigningConfigLocked(func(config *Config) error {
+	err := p.useSigningConfigLocked(func(config *Config) error {
 		request := p.client.R().
 			SetContext(ctx).
 			SetHeader("Host", p.config.CLSHost).
@@ -522,14 +530,14 @@ func (p *Plugin) sendBatch(
 	})
 	if err != nil {
 		if errors.Is(err, secret.ErrCredentialUnavailable) {
-			return 0, fmt.Errorf(
+			return fmt.Errorf(
 				"failed to send log to Tencent Cloud CLS endpoint %s: %w",
 				endpoint, err,
 			)
 		}
-		return 0, err
+		return err
 	}
-	return 0, nil
+	return nil
 }
 
 func (p *Plugin) useSigningConfigLocked(use func(*Config) error) error {
@@ -619,27 +627,29 @@ func authorization(config *Config, now time.Time) string {
 		"&q-signature=" + signature
 }
 
-func (p *Plugin) buildBatchPayload(logs []map[string]any) ([]byte, error) {
+func (p *Plugin) buildBatchPayload(logs []map[string]any) ([]byte, int, error) {
 	sourceIP, err := p.resolveSourceIP()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	group := []byte(nil)
 	totalSize := 0
 	truncatedValues := 0
 	droppedEntries := 0
+	consumed := 0
 	for i, logEntry := range logs {
 		contents, size, truncated := normalizeLog(logEntry, p.config.GlobalTag)
-		truncatedValues += truncated
 		if size > maxLogGroupValueSize {
 			droppedEntries++
+			consumed = i + 1
 			continue
 		}
-		totalSize += size
-		if totalSize > maxLogGroupValueSize {
-			droppedEntries += len(logs) - i
+		if totalSize+size > maxLogGroupValueSize {
 			break
 		}
+		totalSize += size
+		truncatedValues += truncated
+		consumed = i + 1
 		group = appendBytesField(group, 1, appendLog(nil, p.now().UnixMilli(), contents))
 	}
 	if truncatedValues > 0 {
@@ -649,10 +659,10 @@ func (p *Plugin) buildBatchPayload(logs []map[string]any) ([]byte, error) {
 		logger.Errorf("Tencent Cloud CLS dropped %d log(s) over the 5MB limit", droppedEntries)
 	}
 	if len(group) == 0 {
-		return nil, nil
+		return nil, consumed, nil
 	}
 	group = appendStringField(group, 4, sourceIP)
-	return appendBytesField(nil, 1, group), nil
+	return appendBytesField(nil, 1, group), consumed, nil
 }
 
 func (p *Plugin) resolveSourceIP() (string, error) {

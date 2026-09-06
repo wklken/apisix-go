@@ -173,7 +173,8 @@ const metadataSchema = `
       "type": "integer"
     },
     "protocol": {
-      "type": "string"
+      "type": "string",
+      "enum": ["syslog", "http", "https"]
     },
     "timeout": {
       "type": "integer"

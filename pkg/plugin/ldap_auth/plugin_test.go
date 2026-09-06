@@ -153,7 +153,7 @@ func TestPostInitWarnsOnlyForInsecureTLSOptions(t *testing.T) {
 				"Keeping use_tls disabled in ldap-auth configuration is a security risk",
 			},
 		},
-		{name: "secure", useTLS: true},
+		{name: "secure", useTLS: true, tlsVerify: new(true)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -208,26 +208,18 @@ func TestLDAPSchemaSupportsHideCredentialsAndDefaultsFalse(t *testing.T) {
 	}
 }
 
-func TestLDAPTLSVerifyDefaultsToEnabledAndSupportsExplicitOptOut(t *testing.T) {
+func TestLDAPTLSVerifyDefaultsToDisabledAndSupportsExplicitOptIn(t *testing.T) {
 	p := newTestPlugin(t, nil)
-	if p.config.TLSVerify == nil || !*p.config.TLSVerify {
-		t.Fatalf("TLSVerify = %v, want true when omitted", p.config.TLSVerify)
+	if p.config.TLSVerify == nil || *p.config.TLSVerify {
+		t.Fatal("tls_verify should default false")
 	}
-	verified, err := ldapTLSConfig(p.config)
-	if err != nil {
-		t.Fatalf("ldapTLSConfig(omitted) error = %v", err)
+	insecure, err := ldapTLSConfig(p.config)
+	if err != nil || !insecure.InsecureSkipVerify {
+		t.Fatalf("default TLS config=%v,%v", insecure, err)
 	}
-	if verified.InsecureSkipVerify {
-		t.Fatal("ldapTLSConfig(omitted) enabled InsecureSkipVerify")
-	}
-
-	optOut := Config{TLSVerify: new(false)}
-	insecure, err := ldapTLSConfig(optOut)
-	if err != nil {
-		t.Fatalf("ldapTLSConfig(explicit false) error = %v", err)
-	}
-	if !insecure.InsecureSkipVerify {
-		t.Fatal("ldapTLSConfig(explicit false) did not enable InsecureSkipVerify")
+	verified, err := ldapTLSConfig(Config{TLSVerify: new(true)})
+	if err != nil || verified.InsecureSkipVerify {
+		t.Fatalf("explicit verification config=%v,%v", verified, err)
 	}
 }
 

@@ -204,8 +204,8 @@ func TestHandlerFinalizesURIAndMethodBeforeNextPlugin(t *testing.T) {
 		if r.URL.Path != "/rewritten" || r.URL.RawQuery != "fixed=1&incoming=1" {
 			t.Fatalf("URL = %s?%s, want /rewritten?fixed=1&incoming=1", r.URL.Path, r.URL.RawQuery)
 		}
-		if got := r.Header.Get("X-Rewrite-View"); got != "PATCH:/rewritten" {
-			t.Fatalf("X-Rewrite-View = %q, want PATCH:/rewritten", got)
+		if got := r.Header.Get("X-Rewrite-View"); got != "GET:/rewritten" {
+			t.Fatalf("X-Rewrite-View = %q, want GET:/rewritten", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)

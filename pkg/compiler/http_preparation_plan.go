@@ -12,6 +12,7 @@ import (
 	graphql_proxy_cache "github.com/wklken/apisix-go/pkg/plugin/graphql_proxy_cache"
 	"github.com/wklken/apisix-go/pkg/plugin/grpc_transcode"
 	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
+	"github.com/wklken/apisix-go/pkg/plugin/mcp_bridge"
 	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 	"github.com/wklken/apisix-go/pkg/resource"
 	routepkg "github.com/wklken/apisix-go/pkg/route"
@@ -26,6 +27,7 @@ type httpPreparationPlan struct {
 	protoResolver     grpc_transcode.ProtoResolver
 	apiBreakerState   *api_breaker.State
 	rateLimitState    *limitbase.State
+	mcpSessions       *mcp_bridge.SessionRegistry
 }
 
 func (prepared *PreparedGeneration) planHTTPPreparation(

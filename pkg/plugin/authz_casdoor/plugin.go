@@ -220,7 +220,7 @@ func (p *Plugin) handleCallbackLocked(w http.ResponseWriter, r *http.Request) {
 	accessToken, lifetime, err := p.fetchAccessTokenLocked(r, code)
 	if err != nil {
 		logger.Error(err.Error())
-		http.Error(w, util.BuildMessageResponse(err.Error()), http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 	if session.OriginalURI == "" {

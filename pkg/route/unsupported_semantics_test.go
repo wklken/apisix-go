@@ -17,7 +17,6 @@ func TestCompileHTTPRejectsUnsupportedRouteSemantics(t *testing.T) {
 	}{
 		{name: "script", field: "script", value: `"return true"`, routeID: "unsupported-script-route"},
 		{name: "filter_func", field: "filter_func", value: `"return true"`, routeID: "unsupported-filter-route"},
-		{name: "vars", field: "vars", value: `[["http_user","==","ios"]]`, routeID: "unsupported-vars-route"},
 		{name: "remote_addrs", field: "remote_addrs", value: `["10.0.0.1"]`, routeID: "unsupported-remote-addrs-route"},
 		{name: "remote_addr", field: "remote_addr", value: `"10.0.0.1"`, routeID: "unsupported-remote-addr-route"},
 		{name: "script_id", field: "script_id", value: `"script-1"`, routeID: "unsupported-script-id-route"},
@@ -77,17 +76,17 @@ func TestCompileHTTPAllowsBlankFilterFunc(t *testing.T) {
 	}
 }
 
-func TestCompileHTTPRejectsNestedNumericVars(t *testing.T) {
+func TestCompileHTTPRejectsMalformedVars(t *testing.T) {
 	snapshot, err := CompileHTTP(context.Background(), CompileInput{
 		Revision: 1,
 		Routes: testPreparedRoutes(testRouteFromJSON(t,
-			`{"id":"nested-numeric-vars","uri":"/nested-numeric-vars","vars":[["arg_age","==",18]]}`,
+			`{"id":"malformed-vars","uri":"/malformed-vars","vars":[["arg_age","bad",18]]}`,
 		)),
 	})
 	if err == nil || snapshot != nil {
 		t.Fatalf("CompileHTTP() = (%T, %v), want vars rejection", snapshot, err)
 	}
-	if !strings.Contains(err.Error(), "nested-numeric-vars") || !strings.Contains(err.Error(), "vars") {
+	if !strings.Contains(err.Error(), "malformed-vars") || !strings.Contains(err.Error(), "vars") {
 		t.Fatalf("CompileHTTP() error = %q, want route ID and vars", err)
 	}
 }

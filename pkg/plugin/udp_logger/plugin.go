@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 )
@@ -158,7 +159,30 @@ type Config struct {
 	InactiveTimeout   int `json:"inactive_timeout,omitempty"`
 	MaxPendingEntries int `json:"max_pending_entries,omitempty"`
 
-	addr string
+	addr          string
+	retryDelaySet bool
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type config Config
+
+	var parsed struct {
+		config
+		RetryDelay json.RawMessage `json:"retry_delay"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*c = Config(parsed.config)
+	if len(parsed.RetryDelay) > 0 {
+		c.retryDelaySet = true
+		if string(parsed.RetryDelay) != "null" {
+			if err := json.Unmarshal(parsed.RetryDelay, &c.RetryDelay); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Config returns the plugin configuration.
@@ -204,7 +228,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.BatchMaxSize == 0 {
 		p.config.BatchMaxSize = logger_batch.DefaultBatchMaxSize
 	}
-	if p.config.RetryDelay == 0 {
+	if p.config.RetryDelay == 0 && !p.config.retryDelaySet {
 		p.config.RetryDelay = int(logger_batch.DefaultRetryDelay / time.Second)
 	}
 	if p.config.BufferDuration == 0 {
@@ -234,6 +258,7 @@ func (p *Plugin) PostInit() error {
 		BatchMaxSize:       p.config.BatchMaxSize,
 		MaxRetryCount:      p.config.MaxRetryCount,
 		RetryDelaySec:      p.config.RetryDelay,
+		RetryDelaySet:      p.config.retryDelaySet,
 		BufferDurationSec:  p.config.BufferDuration,
 		InactiveTimeoutSec: p.config.InactiveTimeout,
 		MaxPendingEntries:  p.config.MaxPendingEntries,

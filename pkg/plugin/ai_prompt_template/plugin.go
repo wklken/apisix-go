@@ -131,8 +131,8 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		templateName, _ := bodyTab["template_name"].(string)
-		if templateName == "" {
+		templateName, isString := bodyTab["template_name"].(string)
+		if !isString {
 			base.WriteJSONMessage(w, http.StatusBadRequest, "template name is missing in request.")
 			return
 		}

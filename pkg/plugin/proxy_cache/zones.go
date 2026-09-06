@@ -115,6 +115,96 @@ func (s *MemoryZoneStore) Store(key string, entry SharedCacheEntry) {
 	s.zone.lock.Unlock()
 }
 
+// VariantKey resolves a request against the zone-owned Vary index. The
+// index is evicted and budgeted together with the entries it references.
+func (s *MemoryZoneStore) VariantKey(key string, requestHeader http.Header) string {
+	if s == nil || s.zone == nil {
+		return key
+	}
+	s.zone.lock.RLock()
+	defer s.zone.lock.RUnlock()
+	index, ok := s.zone.vary[key]
+	if !ok || len(index.headers) == 0 {
+		return key
+	}
+	return key + "::" + varySignatureFromHeader(index.headers, requestHeader)
+}
+
+// StoreVariant atomically admits both the entry and its Vary metadata to the
+// configured zone. Oversized entries leave the existing variants untouched.
+func (s *MemoryZoneStore) StoreVariant(key string, requestHeader http.Header, shared SharedCacheEntry) {
+	if s == nil || s.zone == nil {
+		return
+	}
+	headers, cacheable := cacheutil.ParseVaryHeader(shared.Header)
+	if !cacheable {
+		return
+	}
+	entry := localCacheEntry(shared)
+	storageKey, signature := key, ""
+	if len(headers) > 0 {
+		signature = varySignatureFromHeader(headers, requestHeader)
+		storageKey += "::" + signature
+	}
+	z := s.zone
+	z.lock.Lock()
+	defer z.lock.Unlock()
+	if !canStoreMemoryEntryWithVary(z, key, storageKey, entry, headers, signature) {
+		return
+	}
+	index, hadIndex := z.vary[key]
+	if hadIndex && !slices.Equal(index.headers, headers) {
+		z.deleteVariantsLocked(key)
+		index = varyIndex{}
+	}
+	if len(headers) > 0 {
+		index.headers = slices.Clone(headers)
+		if !slices.Contains(index.signatures, signature) {
+			for len(index.signatures) >= maxVaryVariants {
+				delete(z.entries, key+"::"+index.signatures[0])
+				index.signatures = index.signatures[1:]
+			}
+			index.signatures = append(index.signatures, signature)
+		}
+		index.expiresAt = entry.expiresAt
+		z.vary[key] = index
+		z.loaded[key] = true
+		delete(z.entries, key)
+	}
+	z.entries[storageKey] = entry
+	z.recalculateUsedBytesLocked()
+	z.enforceCapacityLocked()
+}
+
+// DeleteVariants removes all request variants for one base cache key.
+func (s *MemoryZoneStore) DeleteVariants(key string) bool {
+	if s == nil || s.zone == nil {
+		return false
+	}
+	s.zone.lock.Lock()
+	defer s.zone.lock.Unlock()
+	found := s.zone.deleteVariantsLocked(key)
+	s.zone.recalculateUsedBytesLocked()
+	return found
+}
+
+func (z *memoryZone) deleteVariantsLocked(key string) bool {
+	_, found := z.entries[key]
+	delete(z.entries, key)
+	if index, ok := z.vary[key]; ok {
+		for _, signature := range index.signatures {
+			storageKey := key + "::" + signature
+			if _, exists := z.entries[storageKey]; exists {
+				found = true
+			}
+			delete(z.entries, storageKey)
+		}
+	}
+	delete(z.vary, key)
+	delete(z.loaded, key)
+	return found
+}
+
 func (s *MemoryZoneStore) Delete(key string) bool {
 	if s == nil || s.zone == nil {
 		return false

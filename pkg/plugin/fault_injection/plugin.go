@@ -33,8 +33,7 @@ const schema = `
 		"properties": {
 		  "http_status": {
 			"type": "integer",
-			"minimum": 200,
-			"maximum": 599
+			"minimum": 200
 		  },
 		  "body": {
 			"type": "string",

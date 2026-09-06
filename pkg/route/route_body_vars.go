@@ -3,7 +3,6 @@ package route
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/ohler55/ojg/jp"
 	"github.com/vektah/gqlparser/v2/ast"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 )

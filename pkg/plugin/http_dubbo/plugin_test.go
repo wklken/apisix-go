@@ -374,7 +374,7 @@ func TestServeDubboReturnsInternalServerErrorOnMalformedResponse(t *testing.T) {
 }
 
 func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
-	upstream, accepted := startSilentDubboServer(t)
+	upstream, requestStarted := startSilentDubboServer(t)
 	p := newTestPlugin(t, Config{
 		ServiceName:    "svc",
 		ServiceVersion: "0.0.0",
@@ -382,6 +382,7 @@ func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
 		ReadTimeout:    1000,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, "/dubbo", strings.NewReader(`[]`)).WithContext(ctx)
 	rr := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -391,9 +392,9 @@ func TestServeDubboStopsOnRequestCancellation(t *testing.T) {
 	}()
 
 	select {
-	case <-accepted:
+	case <-requestStarted:
 	case <-time.After(time.Second):
-		t.Fatal("silent Dubbo server did not accept the connection")
+		t.Fatal("silent Dubbo server did not receive request bytes")
 	}
 	cancel()
 	select {
@@ -569,17 +570,22 @@ func startSilentDubboServer(t *testing.T) (string, <-chan struct{}) {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	accepted := make(chan struct{})
+	requestStarted := make(chan struct{})
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		close(accepted)
 		defer func() { _ = conn.Close() }()
+		// Accept alone can precede the client's DialContext completion. Receiving
+		// request bytes guarantees cancellation exercises the post-connect path.
+		if _, err := io.CopyN(io.Discard, conn, 1); err != nil {
+			return
+		}
+		close(requestStarted)
 		_, _ = io.Copy(io.Discard, conn)
 	}()
-	return ln.Addr().String(), accepted
+	return ln.Addr().String(), requestStarted
 }
 
 func startClosingDubboServer(t *testing.T) string {

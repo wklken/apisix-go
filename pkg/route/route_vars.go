@@ -2,11 +2,11 @@ package route
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/expr"
 )
 

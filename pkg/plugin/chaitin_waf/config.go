@@ -1,6 +1,6 @@
 package chaitin_waf
 
-import "encoding/json"
+import "github.com/wklken/apisix-go/pkg/json"
 
 func (cfg *Config) UnmarshalJSON(data []byte) error {
 	type plain Config

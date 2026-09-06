@@ -30,7 +30,7 @@ cases:
         output: {status: 200, body: {equals: graphql upstream}, headers: {X-RateLimit-Remaining: {equals: "0"}}}
       - name: subsequent-depth-four-query-is-rejected
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"query":"query awesomeGraphqlQuery { foo { bar, baz { boo, bee, baa { bar_id, lol } } } }"}'}
-        output: {status: 503, body: {matches: Limit exceeded}, headers: {X-RateLimit-Remaining: {equals: "0"}}}
+        output: {status: 503, body: {equals: ""}, headers: {X-RateLimit-Remaining: {equals: "0"}}}
 
   - name: graphql-limit-count-head-method-is-rejected-test-3
     config:

@@ -248,7 +248,7 @@ cases:
         output:
           status: 503
           body:
-            matches: 'failed when accessing token: invalid access_token'
+            equals: ""
           logs:
             matches: 'failed when accessing token: invalid access_token'
 

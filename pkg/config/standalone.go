@@ -651,6 +651,10 @@ func readStandaloneSnapshot(
 	if provider == standaloneProviderYAML && !strings.HasSuffix(strings.TrimSpace(string(data)), "#END") {
 		return nil, fmt.Errorf("standalone YAML config %q must end with #END", path)
 	}
+	data, err = expandStandaloneTemplates(data, provider)
+	if err != nil {
+		return nil, fmt.Errorf("expand standalone config: %w", err)
+	}
 
 	var encoded []byte
 	if provider == standaloneProviderYAML {
@@ -658,6 +662,7 @@ func readStandaloneSnapshot(
 		if err := yaml.Unmarshal(data, &document); err != nil {
 			return nil, fmt.Errorf("parse standalone YAML config %q: %w", path, err)
 		}
+		normalizeStandaloneYAMLRouteVars(document)
 		encoded, err = json.Marshal(document)
 		if err != nil {
 			return nil, fmt.Errorf("normalize standalone config %q: %w", path, err)

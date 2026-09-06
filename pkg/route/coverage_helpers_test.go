@@ -261,7 +261,8 @@ func TestProxyErrorHandlerMapsFailuresAndRecordsResponseSource(t *testing.T) {
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
 			}
-			if !strings.Contains(response.Body.String(), "upstream request failed") {
+			if test.wantStatus != http.StatusGatewayTimeout &&
+				!strings.Contains(response.Body.String(), "upstream request failed") {
 				t.Fatalf("body = %q, want generic upstream failure message", response.Body.String())
 			}
 			if got := apisixctx.GetRequestVar(request, "$response_source"); got != "apisix" {

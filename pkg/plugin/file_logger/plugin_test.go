@@ -180,7 +180,7 @@ func TestCustomFileLoggerFormatRetainsSensitiveHeader(t *testing.T) {
 }
 
 func TestAppendFileWriteSyncerFileModes(t *testing.T) {
-	t.Run("new file is private", func(t *testing.T) {
+	t.Run("new file respects process umask", func(t *testing.T) {
 		path := t.TempDir() + "/new.log"
 		writer := &appendFileWriteSyncer{path: path}
 		if _, err := writer.Write([]byte("entry")); err != nil {
@@ -193,8 +193,16 @@ func TestAppendFileWriteSyncerFileModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat new file: %v", err)
 		}
-		if got := info.Mode().Perm(); got != 0o600 {
-			t.Fatalf("new file mode = %o, want 600", got)
+		controlPath := t.TempDir() + "/umask.log"
+		if err := os.WriteFile(controlPath, nil, 0o666); err != nil {
+			t.Fatal(err)
+		}
+		control, err := os.Stat(controlPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != control.Mode().Perm() {
+			t.Fatalf("new file mode = %o, want 0666 masked by umask: %o", got, control.Mode().Perm())
 		}
 	})
 

@@ -229,7 +229,7 @@ func (p *Plugin) handleMessage(w http.ResponseWriter, r *http.Request) {
 
 	sess := p.lookupSession(r.URL.Query().Get("sessionId"))
 	if sess == nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	if _, err := sess.stdin.Write(append(body, '\n')); err != nil {

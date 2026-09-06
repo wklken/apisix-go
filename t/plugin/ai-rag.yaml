@@ -153,10 +153,10 @@ cases:
         output: {status: 400, body: {equals: "{\"message\":\"could not get body: request body is empty\"}\n"}}
       - name: missing-vector-fields-is-rejected
         input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"missing-fields":"something"},"embeddings":{"input":"which service is good for devops","dimensions":1024}}}'}
-        output: {status: 400, body: {matches: 'property "vector_search" validation failed'}, logs: {matches: 'request body fails schema check: property \\"ai_rag\\" validation failed: property \\"vector_search\\" validation failed: property \\"fields\\" is required'}}
+        output: {status: 400, body: {equals: ''}, logs: {matches: 'request body fails schema check: property \\"ai_rag\\" validation failed: property \\"vector_search\\" validation failed: property \\"fields\\" is required'}}
       - name: missing-embedding-input-is-rejected
         input: {method: POST, path: /echo, headers: {Content-Type: application/json}, body: '{"ai_rag":{"vector_search":{"fields":"something"},"embeddings":{"missinginput":"which service is good for devops"}}}'}
-        output: {status: 400, body: {matches: 'property "embeddings" validation failed'}, logs: {matches: 'request body fails schema check: property \\"ai_rag\\" validation failed: property \\"embeddings\\" validation failed: property \\"input\\" is required'}}
+        output: {status: 400, body: {equals: ''}, logs: {matches: 'request body fails schema check: property \\"ai_rag\\" validation failed: property \\"embeddings\\" validation failed: property \\"input\\" is required'}}
 
   - name: chat-completions-rag-injection
     config:

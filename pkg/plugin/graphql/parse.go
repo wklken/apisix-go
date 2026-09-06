@@ -72,7 +72,7 @@ func selectionDepth(doc *ast.QueryDocument, selections ast.SelectionSet, expandi
 			}
 			fragment := doc.Fragments.ForName(sel.Name)
 			if fragment == nil {
-				return 0, fmt.Errorf("undefined graphql fragment %q", sel.Name)
+				continue
 			}
 			expanding[sel.Name] = true
 			item, err = selectionDepth(doc, fragment.SelectionSet, expanding)

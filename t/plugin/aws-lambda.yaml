@@ -174,7 +174,7 @@ cases:
             status: 200
             body: invoked
         output: *invoked
-  - name: canonical-query-signing
+  - name: signing-preserves-wire-query
     config:
       routes:
         - id: aws-lambda-canonical-query
@@ -191,7 +191,7 @@ cases:
     upstream:
       expect:
         path:
-          equals: /generic?a=%2A&a-=x&flag=&multi=m1&multi=m2&with%20space=a%2Fb%20c
+          equals: /generic?with%20space=a%2Fb%20c&multi=m2&multi=m1&flag&a=*&a-=x
         headers:
           Authorization:
             matches: '^AWS4-HMAC-SHA256 Credential=KEY1/.*Signature=[0-9a-f]{64}$'

@@ -184,7 +184,7 @@ func (p *Plugin) PostInit() error {
 				p.config.WildcardType = true
 				continue
 			}
-			contentTypes[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+			contentTypes[t] = struct{}{}
 		}
 	}
 	p.config.ConfigTypes = contentTypes
@@ -304,7 +304,6 @@ func (p *Plugin) contentTypeEligible(header http.Header) bool {
 	if semi := strings.IndexByte(contentType, ';'); semi >= 0 {
 		contentType = contentType[:semi]
 	}
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
 	if contentType == "" {
 		return false
 	}

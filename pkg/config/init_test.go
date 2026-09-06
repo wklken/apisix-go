@@ -103,7 +103,6 @@ func TestLoadEffectiveRejectsInvalidRuntimeValues(t *testing.T) {
 		override string
 		want     string
 	}{
-		{name: "send timeout", override: "nginx_config: {http: {send_timeout: 1s}}", want: "send_timeout"},
 		{
 			name:     "negative body size",
 			override: "nginx_config: {http: {client_max_body_size: -1}}",

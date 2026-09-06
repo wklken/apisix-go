@@ -105,6 +105,9 @@ func (owner *generationOwner) deactivateDomains(domains ownerDomain) bool {
 	if owner.activeDomains&domains != domains {
 		panic("deactivate inactive generation owner domain")
 	}
+	if domains&ownerDomainHTTP != 0 {
+		owner.prepared.SetHTTPPublished(false)
+	}
 	owner.activeDomains &^= domains
 	if owner.activeDomains != 0 {
 		return false

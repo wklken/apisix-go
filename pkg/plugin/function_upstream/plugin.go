@@ -139,10 +139,16 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	return base.StopRequestWithSource(r, apisixctx.ResponseSourceUpstream)
 }
 
+var errRequestBodyRead = errors.New("read request body")
+
 func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, err := p.buildRequest(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		status := http.StatusBadGateway
+		if errors.Is(err, errRequestBodyRead) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	if p.Processor != nil {
@@ -173,7 +179,7 @@ func (p *Plugin) buildRequest(r *http.Request) (*http.Request, error) {
 
 	body, err := base.ReadRequestBody(r)
 	if err != nil {
-		return nil, fmt.Errorf("read request body: %w", err)
+		return nil, fmt.Errorf("%w: %w", errRequestBodyRead, err)
 	}
 
 	extension := chi.URLParam(r, "ext")

@@ -2,6 +2,7 @@ package ai_stream
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,9 +67,7 @@ func ForwardSSE(
 			if maxBytes > 0 && total > maxBytes {
 				return usage, fmt.Errorf("max_response_bytes exceeded")
 			}
-			if mergeErr := mergeSSEUsage(&usage, protocol, line); mergeErr != nil {
-				return usage, mergeErr
-			}
+			mergeSSEUsage(&usage, protocol, line)
 			event.WriteString(line)
 			if strings.TrimRight(line, "\r\n") == "" {
 				if writeErr := writeEvent(); writeErr != nil {
@@ -77,11 +76,13 @@ func ForwardSSE(
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || errors.Is(err, ErrMaxStreamDuration) {
 				if writeErr := writeEvent(); writeErr != nil {
 					return usage, writeErr
 				}
-				break
+				if err == io.EOF {
+					break
+				}
 			}
 			return usage, err
 		}
@@ -95,18 +96,18 @@ func ForwardSSE(
 	return usage, nil
 }
 
-func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) error {
+func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) {
 	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "data:") {
-		return nil
+		return
 	}
 	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	if data == "" || data == "[DONE]" {
-		return nil
+		return
 	}
 	var event map[string]any
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		return fmt.Errorf("invalid SSE data: %w", err)
+		return
 	}
 	if model, ok := event["model"].(string); ok {
 		usage.Model = model
@@ -161,7 +162,6 @@ func mergeSSEUsage(usage *Usage, protocol ai_protocols.Protocol, line string) er
 		}
 		mergeOpenAIUsage(usage, event["usage"], false)
 	}
-	return nil
 }
 
 func mergeOpenAIUsage(usage *Usage, value any, responses bool) {

@@ -56,7 +56,7 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	})
 
 	first := httptest.NewRecorder()
-	p.Handler(upstream).ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	p.Handler(upstream).ServeHTTP(first, newSelectedAIRequest(http.MethodPost, "/v1/chat/completions", nil))
 	if first.Code != http.StatusOK {
 		t.Fatalf("first response code = %d, want 200", first.Code)
 	}
@@ -71,7 +71,7 @@ func TestHandlerChargesTotalTokensAndRejectsNextRequest(t *testing.T) {
 	}
 
 	second := httptest.NewRecorder()
-	p.Handler(upstream).ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	p.Handler(upstream).ServeHTTP(second, newSelectedAIRequest(http.MethodPost, "/v1/chat/completions", nil))
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("second response code = %d, want 429", second.Code)
 	}
@@ -90,7 +90,7 @@ func TestHandlerSharesGlobalQuotaAcrossAuthenticatedConsumers(t *testing.T) {
 	})
 	request := func(consumer string) *http.Request {
 		return apisixctx.WithApisixVars(
-			httptest.NewRequest(http.MethodPost, "/", nil),
+			newSelectedAIRequest(http.MethodPost, "/", nil),
 			map[string]string{"$consumer_name": consumer},
 		)
 	}
@@ -221,17 +221,17 @@ func TestHandlerResetsQuotaAfterWindow(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
 	})
-	p.Handler(upstream).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
+	p.Handler(upstream).ServeHTTP(httptest.NewRecorder(), newSelectedAIRequest(http.MethodPost, "/", nil))
 
 	blocked := httptest.NewRecorder()
-	p.Handler(upstream).ServeHTTP(blocked, httptest.NewRequest(http.MethodPost, "/", nil))
+	p.Handler(upstream).ServeHTTP(blocked, newSelectedAIRequest(http.MethodPost, "/", nil))
 	if blocked.Code != http.StatusServiceUnavailable {
 		t.Fatalf("blocked response code = %d, want 503", blocked.Code)
 	}
 
 	now = now.Add(2 * time.Second)
 	allowed := httptest.NewRecorder()
-	p.Handler(upstream).ServeHTTP(allowed, httptest.NewRequest(http.MethodPost, "/", nil))
+	p.Handler(upstream).ServeHTTP(allowed, newSelectedAIRequest(http.MethodPost, "/", nil))
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("allowed response code = %d, want 200 after reset", allowed.Code)
 	}
@@ -244,7 +244,7 @@ func TestHandlerReportsAPISIX317PreChargeSnapshots(t *testing.T) {
 	})
 	for i, want := range []string{"30", "20", "10", "0"} {
 		response := httptest.NewRecorder()
-		p.Handler(upstream).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/", nil))
+		p.Handler(upstream).ServeHTTP(response, newSelectedAIRequest(http.MethodPost, "/", nil))
 		if got := response.Header().Get("X-AI-RateLimit-Remaining-global"); got != want {
 			t.Fatalf("response %d remaining = %q, want pre-charge snapshot %q", i+1, got, want)
 		}
@@ -276,7 +276,7 @@ func TestHandlerUsesAPISIX317ProviderTotalTokensWhenItDiffersFromComponentSum(t 
 
 	for i, want := range []string{"30", "20", "10"} {
 		response := httptest.NewRecorder()
-		request := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/ai", nil))
+		request := apisixctx.WithRequestVars(newSelectedAIRequest(http.MethodPost, "/ai", nil))
 		p.Handler(upstream).ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("response %d status = %d, want 200", i+1, response.Code)
@@ -297,10 +297,10 @@ func TestHandlerWritesAPISIX317CustomRejectionResponse(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
 	})
-	p.Handler(upstream).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/ai", nil))
+	p.Handler(upstream).ServeHTTP(httptest.NewRecorder(), newSelectedAIRequest(http.MethodPost, "/ai", nil))
 
 	rejected := httptest.NewRecorder()
-	p.Handler(upstream).ServeHTTP(rejected, httptest.NewRequest(http.MethodPost, "/ai", nil))
+	p.Handler(upstream).ServeHTTP(rejected, newSelectedAIRequest(http.MethodPost, "/ai", nil))
 
 	if rejected.Code != http.StatusForbidden {
 		t.Fatalf("rejected status = %d, want 403", rejected.Code)
@@ -943,7 +943,7 @@ func TestHandlerResolvesGlobalQuotaFromRequestVariables(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := newSelectedAIRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Limit", "2")
 	req.Header.Set("X-Window", "10")
 	rr := httptest.NewRecorder()
@@ -971,7 +971,7 @@ func TestHandlerResolvesQuotaVariableDefaultsAndOverrides(t *testing.T) {
 	})
 
 	defaults := httptest.NewRecorder()
-	p.Handler(upstream).ServeHTTP(defaults, httptest.NewRequest(http.MethodPost, "/", nil))
+	p.Handler(upstream).ServeHTTP(defaults, newSelectedAIRequest(http.MethodPost, "/", nil))
 	if defaults.Code != http.StatusOK || defaults.Header().Get("X-AI-RateLimit-Limit-global") != "20" {
 		t.Fatalf(
 			"default response = (%d, %q), want limit 20",
@@ -980,7 +980,7 @@ func TestHandlerResolvesQuotaVariableDefaultsAndOverrides(t *testing.T) {
 		)
 	}
 
-	overrideRequest := httptest.NewRequest(http.MethodPost, "/", nil)
+	overrideRequest := newSelectedAIRequest(http.MethodPost, "/", nil)
 	overrideRequest.Header.Set("OpenAI-Count", "30")
 	overrideRequest.Header.Set("Time-Window", "10")
 	override := httptest.NewRecorder()
@@ -1031,7 +1031,7 @@ func TestHandlerRejectsInvalidResolvedQuotaValues(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 	})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := newSelectedAIRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Limit", "0")
 	req.Header.Set("X-Window", "not-a-number")
 	rr := httptest.NewRecorder()
@@ -1055,7 +1055,7 @@ func TestHandlerRejectsMalformedResolvedWindow(t *testing.T) {
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 	})
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := newSelectedAIRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Limit", "1")
 	req.Header.Set("X-Window", "not-a-number")
 	rr := httptest.NewRecorder()
@@ -1077,7 +1077,7 @@ func TestHandlerAppliesSingleRule(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
 	})
 	request := func() *http.Request {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := newSelectedAIRequest(http.MethodPost, "/", nil)
 		req.Header.Set("X-Tenant", "team-a")
 		return req
 	}
@@ -1113,7 +1113,7 @@ func TestHandlerAppliesIndependentRulesWithRuleHeaders(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
 	})
 	request := func() *http.Request {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := newSelectedAIRequest(http.MethodPost, "/", nil)
 		req.Header.Set("X-Tenant", "team-a")
 		req.Header.Set("X-Model", "model-a")
 		return req
@@ -1152,7 +1152,7 @@ func TestHandlerRuleUsesFixedWindowAndDefaultIndexHeaders(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
 	})
 	request := func() *http.Request {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := newSelectedAIRequest(http.MethodPost, "/", nil)
 		req.Header.Set("X-Tenant", "team-a")
 		return req
 	}
@@ -1194,7 +1194,7 @@ func TestHandlerSkipsInvalidDynamicRuleAndAppliesValidRule(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"total_tokens":1}}`))
 	})
 	request := func() *http.Request {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req := newSelectedAIRequest(http.MethodPost, "/", nil)
 		req.Header.Set("X-Bad-Count", "not-a-number")
 		req.Header.Set("X-Tenant", "team-a")
 		return req
@@ -1223,7 +1223,7 @@ func TestHandlerReturnsInternalServerErrorWhenNoRuleResolves(t *testing.T) {
 	p := newTestPlugin(t, Config{Rules: []Rule{
 		{Count: "$http_x_bad_count", TimeWindow: 60, Key: "$http_x_tenant"},
 	}}, time.Now)
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := newSelectedAIRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Bad-Count", "not-a-number")
 	req.Header.Set("X-Tenant", "team-a")
 	rr := httptest.NewRecorder()
@@ -1258,7 +1258,7 @@ func TestHandlerExpressionUsesRawUsageFromRequestContext(t *testing.T) {
 		LimitStrategy: "expression",
 		CostExpr:      "input_tokens + output_tokens",
 	}, time.Now)
-	req := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/", nil))
+	req := apisixctx.WithRequestVars(newSelectedAIRequest(http.MethodPost, "/", nil))
 	apisixctx.RegisterRequestVar(req, "$llm_raw_usage", map[string]any{
 		"input_tokens":  float64(6),
 		"output_tokens": float64(4),
@@ -1289,7 +1289,7 @@ func TestPostInitAcceptsAdditionalSafeMathFunctions(t *testing.T) {
 
 func TestHandlerRejectsOverflowingDynamicWindow(t *testing.T) {
 	p := newTestPlugin(t, Config{Limit: 1, TimeWindow: "$http_x_window"}, time.Now)
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := newSelectedAIRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Window", "9223372036854775807")
 	rr := httptest.NewRecorder()
 
@@ -1393,7 +1393,7 @@ func TestConcurrentRequestPhaseUsesOfficialDryRun(t *testing.T) {
 			<-start
 			result := p.RunRequestPhase(
 				httptest.NewRecorder(),
-				httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+				newSelectedAIRequest(http.MethodPost, "/v1/chat/completions", nil),
 			)
 			if result.Decision == base.RequestContinue {
 				allowed.Add(1)
@@ -1422,7 +1422,7 @@ func TestBufferedResponseFallbackStillReservesQuota(t *testing.T) {
 		TimeWindow:    60,
 		LimitStrategy: "total_tokens",
 	}, time.Now)
-	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request := newSelectedAIRequest(http.MethodPost, "/", nil)
 	response := &base.ResponseState{Body: []byte(`{"usage":{"total_tokens":1}}`)}
 
 	if err := p.RunBufferedBodyFilter(request, response); err != nil {

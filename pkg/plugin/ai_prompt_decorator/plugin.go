@@ -108,8 +108,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
 		if err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
-			return
+			protocol = ai_protocols.OpenAIChat
 		}
 		ai_protocols.PrependMessages(protocol, bodyTab, p.config.Prepend)
 		ai_protocols.AppendMessages(protocol, bodyTab, p.config.Append)

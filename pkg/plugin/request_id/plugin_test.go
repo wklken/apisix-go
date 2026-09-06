@@ -176,8 +176,8 @@ func TestHandlerPreservesIncomingRequestID(t *testing.T) {
 		if got := r.Context().Value(apisixctx.RequestIDKey); got != "client-provided" {
 			t.Fatalf("context request_id = %#v, want client-provided", got)
 		}
-		if got := apisixctx.GetApisixVar(r, "$request_id"); got != "client-provided" {
-			t.Fatalf("APISIX request_id = %#v, want client-provided", got)
+		if got := apisixctx.GetApisixVar(r, "$apisix_request_id"); got != "client-provided" {
+			t.Fatalf("APISIX apisix_request_id = %#v, want client-provided", got)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(rr, req)
@@ -226,8 +226,8 @@ func TestRequestPhaseAndHandlerCompatibility(t *testing.T) {
 	if !phaseCalled || phaseResponse.Code != http.StatusNoContent {
 		t.Fatalf("phase called = %v, status = %d", phaseCalled, phaseResponse.Code)
 	}
-	if phaseResponse.Header().Get("X-Request-Id") == "" {
-		t.Fatal("phase response is missing X-Request-Id")
+	if phaseResponse.Header().Get("X-Request-Id") != "" {
+		t.Fatal("request phase wrote response header before header filter")
 	}
 	lifecycle.Finalize()
 

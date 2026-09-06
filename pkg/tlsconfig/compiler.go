@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -232,13 +233,14 @@ type certificateIndex struct {
 }
 
 type certificateEntry struct {
-	id          string
-	certificate tls.Certificate
-	clientCAs   *x509.CertPool
-	clientDepth int
-	minVersion  uint16
-	maxVersion  uint16
-	protocols   map[uint16]struct{}
+	id           string
+	certificates []tls.Certificate
+	clientCAs    *x509.CertPool
+	clientDepth  int
+	skipMTLS     []*regexp.Regexp
+	minVersion   uint16
+	maxVersion   uint16
+	protocols    map[uint16]struct{}
 }
 
 type wildcardCertificateEntry struct {
@@ -267,6 +269,17 @@ func compileCertificateIndex(ssls map[string]resource.SSL) (*certificateIndex, e
 		if err != nil {
 			return nil, fmt.Errorf("frontend TLS SSL resource %q load certificate: %w", id, err)
 		}
+		if len(ssl.Certs) != len(ssl.Keys) {
+			return nil, fmt.Errorf("frontend TLS SSL resource %q has mismatched certificate/key arrays", id)
+		}
+		certificates := []tls.Certificate{certificate}
+		for i, cert := range ssl.Certs {
+			extra, err := tls.X509KeyPair([]byte(cert), []byte(ssl.Keys[i]))
+			if err != nil {
+				return nil, fmt.Errorf("frontend TLS SSL resource %q load certificate %d: %w", id, i+1, err)
+			}
+			certificates = append(certificates, extra)
+		}
 		clientCAs, clientDepth, err := compileResourceClientCAs(ssl.Client)
 		if err != nil {
 			return nil, fmt.Errorf("frontend TLS SSL resource %q: %w", id, err)
@@ -285,14 +298,25 @@ func compileCertificateIndex(ssls map[string]resource.SSL) (*certificateIndex, e
 				}
 			}
 		}
+		var skipMTLS []*regexp.Regexp
+		if ssl.Client != nil && ssl.Client.SkipMTLSURIRegex != nil {
+			skipMTLS = make([]*regexp.Regexp, 0, len(ssl.Client.SkipMTLSURIRegex))
+			for _, pattern := range ssl.Client.SkipMTLSURIRegex {
+				// APISIX treats an invalid runtime pattern as a non-match.
+				if compiled, err := regexp.Compile(pattern); err == nil {
+					skipMTLS = append(skipMTLS, compiled)
+				}
+			}
+		}
 		entry := certificateEntry{
-			id:          id,
-			certificate: certificate,
-			clientCAs:   clientCAs,
-			clientDepth: clientDepth,
-			minVersion:  minVersion,
-			maxVersion:  maxVersion,
-			protocols:   protocols,
+			id:           id,
+			certificates: certificates,
+			clientCAs:    clientCAs,
+			clientDepth:  clientDepth,
+			skipMTLS:     skipMTLS,
+			minVersion:   minVersion,
+			maxVersion:   maxVersion,
+			protocols:    protocols,
 		}
 		for _, rawSNI := range sslSNIs(ssl) {
 			sni := normalizeSNI(rawSNI)
@@ -322,6 +346,9 @@ func compileCertificateIndex(ssls map[string]resource.SSL) (*certificateIndex, e
 			index.exact[sni] = entry
 		}
 	}
+	slices.SortStableFunc(index.wildcard, func(a, b wildcardCertificateEntry) int {
+		return len(b.suffix) - len(a.suffix)
+	})
 	return index, nil
 }
 
@@ -329,11 +356,8 @@ func compileResourceClientCAs(client *resource.SSLClient) (*x509.CertPool, int, 
 	if client == nil {
 		return nil, 0, nil
 	}
-	if client.Depth != 1 {
-		return nil, 0, fmt.Errorf("unsupported SSL client depth %d; only depth 1 is supported", client.Depth)
-	}
-	if len(client.SkipMTLSURIRegex) > 0 {
-		return nil, 0, fmt.Errorf("unsupported SSL client skip_mtls_uri_regex")
+	if client.Depth < 0 {
+		return nil, 0, fmt.Errorf("SSL client depth must be non-negative")
 	}
 	ca := strings.TrimSpace(client.CA)
 	if ca == "" {
@@ -354,7 +378,15 @@ func (index *certificateIndex) certificateSelector(
 		if err != nil {
 			return nil, err
 		}
-		certificate := cloneCertificate(entry.certificate)
+		if hello != nil {
+			for _, certificate := range entry.certificates {
+				if hello.SupportsCertificate(&certificate) == nil {
+					selected := cloneCertificate(certificate)
+					return &selected, nil
+				}
+			}
+		}
+		certificate := cloneCertificate(entry.certificates[0])
 		return &certificate, nil
 	}
 }
@@ -363,14 +395,17 @@ func (index *certificateIndex) configSelector(
 	base *tls.Config,
 	fallbackSNI string,
 ) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+	hosts := index.clientHosts()
 	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		entry, err := index.selectEntry(serverName(hello, fallbackSNI))
 		if err != nil {
 			return nil, err
 		}
-		certificate := cloneCertificate(entry.certificate)
 		selected := cloneTLSConfig(base)
-		selected.Certificates = []tls.Certificate{certificate}
+		selected.Certificates = make([]tls.Certificate, len(entry.certificates))
+		for i, certificate := range entry.certificates {
+			selected.Certificates[i] = cloneCertificate(certificate)
+		}
 		if entry.protocols != nil {
 			if entry.minVersion != 0 {
 				selected.MinVersion = entry.minVersion
@@ -394,9 +429,14 @@ func (index *certificateIndex) configSelector(
 		}
 		if entry.clientCAs != nil {
 			selected.ClientCAs = entry.clientCAs.Clone()
-			selected.ClientAuth = tls.RequireAndVerifyClientCert
-			enforceClientCertificateDepth(selected, entry.clientDepth)
+			if entry.skipMTLS != nil {
+				selected.ClientAuth = tls.RequestClientCert
+			} else {
+				selected.ClientAuth = tls.RequireAndVerifyClientCert
+				enforceClientCertificateDepth(selected, entry.clientDepth)
+			}
 		}
+		recordClientVerification(selected, hello, entry, hosts, serverName(hello, fallbackSNI))
 		return selected, nil
 	}
 }
@@ -422,7 +462,10 @@ func (index *certificateIndex) selectEntry(serverName string) (certificateEntry,
 		return entry, nil
 	}
 	for _, entry := range index.wildcard {
-		if wildcardMatches(normalized, entry.suffix) {
+		if strings.HasSuffix(normalized, entry.suffix) {
+			if !wildcardMatches(normalized, entry.suffix) {
+				return certificateEntry{}, fmt.Errorf("SNI does not match a single wildcard label")
+			}
 			return entry.certificateEntry, nil
 		}
 	}
@@ -464,6 +507,8 @@ func sslSNIs(ssl resource.SSL) []string {
 }
 
 func cloneSSL(ssl resource.SSL) resource.SSL {
+	ssl.Certs = slices.Clone(ssl.Certs)
+	ssl.Keys = slices.Clone(ssl.Keys)
 	ssl.Snis = slices.Clone(ssl.Snis)
 	ssl.SSLProtocols = slices.Clone(ssl.SSLProtocols)
 	ssl.Labels = maps.Clone(ssl.Labels)
@@ -484,7 +529,8 @@ func enforceClientCertificateDepth(tlsConfig *tls.Config, maximumDepth int) {
 			}
 		}
 		for _, chain := range state.VerifiedChains {
-			if len(chain)-1 <= maximumDepth {
+			// OpenSSL excludes the peer and trust anchor from verify_depth.
+			if len(chain)-2 <= maximumDepth {
 				return nil
 			}
 		}

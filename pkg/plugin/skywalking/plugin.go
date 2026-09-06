@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +82,7 @@ type segmentStateContextKey struct{}
 type segmentState struct {
 	context             sw8Context
 	started             time.Time
+	requestURI          string
 	originalSW8         []string
 	owner               *Plugin
 	sampled             bool
@@ -128,6 +130,7 @@ type skywalkingSpan struct {
 	SpanID        int                    `json:"spanId"`
 	ParentSpanID  int                    `json:"parentSpanId"`
 	OperationName string                 `json:"operationName"`
+	Peer          string                 `json:"peer,omitempty"`
 	StartTime     int64                  `json:"startTime"`
 	EndTime       int64                  `json:"endTime"`
 	SpanType      string                 `json:"spanType"`
@@ -261,7 +264,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		r, lifecycle = apisixctx.EnsureRequestLifecycle(r, time.Now())
 	}
 	if !exists {
-		state = &segmentState{originalSW8: append([]string(nil), r.Header.Values("sw8")...)}
+		state = &segmentState{originalSW8: append([]string(nil), r.Header.Values("sw8")...), requestURI: r.URL.Path}
 		r = r.WithContext(context.WithValue(r.Context(), segmentStateContextKey{}, state))
 	} else {
 		// A lower-precedence SkyWalking binding may already have generated an
@@ -348,7 +351,7 @@ func (p *Plugin) finishSegment(
 		if status == 0 {
 			status = http.StatusOK
 		}
-		p.reportSegment(p.buildSegmentWithSource(
+		segment := p.buildSegmentWithSource(
 			state.context,
 			request,
 			status,
@@ -356,7 +359,9 @@ func (p *Plugin) finishSegment(
 			duration,
 			lifecycle.ResponseSource(),
 			outcome.Kind,
-		))
+		)
+		segment.Spans[1].OperationName = state.requestURI
+		p.reportSegment(segment)
 	})
 	return nil
 }
@@ -472,6 +477,15 @@ func (p *Plugin) buildSegmentWithSource(
 		ServiceInstance: p.serviceInstanceName(),
 		Spans:           []skywalkingSpan{span},
 	}
+	exit := skywalkingSpan{
+		SpanID: 1, ParentSpanID: 0, OperationName: r.URL.Path,
+		Peer: "upstream service", StartTime: start.UnixMilli(), EndTime: end.UnixMilli(),
+		SpanType: "Exit", SpanLayer: "Http", ComponentID: componentIDAPISIX,
+	}
+	if upstreamStatus, err := strconv.Atoi(strings.TrimSpace(correlation.UpstreamStatus)); err == nil {
+		exit.Tags = []skywalkingTag{{Key: "http.status_code", Value: strconv.Itoa(upstreamStatus)}}
+	}
+	segment.Spans = append(segment.Spans, exit)
 	if ctx.ParentTraceSegmentID != "" {
 		span.Refs = []skywalkingSegmentRef{{
 			RefType:                  "CrossProcess",

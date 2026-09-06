@@ -35,6 +35,8 @@ type SSL struct {
 	Sni          string            `json:"sni,omitempty" yaml:"sni,omitempty"`
 	Snis         []string          `json:"snis,omitempty" yaml:"snis,omitempty"`
 	Cert         string            `json:"cert,omitempty" yaml:"cert,omitempty"`
+	Certs        []string          `json:"certs,omitempty" yaml:"certs,omitempty"`
+	Keys         []string          `json:"keys,omitempty" yaml:"keys,omitempty"`
 	Key          string            `json:"key,omitempty" yaml:"key,omitempty"`
 	Client       *SSLClient        `json:"client,omitempty" yaml:"client,omitempty"`
 	SSLProtocols []string          `json:"ssl_protocols,omitempty" yaml:"ssl_protocols,omitempty"`

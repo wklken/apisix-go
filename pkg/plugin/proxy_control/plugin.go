@@ -34,15 +34,13 @@ type Config struct {
 }
 
 const (
-	// DefaultRequestBufferingLimit bounds in-memory request buffering to a
-	// fixed, auditable budget. Oversized buffered requests are rejected with
-	// HTTP 413 instead of being proxied.
+	// DefaultRequestBufferingLimit is the memory threshold for request replay.
+	// Larger bodies use a request-owned temporary file rather than being rejected.
 	DefaultRequestBufferingLimit int64 = 8 << 20
 )
 
 type requestBufferingState struct {
 	enabled bool
-	limit   int64
 }
 
 type requestBufferingKey struct{}
@@ -75,19 +73,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func WithRequestBuffering(r *http.Request, enabled bool) *http.Request {
-	state := requestBufferingState{enabled: enabled, limit: DefaultRequestBufferingLimit}
+	state := requestBufferingState{enabled: enabled}
 	ctx := context.WithValue(r.Context(), requestBufferingKey{}, state)
 	return r.WithContext(ctx)
 }
 
 func GetRequestBuffering(r *http.Request) bool {
-	state, _ := r.Context().Value(requestBufferingKey{}).(requestBufferingState)
-	return state.enabled
-}
-
-// GetRequestBufferingLimit reports the fixed in-memory replay budget carried
-// by the request-buffering context state.
-func GetRequestBufferingLimit(r *http.Request) int64 {
-	state, _ := r.Context().Value(requestBufferingKey{}).(requestBufferingState)
-	return state.limit
+	state, configured := r.Context().Value(requestBufferingKey{}).(requestBufferingState)
+	return !configured || state.enabled
 }

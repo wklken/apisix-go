@@ -822,7 +822,7 @@ func assertFiles(
 			t.Errorf("%s %d path escapes work directory: %s", kind, i+1, path)
 			continue
 		}
-		body, err := os.ReadFile(absolutePath)
+		body, err := readAssertionFiles(absolutePath, assertion.ConcatGlob)
 		if assertion.Absent {
 			if err == nil {
 				t.Errorf("%s %d path exists, want absent: %s", kind, i+1, absolutePath)
@@ -845,6 +845,30 @@ func assertFiles(
 			t.Errorf("%s %d body: %v", kind, i+1, err)
 		}
 	}
+}
+
+// readAssertionFiles joins rotation files in filename order, including the
+// current log, so shutdown timing cannot hide records in an archive.
+func readAssertionFiles(path string, concatGlob bool) ([]byte, error) {
+	if !concatGlob {
+		return os.ReadFile(path)
+	}
+	paths, err := filepath.Glob(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no files match %s", path)
+	}
+	var result []byte
+	for _, matched := range paths {
+		body, err := os.ReadFile(matched)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, body...)
+	}
+	return result, nil
 }
 
 func matchFileJSONLines(

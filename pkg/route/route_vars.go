@@ -2,27 +2,56 @@ package route
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/expr"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
-func compileRouteVars(raw []byte) (*expr.Expression, error) {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+func compileRouteConditions(route resource.Route) (*expr.Expression, error) {
+	raw := bytes.TrimSpace(route.Vars)
+	var conditions []any
+	if len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		var rules []any
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return nil, fmt.Errorf("vars: %w", err)
+		}
+		if len(rules) > 0 {
+			conditions = append(conditions, rules)
+		}
+	}
+	addresses := slices.Clone(route.RemoteAddrs)
+	if route.RemoteAddrConfigured() {
+		if addresses != nil {
+			return nil, fmt.Errorf("remote_addr and remote_addrs cannot both be configured")
+		}
+		addresses = []string{route.RemoteAddr}
+	}
+	if addresses != nil {
+		if len(addresses) == 0 {
+			// A standalone empty IP list matches no address in resty.ipmatcher.
+			conditions = append(conditions, []any{"remote_addr", "in", []any{}})
+		} else {
+			ipCondition := []any{"remote_addr", "ipmatch", addresses}
+			if _, err := expr.Compile([]any{ipCondition}); err != nil {
+				return nil, fmt.Errorf("remote_addr/remote_addrs: %w", err)
+			}
+			conditions = append(conditions, ipCondition)
+		}
+	}
+	if len(conditions) == 0 {
 		return nil, nil
 	}
-	var rules []any
-	if err := json.Unmarshal(raw, &rules); err != nil {
-		return nil, err
+	compiled, err := expr.Compile(conditions)
+	if err != nil {
+		return nil, fmt.Errorf("vars: %w", err)
 	}
-	if len(rules) == 0 {
-		return nil, nil
-	}
-	return expr.Compile(rules)
+	return compiled, nil
 }
 
 func routeVariableValue(request *http.Request, name, pattern string, graphqlMaxSize int) any {
@@ -35,19 +64,21 @@ func routeVariableValue(request *http.Request, name, pattern string, graphqlMaxS
 		}
 		return request.Host
 	case strings.HasPrefix(name, "uri_param_"):
-		values := strings.Split(request.URL.Path, "/")
-		for i, part := range strings.Split(pattern, "/") {
-			if part == ":"+strings.TrimPrefix(name, "uri_param_") && i < len(values) {
-				return values[i]
+		var value any
+		visitRouteParameters(pattern, request.URL.Path, func(parameter, matched string) {
+			if parameter == strings.TrimPrefix(name, "uri_param_") {
+				value = matched
 			}
-		}
-		return nil
+		})
+		return value
 	case strings.HasPrefix(name, "post_arg_") || strings.HasPrefix(name, "post_arg.") || strings.HasPrefix(name, "graphql_"):
 		return routeBodyVariables(request).value(request, name, graphqlMaxSize)
 	case strings.HasPrefix(name, "arg_"):
-		if !request.URL.Query().Has(strings.TrimPrefix(name, "arg_")) {
+		value, exists := expr.QueryArgument(request.URL.RawQuery, strings.TrimPrefix(name, "arg_"))
+		if !exists {
 			return nil
 		}
+		return value
 	case strings.HasPrefix(name, "http_"):
 		if len(request.Header.Values(strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-"))) == 0 {
 			return nil
@@ -140,17 +171,37 @@ func setMatchedRouteParameters(request *http.Request, pattern string) {
 	}
 	context.URLParams.Keys = context.URLParams.Keys[:0]
 	context.URLParams.Values = context.URLParams.Values[:0]
-	if wildcard := strings.IndexByte(pattern, '*'); wildcard >= 0 {
-		context.URLParams.Add("*", request.URL.Path[wildcard:])
-		return
-	}
-	if !strings.ContainsRune(pattern, ':') {
-		return
-	}
-	values := strings.Split(request.URL.Path, "/")
+	visitRouteParameters(pattern, request.URL.Path, func(name, value string) { context.URLParams.Add(name, value) })
+}
+
+func visitRouteParameters(pattern, requestPath string, visit func(string, string)) {
+	values := strings.Split(requestPath, "/")
+	offset := 0
 	for i, part := range strings.Split(pattern, "/") {
-		if strings.HasPrefix(part, ":") && i < len(values) {
-			context.URLParams.Add(part[1:], values[i])
+		if i >= len(values) {
+			return
 		}
+		if strings.HasPrefix(part, ":") {
+			visit(part[1:], values[i])
+		}
+		if wildcard := strings.IndexByte(part, '*'); wildcard >= 0 {
+			start := offset + wildcard
+			if start > len(requestPath) {
+				return
+			}
+			suffix, _ := embeddedWildcardSuffix(pattern)
+			end := len(requestPath) - len(suffix)
+			if end < start {
+				return
+			}
+			name := part[wildcard+1:]
+			if name == "" {
+				visit("*", requestPath[start:end])
+				name = ":ext"
+			}
+			visit(name, requestPath[start:end])
+			return
+		}
+		offset += len(values[i]) + 1
 	}
 }

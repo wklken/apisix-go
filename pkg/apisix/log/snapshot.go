@@ -95,7 +95,7 @@ func CaptureRequestCorrelation(r *http.Request) RequestCorrelation {
 	correlation.RequestID, _ = r.Context().Value(apisixctx.RequestIDKey).(string)
 	apisixVars := apisixctx.GetApisixVars(r)
 	if correlation.RequestID == "" {
-		correlation.RequestID, _ = apisixVars["$request_id"].(string)
+		correlation.RequestID, _ = apisixVars["$apisix_request_id"].(string)
 	}
 	if correlation.RequestID == "" {
 		correlation.RequestID = r.Header.Get("X-Request-Id")
@@ -256,85 +256,106 @@ func CloneSnapshot(snapshot LogSnapshot) LogSnapshot {
 	return clone
 }
 
+// LookupValueFromSnapshot preserves the distinction between a missing variable
+// and a present empty string for APISIX template expansion.
+func LookupValueFromSnapshot(snapshot LogSnapshot, name string) (any, bool) {
+	if !strings.HasPrefix(name, "$") {
+		name = "$" + name
+	}
+	value, found := lookupSnapshotField(snapshot, name)
+	return value, found && value != nil
+}
+
 func snapshotField(snapshot LogSnapshot, key string) any {
+	value, found := lookupSnapshotField(snapshot, key)
+	if !found {
+		return ""
+	}
+	return value
+}
+
+func lookupSnapshotField(snapshot LogSnapshot, key string) (any, bool) {
 	switch key {
 	case "$time_iso8601":
-		return snapshotTime(snapshot).Format(time.RFC3339)
+		return snapshotTime(snapshot).Format(time.RFC3339), true
 	case "$time_local":
-		return snapshotTime(snapshot).Format("02/Jan/2006:15:04:05 -0700")
+		return snapshotTime(snapshot).Format("02/Jan/2006:15:04:05 -0700"), true
 	case "$request_method", "$method":
-		return snapshot.Request.Method
+		return snapshot.Request.Method, true
 	case "$request_line":
-		return snapshot.Request.Method + " " + snapshot.Request.URI + " " + snapshot.Request.Proto
+		return snapshot.Request.Method + " " + snapshot.Request.URI + " " + snapshot.Request.Proto, true
 	case "$uri":
-		return snapshotRequestPath(snapshot.Request)
+		return snapshotRequestPath(snapshot.Request), true
 	case "$request_uri":
 		if snapshot.Request.URI != "" {
-			return snapshot.Request.URI
+			return snapshot.Request.URI, true
 		}
-		return snapshot.Request.URL
+		return snapshot.Request.URL, true
 	case "$host":
-		return snapshotAddressHost(snapshot.Request.Host)
+		return snapshotAddressHost(snapshot.Request.Host), true
 	case "$http_host":
-		return snapshot.Request.Host
+		return snapshot.Request.Host, true
 	case "$remote_addr":
 		if value, ok := snapshot.Request.APISIXVars["$remote_addr"]; ok {
-			return value
+			return value, true
 		}
-		return snapshotAddressHost(snapshot.Request.RemoteAddr)
+		return snapshotAddressHost(snapshot.Request.RemoteAddr), true
 	case "$remote_port":
 		if value, ok := snapshot.Request.APISIXVars["$remote_port"]; ok {
-			return value
+			return value, true
 		}
 		_, port, _ := net.SplitHostPort(snapshot.Request.RemoteAddr)
-		return port
+		return port, true
 	case "$args", "$query_string":
-		return snapshotRequestQuery(snapshot.Request)
+		query := snapshotRequestQuery(snapshot.Request)
+		return query, query != "" || strings.Contains(snapshot.Request.URI, "?")
 	case "$scheme":
-		return snapshot.Request.Scheme
+		return snapshot.Request.Scheme, true
 	case "$server_protocol", "$proto":
-		return snapshot.Request.Proto
+		return snapshot.Request.Proto, true
 	case "$status", "$status_code":
-		return snapshot.Outcome.Status
+		return snapshot.Outcome.Status, true
 	case "$request_length":
 		if value, ok := snapshot.Request.RequestVars[key]; ok {
-			return value
+			return value, true
 		}
-		return max(snapshot.Request.ContentLength, 0)
+		return max(snapshot.Request.ContentLength, 0), true
 	case "$bytes_sent":
 		if value, ok := snapshot.Request.RequestVars[key]; ok {
-			return value
+			return value, true
 		}
-		return snapshot.Outcome.Bytes
+		return snapshot.Outcome.Bytes, true
 	case "$request_body":
-		return string(snapshot.Request.Body)
+		return string(snapshot.Request.Body), len(snapshot.Request.Body) > 0
 	case "$response_body":
-		return string(snapshot.Response.Body)
+		return string(snapshot.Response.Body), len(snapshot.Response.Body) > 0
+	case "$resp_body":
+		return string(snapshot.Response.Body), true
 	case "$consumer_name":
-		return snapshot.Request.Consumer.Username
+		return snapshot.Request.Consumer.Username, snapshot.Request.Consumer.Username != ""
 	case "$consumer_group_id":
-		return snapshot.Request.Consumer.GroupID
+		return snapshot.Request.Consumer.GroupID, snapshot.Request.Consumer.GroupID != ""
 	case "$response_source":
-		return string(snapshot.Source)
+		return string(snapshot.Source), true
 	case "$content_length":
-		return snapshot.Request.Header.Get("Content-Length")
+		return snapshot.Request.Header.Get("Content-Length"), len(snapshot.Request.Header.Values("Content-Length")) > 0
 	case "$content_type":
-		return snapshot.Request.Header.Get("Content-Type")
+		return snapshot.Request.Header.Get("Content-Type"), len(snapshot.Request.Header.Values("Content-Type")) > 0
 	}
 	if value, ok := snapshot.Request.APISIXVars[key]; ok {
-		return value
+		return value, true
 	}
 	if value, ok := snapshot.Request.RequestVars[key]; ok {
-		return value
+		return value, true
 	}
 	if suffix, ok := strings.CutPrefix(key, "$arg_"); ok {
-		return snapshot.Request.Query.Get(suffix)
+		return snapshot.Request.Query.Get(suffix), snapshot.Request.Query.Has(suffix)
 	}
 	if suffix, ok := strings.CutPrefix(key, "$http_"); ok {
 		name := http.CanonicalHeaderKey(strings.ReplaceAll(suffix, "_", "-"))
-		return snapshot.Request.Header.Get(name)
+		return snapshot.Request.Header.Get(name), len(snapshot.Request.Header.Values(name)) > 0
 	}
-	return ""
+	return "", false
 }
 
 func snapshotTime(snapshot LogSnapshot) time.Time {
@@ -434,7 +455,6 @@ func BuildSnapshotFromOwnedInputs(
 	request.RequestVars = cloneSafeMap(apisixctx.GetRequestVars(r), &remaining)
 	if len(sensitiveQueryNames) > 0 {
 		redactedQueryString := RedactRawQuery(r.URL.RawQuery, sensitiveQueryNames)
-		redactedRequestURI := RedactURI(r.URL.RequestURI(), sensitiveQueryNames)
 		for _, values := range []map[string]any{request.APISIXVars, request.RequestVars} {
 			if values == nil {
 				continue
@@ -445,8 +465,8 @@ func BuildSnapshotFromOwnedInputs(
 			if _, ok := values["$query_string"]; ok {
 				values["$query_string"] = redactedQueryString
 			}
-			if _, ok := values["$request_uri"]; ok {
-				values["$request_uri"] = redactedRequestURI
+			if requestURI, ok := values["$request_uri"].(string); ok {
+				values["$request_uri"] = RedactURI(requestURI, sensitiveQueryNames)
 			}
 			if upstreamURI, ok := values["$upstream_uri"].(string); ok {
 				values["$upstream_uri"] = RedactURI(upstreamURI, sensitiveQueryNames)

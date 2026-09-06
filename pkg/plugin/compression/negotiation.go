@@ -8,6 +8,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,8 +106,9 @@ type preference struct {
 }
 
 type preferences struct {
-	byCoding map[Coding]preference
-	wildcard preference
+	brotliAccepted bool
+	byCoding       map[Coding]preference
+	wildcard       preference
 }
 
 func decide(headerValues []string, offers []Offer, meta ResponseMeta) Decision {
@@ -215,11 +217,23 @@ func canonicalRank(coding Coding) int {
 }
 
 func codingQuality(prefs preferences, coding Coding) (float64, bool) {
-	if pref, ok := prefs.byCoding[coding]; ok && pref.explicit {
-		return pref.q, pref.valid
+	if coding == Brotli && !prefs.brotliAccepted {
+		return 0, false
 	}
-	if prefs.wildcard.explicit {
-		return prefs.wildcard.q, prefs.wildcard.valid
+
+	if pref, ok := prefs.byCoding[coding]; ok && pref.explicit {
+		if coding != Brotli || pref.valid && pref.q > 0 {
+			return pref.q, pref.valid
+		}
+	} else if prefs.wildcard.explicit {
+		if coding != Brotli || prefs.wildcard.valid && prefs.wildcard.q > 0 {
+			return prefs.wildcard.q, prefs.wildcard.valid
+		}
+	}
+	if coding == Brotli {
+		// APISIX's Brotli filter accepts any matching token except literal q=0,
+		// including q=0.0; other compression filters retain numeric quality.
+		return 1, true
 	}
 	return 0, false
 }
@@ -234,9 +248,18 @@ func identityPreference(prefs preferences) (allowed bool, q float64, explicit bo
 	return true, 0, false
 }
 
+// This is the token expression used by APISIX 3.17's Brotli filter.
+var brotliAcceptEncoding = regexp.MustCompile(`([a-z\*]+)(;q=)?([0-9.]*)?`)
+
 func parsePreferences(values []string) preferences {
 	prefs := preferences{byCoding: make(map[Coding]preference)}
 	for _, value := range values {
+		for _, match := range brotliAcceptEncoding.FindAllStringSubmatch(value, -1) {
+			if (match[1] == "br" || match[1] == "*") && (match[2] == "" || match[3] != "0") {
+				prefs.brotliAccepted = true
+				break
+			}
+		}
 		for member := range strings.SplitSeq(value, ",") {
 			member = strings.TrimSpace(member)
 			if member == "" {

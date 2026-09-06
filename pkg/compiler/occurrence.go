@@ -65,6 +65,13 @@ func factoryOccurrencesFromCandidates(
 				continue
 			}
 			switch key.Kind {
+			case "ssls":
+				occurrences = append(occurrences, factoryOccurrenceSpec{
+					domain:   domain,
+					resource: key,
+					source:   capability.SecretSSLConfig,
+					factory:  capability.SSLResourceFactory,
+				})
 			case "plugins":
 				continue
 			case "plugin_metadata":

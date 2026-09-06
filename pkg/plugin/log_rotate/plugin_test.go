@@ -38,8 +38,9 @@ func newTestPluginWithTasks(t *testing.T, cfg Config) (*Plugin, *runtime.TaskReg
 	}
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Config: &config.EffectiveConfig{},
-		Tasks:  owner,
+		WithHTTPPublication: func(action func() error) error { return action() },
+		Config:              &config.EffectiveConfig{},
+		Tasks:               owner,
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -64,8 +65,9 @@ func newRotationPlugin(
 	t.Helper()
 	p := &Plugin{config: cfg}
 	p.SetDependencies(base.Dependencies{
-		Config: &config.EffectiveConfig{},
-		Tasks:  owner,
+		WithHTTPPublication: func(action func() error) error { return action() },
+		Config:              &config.EffectiveConfig{},
+		Tasks:               owner,
 	})
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
@@ -253,7 +255,13 @@ func TestPostInitRequiresEffectiveConfig(t *testing.T) {
 func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 	p := &Plugin{}
 	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/attempt-1", nil)
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	p.SetDependencies(
+		base.Dependencies{
+			WithHTTPPublication: func(action func() error) error { return action() },
+			Config:              &config.EffectiveConfig{},
+			Tasks:               owner,
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -307,7 +315,13 @@ func TestLogRotateDoesNotBlockRequest(t *testing.T) {
 func TestLogRotateUsesInheritedRequestAccess(t *testing.T) {
 	p := &Plugin{}
 	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/attempt-1", nil)
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	p.SetDependencies(
+		base.Dependencies{
+			WithHTTPPublication: func(action func() error) error { return action() },
+			Config:              &config.EffectiveConfig{},
+			Tasks:               owner,
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -451,7 +465,9 @@ func TestRotateReopensFileLoggerAfterCurrentPathIsRecreated(t *testing.T) {
 	tasks, owner := newRotationTasks(t, "plugin/test/file-logger/rotate", nil)
 	t.Cleanup(func() { stopTestRegistry(t, tasks) })
 	filePlugin := &file_logger.Plugin{}
-	filePlugin.SetDependencies(base.Dependencies{Tasks: owner})
+	filePlugin.SetDependencies(
+		base.Dependencies{WithHTTPPublication: func(action func() error) error { return action() }, Tasks: owner},
+	)
 	if err := filePlugin.Init(); err != nil {
 		t.Fatalf("file logger Init() error = %v", err)
 	}
@@ -526,7 +542,13 @@ func TestExplicitZeroMaxKeptPrunesAllHistory(t *testing.T) {
 
 	p := &Plugin{}
 	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/attempt-1", nil)
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	p.SetDependencies(
+		base.Dependencies{
+			WithHTTPPublication: func(action func() error) error { return action() },
+			Config:              &config.EffectiveConfig{},
+			Tasks:               owner,
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -602,7 +624,13 @@ func TestRotateCustomNamesWithZeroMaxKeptRetainsCurrentFilesOnly(t *testing.T) {
 	}
 	p := &Plugin{}
 	tasks, owner := newRotationTasks(t, "plugin/test/log-rotate/custom-zero", nil)
-	p.SetDependencies(base.Dependencies{Config: &config.EffectiveConfig{}, Tasks: owner})
+	p.SetDependencies(
+		base.Dependencies{
+			WithHTTPPublication: func(action func() error) error { return action() },
+			Config:              &config.EffectiveConfig{},
+			Tasks:               owner,
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +736,13 @@ func TestPluginAttrAcceptsEffectiveConfigNumbers(t *testing.T) {
 		"timeout":  apisixjson.Number("13"),
 	}}
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Config: effective, Tasks: owner})
+	p.SetDependencies(
+		base.Dependencies{
+			WithHTTPPublication: func(action func() error) error { return action() },
+			Config:              effective,
+			Tasks:               owner,
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +774,13 @@ func TestPostInitUsesAPISIXProcessLogSelection(t *testing.T) {
 		}},
 	}
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Config: effective, Tasks: owner})
+	p.SetDependencies(
+		base.Dependencies{
+			WithHTTPPublication: func(action func() error) error { return action() },
+			Config:              effective,
+			Tasks:               owner,
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}

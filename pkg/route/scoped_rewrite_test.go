@@ -505,7 +505,7 @@ func TestPlan14V2JWTAuthPayloadFeedsEffectiveProxyRewrite(t *testing.T) {
 	}
 }
 
-func TestConsumerProxyRewriteRunsAfterRouteRewrite(t *testing.T) {
+func TestConsumerProxyRewriteDoesNotRepeatRouteRewrite(t *testing.T) {
 	seen := make(chan []string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Header.Values("X-Consumer-Proxy")
@@ -600,8 +600,8 @@ func TestConsumerProxyRewriteRunsAfterRouteRewrite(t *testing.T) {
 	}
 	select {
 	case values := <-seen:
-		if !reflect.DeepEqual(values, []string{"route", "consumer"}) {
-			t.Fatalf("X-Consumer-Proxy values = %#v, want route then consumer values", values)
+		if !reflect.DeepEqual(values, []string{"route"}) {
+			t.Fatalf("X-Consumer-Proxy values = %#v, want only route rewrite value", values)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for upstream request")

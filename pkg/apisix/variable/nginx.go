@@ -12,6 +12,7 @@ import (
 // nginx vars: http://nginx.org/en/docs/varindex.html
 
 var NginxVars = map[string]struct{}{
+	"$request_id":           {},
 	"$time_iso8601":         {},
 	"$time_local":           {},
 	"$request_method":       {},
@@ -34,6 +35,9 @@ var NginxVars = map[string]struct{}{
 
 func GetNginxVar(r *http.Request, key string) string {
 	switch key {
+	case "$request_id":
+		value, _ := apisixctx.GetRequestVar(r, key).(string)
+		return value
 	// section: time
 	case "$time_iso8601":
 		return time.Now().Format(time.RFC3339)

@@ -101,7 +101,7 @@ Do not remove the main checkout's entire `.cache/`: it contains the shared modul
 - Run the server after building: `make serve`.
 - Run with live rebuilds: `make live`. This uses `github.com/cosmtrek/air@v1.51.0`.
 - Run a specific config manually: `scripts/go_cache.sh run -- go run . -c conf/config.yaml`.
-- The default config path is `conf/config-default.yaml`; `conf/config.yaml` contains local overrides and an example admin key.
+- The default config path is `conf/config-default.yaml`; `conf/config.yaml` contains local overrides and an empty `deployment.admin.admin_key` list.
 - `conf/config-default.yaml` says not to modify default configurations there. Prefer custom settings in `conf/config.yaml`.
 - Running the server is not dependency-free in etcd mode. Etcd and standalone providers must complete their initial desired-state submission before listeners start.
 
@@ -171,7 +171,7 @@ Correctness:
 - `deployment.role_traditional.config_provider` is currently `etcd` in `conf/config.yaml`.
 - When `server-info` is enabled with traditional etcd configuration, the server reports under `<deployment.etcd.prefix>/data_plane/server_info/<apisix-id>` using `plugin_attr.server-info.report_ttl` and renews the lease until shutdown. Data-plane mode intentionally does not write this registration record.
 - TCP stream routing is enabled through `apisix.proxy_mode` plus `apisix.stream_proxy.tcp`. Provider desired state is compiled into an immutable stream router; each accepted connection leases that exact generation.
-- Do not treat the example admin key in `conf/config.yaml` as a production secret.
+- `conf/config.yaml` does not configure an Admin API key (`deployment.admin.admin_key: []`).
 
 ## Build and Deployment
 

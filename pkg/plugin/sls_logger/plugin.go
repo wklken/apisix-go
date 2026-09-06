@@ -289,10 +289,13 @@ func (p *Plugin) PostInit() error {
 	}
 	p.addr = net.JoinHostPort(p.config.Host, strconv.Itoa(p.config.Port))
 
-	if len(p.config.LogFormat) > 0 {
+	if p.config.LogFormat != nil {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.LogFormat = nil
+		}
 	}
 	p.SetLogCapturePolicy(
 		p.config.IncludeReqBody, p.config.IncludeRespBody,
@@ -324,7 +327,7 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
-	if len(p.LogFormat) > 0 {
+	if p.LogFormat != nil {
 		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
 	} else {
 		fields = slsSnapshotDefaultFields(snapshot)
@@ -334,12 +337,14 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		routeID = fmt.Sprint(base.SnapshotValue(snapshot, "$route_id"))
 	}
 	fields["route_id"] = routeID
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}

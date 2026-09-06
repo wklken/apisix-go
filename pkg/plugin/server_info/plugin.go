@@ -11,6 +11,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
+	apisixversion "github.com/wklken/apisix-go/pkg/version"
 )
 
 type Plugin struct {
@@ -21,7 +22,7 @@ type Plugin struct {
 const (
 	priority = 990
 	name     = "server-info"
-	version  = "apisix-go"
+	version  = apisixversion.APISIXVersion
 
 	defaultReportTTL = 60 * time.Second
 	minReportTTL     = 3 * time.Second

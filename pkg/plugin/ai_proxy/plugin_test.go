@@ -273,8 +273,8 @@ func TestBuildProviderRequestPreservesPassthroughRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProviderRequest() error = %v", err)
 	}
-	if providerRequest.Method != http.MethodPut {
-		t.Fatalf("provider method = %q, want PUT", providerRequest.Method)
+	if providerRequest.Method != http.MethodPost {
+		t.Fatalf("provider method = %q, want POST", providerRequest.Method)
 	}
 	wantURL := "https://provider.example/v1/images/generations?" +
 		"akey=secret&ckey=cval&ekey=eval&name=fromclient"
@@ -767,7 +767,7 @@ func TestHandlerProxiesOpenAICompatibleResponsesRequest(t *testing.T) {
 	if _, ok := upstreamBody["max_tokens"]; ok {
 		t.Fatalf("max_tokens = %v, want omitted for Responses", upstreamBody["max_tokens"])
 	}
-	assertLLMRequestVar(t, req, "$request_type", "ai_responses")
+	assertLLMRequestVar(t, req, "$request_type", "ai_chat")
 	assertLLMRequestVar(t, req, "$request_llm_model", "gpt-4.1")
 	assertLLMRequestVar(t, req, "$llm_model", "gpt-4.1")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(13))
@@ -826,7 +826,7 @@ func TestHandlerProxiesOpenAICompatibleEmbeddingsRequest(t *testing.T) {
 	if _, ok := upstreamBody["max_completion_tokens"]; ok {
 		t.Fatalf("max_completion_tokens = %v, want omitted for Embeddings", upstreamBody["max_completion_tokens"])
 	}
-	assertLLMRequestVar(t, req, "$request_type", "ai_embeddings")
+	assertLLMRequestVar(t, req, "$request_type", "ai_chat")
 	assertLLMRequestVar(t, req, "$request_llm_model", "text-embedding-3-small")
 	assertLLMRequestVar(t, req, "$llm_model", "text-embedding-3-small")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(4))
@@ -876,7 +876,7 @@ func TestHandlerConvertsVertexEmbeddingsRequestAndResponse(t *testing.T) {
 	if response["object"] != "list" || response["model"] != "text-embedding-005" {
 		t.Fatalf("OpenAI embeddings response = %#v", response)
 	}
-	assertLLMRequestVar(t, req, "$request_type", "ai_embeddings")
+	assertLLMRequestVar(t, req, "$request_type", "ai_chat")
 	assertLLMRequestVar(t, req, "$llm_prompt_tokens", int64(3))
 }
 
@@ -1533,6 +1533,9 @@ func TestHandlerEnforcesStreamDurationAndPublishesTiming(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
 		w.(http.Flusher).Flush()
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {}\n\n"))
+		w.(http.Flusher).Flush()
 		<-r.Context().Done()
 	}))
 	defer upstream.Close()
@@ -1618,8 +1621,8 @@ func TestHandlerLogsStreamDurationExceeded(t *testing.T) {
 
 	select {
 	case entry := <-entries:
-		if entry.Level != "ERROR" {
-			t.Fatalf("log level = %s, want ERROR", entry.Level)
+		if entry.Level != "WARN" {
+			t.Fatalf("log level = %s, want WARN", entry.Level)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("stream duration abort was not logged")

@@ -20,23 +20,25 @@ var errPreparedGenerationCleanupFailed = errors.New("prepared generation cleanup
 // PreparedGeneration owns one fully prepared candidate or recovered
 // generation until it is discarded or transferred to a runtime owner.
 type PreparedGeneration struct {
-	publication      generation.PublicationSet
-	preparation      PreparationGeneration
-	metadata         runtime.MetadataView
-	consumers        *runtime.ConsumerBindings
-	lookup           consumerLookupView
-	tasks            *runtime.TaskRegistry
-	effective        *config.EffectiveConfig
-	catalog          *capability.SecretDeclarationCatalog
-	registry         *runtime.ResourceRegistry
-	observers        WorkerRuntimeObservers
-	clusterObservers *clusterObserverRegistry
-	materializer     secret.Materializer
-	cleanup          *cleanupStack
-	detach           func()
-	bindingOps       effectiveBindingOps
-	httpSnapshot     *HTTPSnapshot
-	streamSnapshot   *StreamSnapshot
+	httpPublicationMu sync.RWMutex
+	httpPublished     bool
+	publication       generation.PublicationSet
+	preparation       PreparationGeneration
+	metadata          runtime.MetadataView
+	consumers         *runtime.ConsumerBindings
+	lookup            consumerLookupView
+	tasks             *runtime.TaskRegistry
+	effective         *config.EffectiveConfig
+	catalog           *capability.SecretDeclarationCatalog
+	registry          *runtime.ResourceRegistry
+	observers         WorkerRuntimeObservers
+	clusterObservers  *clusterObserverRegistry
+	materializer      secret.Materializer
+	cleanup           *cleanupStack
+	detach            func()
+	bindingOps        effectiveBindingOps
+	httpSnapshot      *HTTPSnapshot
+	streamSnapshot    *StreamSnapshot
 
 	materializeMu    sync.Mutex
 	bindingOpsMu     sync.Mutex
@@ -51,6 +53,41 @@ type PreparedGeneration struct {
 type preparedCloseAttempt struct {
 	done chan struct{}
 	err  error
+}
+
+// SetHTTPPublished is owned by the serving engine's successful publication and
+// HTTP-domain retirement transitions, independently of request-lease draining.
+func (prepared *PreparedGeneration) SetHTTPPublished(active bool) {
+	if prepared == nil {
+		return
+	}
+	prepared.httpPublicationMu.Lock()
+	defer prepared.httpPublicationMu.Unlock()
+	prepared.httpPublished = active
+}
+
+// HTTPPublished is the read-only authority supplied to process-log maintenance.
+func (prepared *PreparedGeneration) HTTPPublished() bool {
+	if prepared == nil {
+		return false
+	}
+	prepared.httpPublicationMu.RLock()
+	defer prepared.httpPublicationMu.RUnlock()
+	return prepared.httpPublished
+}
+
+// WithHTTPPublication holds publication authority for the complete maintenance
+// action, so the serving engine can revoke it before swapping HTTP owners.
+func (prepared *PreparedGeneration) WithHTTPPublication(action func() error) error {
+	if prepared == nil || action == nil {
+		return nil
+	}
+	prepared.httpPublicationMu.RLock()
+	defer prepared.httpPublicationMu.RUnlock()
+	if !prepared.httpPublished {
+		return nil
+	}
+	return action()
 }
 
 // PublicationSet returns a defensive copy of this generation's publication

@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/capability"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/secret"
 	"github.com/wklken/apisix-go/pkg/shared"
@@ -190,8 +191,6 @@ type lagoEvent struct {
 	Timestamp              float64           `json:"timestamp"`
 	Properties             map[string]string `json:"properties,omitempty"`
 }
-
-var templatePattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 var randomEndpointIndex = rand.Intn
 
@@ -418,15 +417,27 @@ func lagoSnapshotVariable(snapshot base.LogSnapshot, name string) any {
 		if cookie, err := req.Cookie(after); err == nil {
 			return cookie.Value
 		}
-		return ""
+		return nil
 	}
 	if after, ok := strings.CutPrefix(name, "sent_http_"); ok {
-		return snapshot.Response.Header.Get(strings.ReplaceAll(after, "_", "-"))
+		name := strings.ReplaceAll(after, "_", "-")
+		if len(snapshot.Response.Header.Values(name)) == 0 {
+			return nil
+		}
+		return snapshot.Response.Header.Get(name)
 	}
 	if after, ok := strings.CutPrefix(name, "upstream_http_"); ok {
-		return snapshot.Response.Header.Get(strings.ReplaceAll(after, "_", "-"))
+		name := strings.ReplaceAll(after, "_", "-")
+		if len(snapshot.Response.Header.Values(name)) == 0 {
+			return nil
+		}
+		return snapshot.Response.Header.Get(name)
 	}
-	return base.SnapshotValue(snapshot, "$"+name)
+	value, found := apisixlog.LookupValueFromSnapshot(snapshot, name)
+	if !found {
+		return nil
+	}
+	return value
 }
 
 func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int) (int, error) {
@@ -529,7 +540,12 @@ func (p *Plugin) buildEvent(fields map[string]any) lagoEvent {
 	if len(p.config.EventProperties) > 0 {
 		entry.Properties = make(map[string]string, len(p.config.EventProperties))
 		for key, value := range p.config.EventProperties {
-			entry.Properties[key] = resolveTemplate(value, fields)
+			resolved, count := resolveTemplateWithCount(value, fields)
+			if count > 0 {
+				entry.Properties[key] = resolved
+			} else {
+				entry.Properties[key] = value
+			}
 		}
 	}
 
@@ -565,22 +581,25 @@ func (p *Plugin) keepalive() bool {
 }
 
 func resolveTemplate(template string, fields map[string]any) string {
-	return templatePattern.ReplaceAllStringFunc(template, func(match string) string {
-		name := strings.TrimSuffix(strings.TrimPrefix(match, "${"), "}")
-		if fields[name] == nil {
-			return ""
+	resolved, _ := resolveTemplateWithCount(template, fields)
+	return resolved
+}
+
+func resolveTemplateWithCount(template string, fields map[string]any) (string, int) {
+	return limitbase.ResolveVarsWithLookup(template, func(name string) (string, bool) {
+		value, found := fields[name]
+		if !found || value == nil {
+			return "", false
 		}
-		return fmt.Sprint(fields[name])
+		return fmt.Sprint(value), true
 	})
 }
 
 func templateVariables(template string) []string {
-	matches := templatePattern.FindAllStringSubmatch(template, -1)
-	variables := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if len(match) == 2 {
-			variables = append(variables, match[1])
-		}
-	}
+	var variables []string
+	_, _ = limitbase.ResolveVars(template, func(name string) string {
+		variables = append(variables, name)
+		return ""
+	})
 	return variables
 }

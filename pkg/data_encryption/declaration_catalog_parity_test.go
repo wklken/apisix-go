@@ -126,6 +126,7 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 			wantConsumer[declarationKey{factory: factory, field: field}] = struct{}{}
 		}
 	}
+	gotSSL := make(map[declarationKey]struct{})
 	gotConsumer := make(map[declarationKey]struct{})
 	for _, declaration := range catalog.Declarations() {
 		key := declarationKey{factory: declaration.Factory, field: declaration.Field}
@@ -134,6 +135,8 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 			gotConfig[key] = struct{}{}
 		case capability.SecretPluginMetadata:
 			gotMetadata[key] = struct{}{}
+		case capability.SecretSSLConfig:
+			gotSSL[key] = struct{}{}
 		case capability.SecretConsumerConfig:
 			gotConsumer[key] = struct{}{}
 		default:
@@ -149,6 +152,12 @@ func TestSecretDeclarationCatalogParity(t *testing.T) {
 		{name: "config", got: gotConfig, want: wantConfig},
 		{name: "metadata", got: gotMetadata, want: wantMetadata},
 		{name: "consumer", got: gotConsumer, want: wantConsumer},
+		{name: "SSL", got: gotSSL, want: map[declarationKey]struct{}{
+			{factory: capability.SSLResourceFactory, field: "cert"}:  {},
+			{factory: capability.SSLResourceFactory, field: "key"}:   {},
+			{factory: capability.SSLResourceFactory, field: "certs"}: {},
+			{factory: capability.SSLResourceFactory, field: "keys"}:  {},
+		}},
 	}
 	for _, check := range checks {
 		if !reflect.DeepEqual(check.got, check.want) {

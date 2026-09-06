@@ -523,6 +523,7 @@ func (prepared *PreparedGeneration) acquireEffectiveBinding(
 			Config: prepared.effective, Secrets: prepared.preparation.secrets,
 			Metadata:  prepared.metadata.ForFactory(selected.spec.factory),
 			Consumers: prepared.lookup, Tasks: taskOwner,
+			WithHTTPPublication: prepared.WithHTTPPublication,
 		}
 		children, err := plugin.NewCompositeChildPreparer(
 			dependencies,

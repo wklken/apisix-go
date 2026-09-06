@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 
@@ -146,23 +145,16 @@ func TestCompileAndAttachHTTPRejectsInvalidGenerationSSL(t *testing.T) {
 	snapshot := mustGenerationSnapshot(t, 21, []generation.Resource{
 		resourceValue("ssls", "broken", `{"id":"broken","sni":"api.example.test","cert":"bad","key":"bad"}`),
 	}, nil)
-	candidate := compileDomain(t, generation.DomainHTTP, snapshot, generation.PublishedGeneration{}, false)
-	prepared, _ := newEffectiveBindingMaterializerFixture(
-		t,
-		nil,
-		map[generation.Domain]generation.PublicationCandidate{generation.DomainHTTP: candidate},
-	)
-	prepared.effective.Config.Apisix.Ssl = config.Ssl{
+	factory, _ := newWorkerTestFactory(t)
+	factory.effective.Config.Apisix.Ssl = config.Ssl{
 		Enable: true, Listen: []config.Listen{{Port: 9443}},
 		SslProtocols: "TLSv1.2", SslCiphers: "ECDHE-ECDSA-AES128-GCM-SHA256",
 	}
-	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
-
-	err := prepared.compileAndAttachHTTP(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "load certificate") {
-		t.Fatalf("compileAndAttachHTTP() error = %v, want invalid TLS material", err)
-	}
-	if prepared.HTTP() != nil {
-		t.Fatal("invalid generation SSL published an HTTP snapshot")
+	t.Cleanup(func() { _ = factory.Close(context.Background()) })
+	prepared, err := factory.PrepareGeneration(
+		context.Background(), ticketForSnapshot(snapshot, generation.DomainHTTP), snapshot, nil,
+	)
+	if err == nil || prepared != nil {
+		t.Fatalf("invalid generation SSL prepared=%v err=%v", prepared != nil, err)
 	}
 }

@@ -292,3 +292,17 @@ func writeDubboFrameForTest(conn net.Conn, status byte, payload []byte) error {
 	}
 	return writer.Flush()
 }
+
+func TestTransportConfigPreservesUpstreamTimeoutPhases(t *testing.T) {
+	got := transportConfig(
+		Config{
+			ConnectTimeout: 10 * time.Millisecond,
+			SendTimeout:    20 * time.Millisecond,
+			ReadTimeout:    30 * time.Millisecond,
+		},
+	)
+	if got.ConnectTimeout != 10*time.Millisecond || got.SendTimeout != 20*time.Millisecond ||
+		got.ReadTimeout != 30*time.Millisecond {
+		t.Fatalf("timeouts=%s/%s/%s", got.ConnectTimeout, got.SendTimeout, got.ReadTimeout)
+	}
+}

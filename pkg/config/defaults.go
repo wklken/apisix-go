@@ -13,6 +13,11 @@ func builtinDefaults() *valueNode {
 			"enable_access_log":    true,
 			"client_max_body_size": 0,
 			"client_body_timeout":  defaultClientBodyTimeout.String(),
+			"upstream": map[string]any{
+				"keepalive":          320,
+				"keepalive_timeout":  "60s",
+				"keepalive_requests": 1000,
+			},
 		}},
 		"apisix": map[string]any{
 			"status":  map[string]any{"ip": "127.0.0.1", "port": 7085},

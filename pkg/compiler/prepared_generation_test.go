@@ -434,13 +434,16 @@ func TestPreparedGenerationPublicAPIExposesNoRuntimeHandles(t *testing.T) {
 	}
 
 	allowedMethods := map[string]struct{}{
-		"PublicationSet":  {},
-		"MetadataView":    {},
-		"ConsumerLookup":  {},
-		"HTTP":            {},
-		"Stream":          {},
-		"DiscardPrepared": {},
-		"Close":           {},
+		"PublicationSet":      {},
+		"HTTPPublished":       {},
+		"SetHTTPPublished":    {},
+		"WithHTTPPublication": {},
+		"MetadataView":        {},
+		"ConsumerLookup":      {},
+		"HTTP":                {},
+		"Stream":              {},
+		"DiscardPrepared":     {},
+		"Close":               {},
 	}
 	bannedNames := map[string]struct{}{
 		"PreparedBindingView": {}, "BindingView": {}, "PluginBinding": {},
@@ -652,11 +655,16 @@ func assertPreparedGenerationMethodSet(t *testing.T) {
 		inputs  []reflect.Type
 		outputs []reflect.Type
 	}{
-		"PublicationSet": {outputs: []reflect.Type{publicationType}},
-		"MetadataView":   {outputs: []reflect.Type{metadataType}},
-		"ConsumerLookup": {outputs: []reflect.Type{consumerLookupType}},
-		"HTTP":           {outputs: []reflect.Type{httpSnapshotType}},
-		"Stream":         {outputs: []reflect.Type{streamSnapshotType}},
+		"PublicationSet":   {outputs: []reflect.Type{publicationType}},
+		"MetadataView":     {outputs: []reflect.Type{metadataType}},
+		"ConsumerLookup":   {outputs: []reflect.Type{consumerLookupType}},
+		"HTTP":             {outputs: []reflect.Type{httpSnapshotType}},
+		"Stream":           {outputs: []reflect.Type{streamSnapshotType}},
+		"HTTPPublished":    {outputs: []reflect.Type{reflect.TypeFor[bool]()}},
+		"SetHTTPPublished": {inputs: []reflect.Type{reflect.TypeFor[bool]()}},
+		"WithHTTPPublication": {
+			inputs: []reflect.Type{reflect.TypeFor[func() error]()}, outputs: []reflect.Type{errorType},
+		},
 		"DiscardPrepared": {
 			inputs: []reflect.Type{contextType, publicationType}, outputs: []reflect.Type{errorType},
 		},

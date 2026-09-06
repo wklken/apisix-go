@@ -80,13 +80,38 @@ YAML
 }
 write_gateway_config info
 
+expected_version=${APISIX_EXPECTED_VERSION:-}
+expected_commit=${APISIX_EXPECTED_COMMIT:-}
 if [[ ${APISIX_SKIP_BUILD:-0} != 1 ]]; then
+    expected_version=${expected_version:-container-smoke}
+    expected_commit=${expected_commit:-$(git -C "$repo_root" rev-parse --short HEAD)}
     docker build \
-        --build-arg VERSION=container-smoke \
-        --build-arg COMMIT="$(git -C "$repo_root" rev-parse --short HEAD)" \
+        --build-arg VERSION="$expected_version" \
+        --build-arg COMMIT="$expected_commit" \
         --build-arg BUILD_TIME=container-smoke \
         --build-arg GO_VERSION="$(go version)" \
         --tag "$image" "$repo_root"
+fi
+
+if [[ -z "$expected_version" || -z "$expected_commit" ]]; then
+    printf 'APISIX_EXPECTED_VERSION and APISIX_EXPECTED_COMMIT are required for a prebuilt image\n' >&2
+    exit 1
+fi
+build_info=$(docker run --rm --entrypoint /usr/bin/apisix "$image" version)
+actual_version=""
+actual_commit=""
+version_count=0
+commit_count=0
+while IFS= read -r line; do
+    case "$line" in
+        'Version: '*) actual_version=${line#Version: }; version_count=$((version_count + 1)) ;;
+        'Commit: '*) actual_commit=${line#Commit: }; commit_count=$((commit_count + 1)) ;;
+    esac
+done <<<"$build_info"
+if [[ "$version_count" != 1 || "$commit_count" != 1 || "$actual_version" != "$expected_version" || "$actual_commit" != "$expected_commit" ]]; then
+    printf 'container build identity mismatch: version=%q commit=%q, expected version=%q commit=%q\n' \
+        "$actual_version" "$actual_commit" "$expected_version" "$expected_commit" >&2
+    exit 1
 fi
 
 docker network create "$network" >/dev/null

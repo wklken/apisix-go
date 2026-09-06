@@ -114,6 +114,9 @@ func addStructuralEdges(graph *dependencyGraph, input normalizedInput, resource 
 			graph.add(key, generation.ResourceKey{Kind: "upstreams", ID: resource.view.upstreamID})
 		}
 	case "consumers":
+		if resource.view.credentialConsumerID != "" {
+			graph.add(key, generation.ResourceKey{Kind: "consumers", ID: resource.view.credentialConsumerID})
+		}
 		if resource.view.consumerGroupID != "" {
 			graph.add(key, generation.ResourceKey{Kind: "consumer_groups", ID: resource.view.consumerGroupID})
 		}

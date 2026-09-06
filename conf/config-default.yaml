@@ -124,9 +124,8 @@ apisix:
   disable_sync_configuration_during_start: false  # Safe exit. TO BE REMOVED.
 
   data_encryption:                # Data encryption settings.
-    enable_encrypt_fields: false  # Whether enable encrypt fields specified in `encrypt_fields` in plugin schema.
-    keyring: []                   # Encryption remains disabled until an operator supplies key material.
-                                  # If not set, APISIX saves the original data into etcd.
+    enable_encrypt_fields: true   # Match APISIX 3.17 declared-field encryption defaults.
+    keyring: [qeddd145sfvddff3, edd1c9f0985e76a2]  # APISIX 3.17 sample keys; override for deployment.
                                   # CAUTION: If you would like to update the key, add the new key as the
                                   # first item in the array and keep the older keys below the newly added
                                   # key, so that data can be decrypted with the older keys and encrypted

@@ -167,6 +167,9 @@ func validOccurrenceSpec(spec factoryOccurrenceSpec) bool {
 		return false
 	}
 	switch spec.source {
+	case capability.SecretSSLConfig:
+		return spec.domain == generation.DomainHTTP && spec.resource.Kind == "ssls" &&
+			spec.factory == capability.SSLResourceFactory
 	case capability.SecretPluginMetadata:
 		return spec.resource.Kind == "plugin_metadata" && spec.resource.ID == spec.factory
 	case capability.SecretConsumerConfig:

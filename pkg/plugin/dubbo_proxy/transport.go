@@ -98,10 +98,19 @@ func ServeDubboWithRetries(
 }
 
 func transportConfig(cfg Config) dubbo.Config {
+	if cfg.ConnectTimeout <= 0 {
+		cfg.ConnectTimeout = 30 * time.Second
+	}
+	if cfg.SendTimeout <= 0 {
+		cfg.SendTimeout = 30 * time.Second
+	}
+	if cfg.ReadTimeout <= 0 {
+		cfg.ReadTimeout = 30 * time.Second
+	}
 	return dubbo.Config{
-		ConnectTimeout: 30 * time.Second,
-		SendTimeout:    30 * time.Second,
-		ReadTimeout:    30 * time.Second,
+		ConnectTimeout: cfg.ConnectTimeout,
+		SendTimeout:    cfg.SendTimeout,
+		ReadTimeout:    cfg.ReadTimeout,
 		AcquireSlot: func(ctx context.Context, target string) (bool, func()) {
 			return dubbo.AcquireTargetSlot(ctx, target, cfg.MultiplexCount)
 		},

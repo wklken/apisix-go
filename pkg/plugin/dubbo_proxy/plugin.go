@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -51,6 +52,10 @@ type Config struct {
 	ServiceVersion string `json:"service_version"`
 	Method         string `json:"method,omitempty"`
 	MultiplexCount int    `json:"-"`
+	// Timeouts are supplied by the selected route upstream, not plugin JSON.
+	ConnectTimeout time.Duration `json:"-"`
+	SendTimeout    time.Duration `json:"-"`
+	ReadTimeout    time.Duration `json:"-"`
 }
 
 type contextKey string

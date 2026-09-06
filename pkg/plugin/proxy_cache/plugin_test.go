@@ -500,12 +500,12 @@ func TestStoreStateWithHeaderRejectsOversizedVaryOverwriteWithoutMutatingExistin
 		Status: http.StatusOK,
 		Body:   []byte("small-body"),
 	}
-	if err := p.storeStateWithHeader(requestHeader, "same-key", smallState, time.Minute, false); err != nil {
+	if err := p.storeStateWithHeader(requestHeader, "same-key", smallState, time.Minute); err != nil {
 		t.Fatalf("storeStateWithHeader(small) error = %v", err)
 	}
 	oversizedState := smallState
 	oversizedState.Body = []byte(strings.Repeat("x", 100))
-	if err := p.storeStateWithHeader(requestHeader, "same-key", oversizedState, time.Minute, false); err != nil {
+	if err := p.storeStateWithHeader(requestHeader, "same-key", oversizedState, time.Minute); err != nil {
 		t.Fatalf("storeStateWithHeader(oversized) error = %v", err)
 	}
 
@@ -1393,7 +1393,6 @@ func TestDiskStrategyInvalidatesLegacyBaseEntryWhenVaryIsRequired(t *testing.T) 
 			Body:   []byte("legacy-identity"),
 		},
 		time.Minute,
-		false,
 	); err != nil {
 		t.Fatalf("store legacy base entry: %v", err)
 	}
@@ -1771,7 +1770,7 @@ func TestHandlerCacheControlUsesUpstreamMaxAgeTTL(t *testing.T) {
 	}
 }
 
-func TestHandlerCacheControlIsIgnoredForIdentityCacheKey(t *testing.T) {
+func TestHandlerCacheControlAppliesToIdentityCacheKey(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		CacheControl: true,
 		CacheKey:     []string{"$consumer_name", "$request_uri"},
@@ -1795,8 +1794,8 @@ func TestHandlerCacheControlIsIgnoredForIdentityCacheKey(t *testing.T) {
 	if !ok {
 		t.Fatal("cache entry missing")
 	}
-	if entry.ttl != 60*time.Second {
-		t.Fatalf("entry ttl = %s, want configured 60s when cache_control is disabled for identity keys", entry.ttl)
+	if entry.ttl != time.Second {
+		t.Fatalf("entry ttl = %s, want origin max-age 1s with identity keys", entry.ttl)
 	}
 
 	hit := performRequest(
@@ -1806,14 +1805,14 @@ func TestHandlerCacheControlIsIgnoredForIdentityCacheKey(t *testing.T) {
 		"/identity-cache-control",
 		map[string]string{"Cache-Control": "no-cache"},
 	)
-	if hit.Header().Get(cacheStatusHeader) != "HIT" {
+	if hit.Header().Get(cacheStatusHeader) != "BYPASS" {
 		t.Fatalf(
-			"cache status = %q, want HIT because cache_control is ignored for identity keys",
+			"cache status = %q, want BYPASS for no-cache with identity keys",
 			hit.Header().Get(cacheStatusHeader),
 		)
 	}
-	if calls != 1 {
-		t.Fatalf("upstream calls = %d, want 1", calls)
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
 	}
 }
 

@@ -17,8 +17,6 @@ func TestCompileHTTPRejectsUnsupportedRouteSemantics(t *testing.T) {
 	}{
 		{name: "script", field: "script", value: `"return true"`, routeID: "unsupported-script-route"},
 		{name: "filter_func", field: "filter_func", value: `"return true"`, routeID: "unsupported-filter-route"},
-		{name: "remote_addrs", field: "remote_addrs", value: `["10.0.0.1"]`, routeID: "unsupported-remote-addrs-route"},
-		{name: "remote_addr", field: "remote_addr", value: `"10.0.0.1"`, routeID: "unsupported-remote-addr-route"},
 		{name: "script_id", field: "script_id", value: `"script-1"`, routeID: "unsupported-script-id-route"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -55,12 +53,8 @@ func TestProgrammaticSingularFieldsUseValuePresence(t *testing.T) {
 	if !remoteRoute.RemoteAddrConfigured() {
 		t.Fatal("RemoteAddrConfigured() = false, want non-empty programmatic remote_addr to be configured")
 	}
-	err := validateRouteCompatibility(remoteRoute)
-	if err == nil {
-		t.Fatal("validateRouteCompatibility() error = nil, want programmatic remote_addr rejection")
-	}
-	if !strings.Contains(err.Error(), remoteRoute.ID) || !strings.Contains(err.Error(), "remote_addr") {
-		t.Fatalf("validateRouteCompatibility() error = %q, want route ID %q and field remote_addr", err, remoteRoute.ID)
+	if err := validateRouteCompatibility(remoteRoute); err != nil {
+		t.Fatalf("programmatic remote_addr rejected: %v", err)
 	}
 }
 
@@ -124,14 +118,20 @@ func TestPlanRouteUpstreamValidatesHTTPUpstreamTypes(t *testing.T) {
 		{name: "https empty type", scheme: "https", wantOK: true},
 		{name: "grpc roundrobin", scheme: "grpc", type_: "roundrobin", wantOK: true},
 		{name: "grpcs empty type", scheme: "grpcs", wantOK: true},
-		{name: "http chash", scheme: "http", type_: "chash"},
+		{name: "http chash", scheme: "http", type_: "chash", wantOK: true},
 		{name: "http random", scheme: "http", type_: "random"},
 		{name: "kafka owner", scheme: "kafka", type_: "chash", wantOK: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := PlanRouteUpstream(
-				resource.Route{ID: "upstream-type", Upstream: resource.Upstream{Scheme: test.scheme, Type: test.type_}},
-				resource.Service{}, nil, nil, &testEffectiveConfig().Config,
+				resource.Route{
+					ID:       "upstream-type",
+					Upstream: resource.Upstream{Scheme: test.scheme, Type: test.type_, Key: "remote_addr"},
+				},
+				resource.Service{},
+				nil,
+				nil,
+				&testEffectiveConfig().Config,
 			)
 			if test.wantOK {
 				if err != nil {

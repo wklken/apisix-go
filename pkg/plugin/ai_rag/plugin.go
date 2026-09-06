@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/httpclient"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
@@ -123,62 +124,63 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := base.ReadRequestBody(r)
-		if err != nil {
-			writeRequestBodyError(w, "could not get body: "+err.Error())
-			return
-		}
-		if len(bytes.TrimSpace(body)) == 0 {
-			writeRequestBodyError(w, "could not get body: request body is empty")
-			return
-		}
+	return base.AdaptRequestPhase(p, next)
+}
 
-		var bodyTab map[string]any
-		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			writePlainResponse(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
-			return
-		}
-
-		embeddingsReq, fields, diagnostic := parseAIRAG(bodyTab)
-		if diagnostic != "" {
-			logger.Error(diagnostic)
-			writePlainResponse(w, http.StatusBadRequest, diagnostic)
-			return
-		}
-
-		embedding, status, message := p.requestEmbeddings(r, embeddingsReq)
-		if status != http.StatusOK {
-			logger.Error("could not get embeddings: " + message)
-			writePlainResponse(w, status, message)
-			return
-		}
-
-		searchResult, status, message := p.requestVectorSearch(r, fields, embedding)
-		if status != http.StatusOK {
-			logger.Error("could not get vector_search result: " + message)
-			writePlainResponse(w, status, message)
-			return
-		}
-
-		delete(bodyTab, "ai_rag")
-		appendSearchResult(r, bodyTab, searchResult)
-
-		rewritten, err := json.Marshal(bodyTab)
-		if err != nil {
-			base.WriteJSONMessage(
-				w,
-				http.StatusInternalServerError,
-				"failed to parse modified JSON request body: "+err.Error(),
-			)
-			return
-		}
-
-		base.ReplaceRequestBody(r, rewritten)
-
-		next.ServeHTTP(w, r)
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	body, err := base.ReadRequestBody(r)
+	if err != nil {
+		writeRequestBodyError(w, "could not get body: "+err.Error())
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
-	return http.HandlerFunc(fn)
+	if len(bytes.TrimSpace(body)) == 0 {
+		writeRequestBodyError(w, "could not get body: request body is empty")
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	var bodyTab map[string]any
+	if err := json.Unmarshal(body, &bodyTab); err != nil {
+		writePlainResponse(w, http.StatusBadRequest, "could not parse JSON request body: "+err.Error())
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	embeddingsReq, fields, diagnostic := parseAIRAG(bodyTab)
+	if diagnostic != "" {
+		logger.Error(diagnostic)
+		w.WriteHeader(http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	embedding, status, message := p.requestEmbeddings(r, embeddingsReq)
+	if status != http.StatusOK {
+		logger.Error("could not get embeddings: " + message)
+		writePlainResponse(w, status, message)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	searchResult, status, message := p.requestVectorSearch(r, fields, embedding)
+	if status != http.StatusOK {
+		logger.Error("could not get vector_search result: " + message)
+		writePlainResponse(w, status, message)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	delete(bodyTab, "ai_rag")
+	appendSearchResult(r, bodyTab, searchResult)
+
+	rewritten, err := json.Marshal(bodyTab)
+	if err != nil {
+		base.WriteJSONMessage(
+			w,
+			http.StatusInternalServerError,
+			"failed to parse modified JSON request body: "+err.Error(),
+		)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	base.ReplaceRequestBody(r, rewritten)
+
+	return base.ContinueRequest(r)
 }
 
 func parseAIRAG(body map[string]any) (map[string]any, string, string) {

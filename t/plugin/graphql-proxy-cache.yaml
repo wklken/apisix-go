@@ -309,7 +309,7 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"mutated":true}}'}, headers: {Apisix-Cache-Status: {equals: BYPASS}}}
 
   - name: graphql-memory-purge-removes-entry-test-16
-    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-memory, memory_size: 10m}]}}}
+    runtime: {plugins: [graphql-proxy-cache], apisix: {proxy_cache: {zones: [{name: gql-purge-memory, memory_size: 10m}]}}}
     config:
       routes:
         - {id: gql-purge-memory-route, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-purge-memory, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
@@ -330,7 +330,7 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"version":2}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: graphql-disk-purge-removes-entry-test-17
-    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-disk, disk_path: '{{WORK_DIR}}/cache/purge-disk', disk_size: 10m}]}}}
+    runtime: {plugins: [graphql-proxy-cache], apisix: {proxy_cache: {zones: [{name: gql-purge-disk, disk_path: '{{WORK_DIR}}/cache/purge-disk', disk_size: 10m}]}}}
     config:
       routes:
         - {id: gql-purge-disk-route, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-purge-disk, cache_ttl: 60}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
@@ -351,7 +351,7 @@ cases:
         output: {status: 200, body: {equals: '{"data":{"version":2}}'}, headers: {Apisix-Cache-Status: {equals: MISS}}}
 
   - name: graphql-purge-unknown-route-is-not-found-test-18
-    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-18, memory_size: 10m}]}}}
+    runtime: {plugins: [graphql-proxy-cache], apisix: {proxy_cache: {zones: [{name: gql-purge-18, memory_size: 10m}]}}}
     config:
       routes:
         - {id: gql-purge-known, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-purge-18}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
@@ -363,7 +363,7 @@ cases:
         output: {status: 404}
 
   - name: graphql-disk-purge-unknown-key-is-not-found-test-19
-    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-19, disk_path: '{{WORK_DIR}}/cache/purge-19', disk_size: 10m}]}}}
+    runtime: {plugins: [graphql-proxy-cache], apisix: {proxy_cache: {zones: [{name: gql-purge-19, disk_path: '{{WORK_DIR}}/cache/purge-19', disk_size: 10m}]}}}
     config:
       routes:
         - {id: gql-purge-disk-known, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-purge-19}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
@@ -375,7 +375,7 @@ cases:
         output: {status: 404}
 
   - name: graphql-purge-invalid-strategy-is-bad-request-test-20
-    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-20, memory_size: 10m}]}}}
+    runtime: {plugins: [graphql-proxy-cache], apisix: {proxy_cache: {zones: [{name: gql-purge-20, memory_size: 10m}]}}}
     config:
       routes:
         - {id: gql-purge-valid-strategy, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: memory, cache_zone: gql-purge-20}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}
@@ -387,7 +387,7 @@ cases:
         output: {status: 400}
 
   - name: graphql-purge-strategy-mismatch-is-bad-request-test-21
-    runtime: {plugins: [graphql-proxy-cache, prometheus], apisix: {proxy_cache: {zones: [{name: gql-purge-21, disk_path: '{{WORK_DIR}}/cache/purge-21', disk_size: 10m}]}}}
+    runtime: {plugins: [graphql-proxy-cache], apisix: {proxy_cache: {zones: [{name: gql-purge-21, disk_path: '{{WORK_DIR}}/cache/purge-21', disk_size: 10m}]}}}
     config:
       routes:
         - {id: gql-purge-disk-mismatch, uri: /graphql, plugins: {graphql-proxy-cache: {cache_strategy: disk, cache_zone: gql-purge-21}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.origin.ADDR}}': 1}}}

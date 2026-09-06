@@ -167,3 +167,15 @@ func TestPostInitRequiresOperationNameForMultipleOperations(t *testing.T) {
 		t.Fatalf("PostInit() with operation_name error = %v", err)
 	}
 }
+
+func TestGETEncodesSpacesWithoutChangingLiteralPlus(t *testing.T) {
+	p := newTestPlugin(t, Config{Query: "{ ping }", Variables: []string{"value"}})
+	request := httptest.NewRequest(http.MethodGet, "/graphql?value=a%2Bb%20c", nil)
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const want = "query=%7B%20ping%20%7D&variables=%7B%22value%22%3A%22a%2Bb%20c%22%7D"
+		if r.URL.RawQuery != want {
+			t.Fatalf("query = %q, want %q", r.URL.RawQuery, want)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+}

@@ -31,6 +31,10 @@ type ClusterKey [sha256.Size]byte
 // is interned by digest; the same value must always select the same cluster.
 type ClusterConfig struct {
 	Name              string
+	Type              string
+	HashOn            string
+	HashKey           string
+	HashKeyConfigured bool
 	Targets           map[string]int
 	Priorities        map[string]int
 	Checks            map[string]any
@@ -50,6 +54,10 @@ type ClusterConfig struct {
 // timeout, idle, or connection-cap change produces a new cluster.
 type clusterKeyIdentity struct {
 	Name              string
+	Type              string
+	HashOn            string
+	HashKey           string
+	HashKeyConfigured bool
 	Targets           []clusterKeyTarget
 	Priorities        []clusterKeyPriority
 	Checks            map[string]any
@@ -78,7 +86,8 @@ type clusterKeyPriority struct {
 // the caller must fail rather than reuse a partial digest.
 func (c ClusterConfig) Key() (ClusterKey, error) {
 	identity := clusterKeyIdentity{
-		Name:              c.Name,
+		Name: c.Name,
+		Type: c.Type, HashOn: c.HashOn, HashKey: c.HashKey, HashKeyConfigured: c.HashKeyConfigured,
 		Targets:           sortedClusterTargets(c.Targets),
 		Priorities:        sortedClusterPriorities(c.Priorities),
 		Checks:            c.Checks,
@@ -235,15 +244,15 @@ func newOwnedClusterWithTransport(
 	maxInFlight := config.MaxInFlight
 
 	var lb LoadBalancer
-	hasPositiveTarget := false
+	hasSelectableTarget := len(config.Targets) == 1
 	for _, weight := range config.Targets {
 		if weight > 0 {
-			hasPositiveTarget = true
+			hasSelectableTarget = true
 			break
 		}
 	}
-	if hasPositiveTarget {
-		lb, err = newUpstreamLoadBalanceWithPriorities(config.Targets, config.Priorities, config.Checks)
+	if hasSelectableTarget {
+		lb, err = newClusterLoadBalancer(config)
 		if err != nil {
 			return nil, err
 		}
@@ -265,6 +274,12 @@ func newOwnedClusterWithTransport(
 			}
 		}
 	}
+	if config.Transport.maxRequestsPerConnection > 0 && !config.HTTP2Cleartext && !config.Transport.http2 {
+		transport = &keepaliveRequestTransport{base: transport, limit: int64(config.Transport.maxRequestsPerConnection)}
+	}
+	if algorithm, ok := lb.(*algorithmLoadBalance); ok {
+		transport = &algorithmTransport{base: transport, lb: algorithm}
+	}
 	transport = NewRetryTransportWithObserver(transport, observeRetry)
 	if maxInFlight > 0 {
 		transport = newAdmissionTransport(transport, maxInFlight, config.Name, observer)
@@ -280,7 +295,7 @@ func newOwnedClusterWithTransport(
 		closeIdle:   closeIdle,
 		maxInFlight: maxInFlight,
 	}
-	if healthAware, ok := lb.(*HealthAwareLoadBalance); ok {
+	if healthAware := clusterHealthBalancer(lb); healthAware != nil {
 		healthAware.setObserver(config.Name, observer)
 		active, enabled, err := ParseActiveHealthConfig(config.Checks)
 		if err != nil {
@@ -342,7 +357,7 @@ func (c *Cluster) CloseContext(ctx context.Context) error {
 		if c.health != nil {
 			c.health.Close()
 		}
-		if healthAware, ok := c.lb.(*HealthAwareLoadBalance); ok {
+		if healthAware := clusterHealthBalancer(c.lb); healthAware != nil {
 			healthAware.clearObserver()
 		}
 		if c.closeIdle != nil {

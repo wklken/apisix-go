@@ -268,7 +268,7 @@ func TestStderrIsForwardedAsMCPNotification(t *testing.T) {
 	}
 }
 
-func TestMessageEndpointRejectsUnknownSession(t *testing.T) {
+func TestMessageEndpointAcceptsUnknownSession(t *testing.T) {
 	p := newTestPlugin(t, Config{Command: "cat"})
 
 	req := httptest.NewRequest(http.MethodPost, "/message?sessionId=missing", strings.NewReader(`{}`))
@@ -277,8 +277,8 @@ func TestMessageEndpointRejectsUnknownSession(t *testing.T) {
 		t.Fatal("next handler should not be called")
 	})).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rr.Code)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rr.Code)
 	}
 	if got := apisixlog.GetField(req, "$request_uri"); got != "/message?sessionId=***" {
 		t.Fatalf("logged request URI = %#v, want redacted sessionId", got)

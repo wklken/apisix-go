@@ -1,11 +1,9 @@
 package route
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -14,7 +12,6 @@ import (
 
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
-	"github.com/wklken/apisix-go/pkg/plugin/proxy_control"
 	"github.com/wklken/apisix-go/pkg/plugin/traffic_split"
 	"github.com/wklken/apisix-go/pkg/proxy"
 	"github.com/wklken/apisix-go/pkg/resource"
@@ -121,6 +118,7 @@ func buildTransportOptionWithSSLResolver(
 	routeResource resource.Route,
 	upstream resource.Upstream,
 	resolveSSL sslResolver,
+	staticConfigs ...*appconfig.Config,
 ) (proxy.TransportOption, error) {
 	if upstreamHasClientCertificate(upstream) && !upstreamUsesTLS(upstream) {
 		return proxy.TransportOption{}, fmt.Errorf(
@@ -128,11 +126,37 @@ func buildTransportOptionWithSSLResolver(
 		)
 	}
 
+	size, idleTimeout, requests := 320, 60*time.Second, 1000
+	if len(staticConfigs) > 0 && staticConfigs[0] != nil && staticConfigs[0].NginxConfig.HTTP.Upstream != nil {
+		pool := staticConfigs[0].NginxConfig.HTTP.Upstream
+		size, idleTimeout = pool.Keepalive, pool.KeepaliveTimeout
+		if pool.KeepaliveRequests < 0 {
+			return proxy.TransportOption{}, fmt.Errorf("invalid upstream keepalive_requests")
+		}
+		// NGINX keepalive_requests 0 disables reuse after the first request.
+		requests = max(1, pool.KeepaliveRequests)
+	}
+	if pool := upstream.KeepalivePool; pool != nil {
+		if pool.IdleTimeout > float64(math.MaxInt64)/float64(time.Second) {
+			return proxy.TransportOption{}, fmt.Errorf("upstream keepalive idle_timeout is too large")
+		}
+		size, idleTimeout = pool.Size, time.Duration(pool.IdleTimeout*float64(time.Second))
+		if pool.Requests > 0 {
+			requests = pool.Requests
+		}
+	}
+	if size < 1 || idleTimeout < 0 || size > math.MaxInt/max(1, len(upstream.Nodes)) {
+		return proxy.TransportOption{}, fmt.Errorf("invalid upstream keepalive pool")
+	}
 	timeouts := resolveUpstreamTimeouts(routeResource.Timeout, upstream.Timeout)
 	optionBuilder := (&proxy.TransportOptionBuilder{}).
 		WithDialTimeout(timeouts.connect).
+		WithHTTP2(strings.EqualFold(upstream.Scheme, "grpcs")).
 		WithResponseHeaderTimeout(timeouts.responseHeader).
-		WithIdleConnTimeout(30 * time.Second).
+		WithIdleConnTimeout(idleTimeout).
+		WithMaxRequestsPerConnection(requests).
+		WithMaxIdleConnectionsPerHost(size).
+		WithMaxIdleConnections(size * max(1, len(upstream.Nodes))).
 		// APISIX 3.17 upstream.tls.verify applies only to Kafka.
 		WithInsecureSkipVerify(true)
 
@@ -161,7 +185,7 @@ func buildClusterConfigWithSSLResolver(
 	staticConfig *appconfig.Config,
 	priorities ...map[string]int,
 ) (proxy.ClusterConfig, error) {
-	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL)
+	transport, err := buildTransportOptionWithSSLResolver(routeResource, upstream, resolveSSL, staticConfig)
 	if err != nil {
 		return proxy.ClusterConfig{}, err
 	}
@@ -185,6 +209,10 @@ func buildClusterConfigWithTransport(
 
 	config := proxy.ClusterConfig{
 		Name:              upstreamMetricLabel(routeResource, upstream),
+		Type:              upstream.Type,
+		HashOn:            upstream.HashOn,
+		HashKey:           upstream.Key,
+		HashKeyConfigured: upstream.KeyConfigured(),
 		Targets:           servers,
 		Priorities:        firstPriorityMap(priorities),
 		Checks:            checks,
@@ -392,27 +420,4 @@ func applyTrafficSplitTarget(req *http.Request, override *traffic_split.Override
 		req.Host = override.Host
 	}
 	return true
-}
-
-func bufferRequestBodyIfNeeded(w http.ResponseWriter, r *http.Request) error {
-	if !proxy_control.GetRequestBuffering(r) || r.Body == nil || r.Body == http.NoBody {
-		return nil
-	}
-	limit := proxy_control.GetRequestBufferingLimit(r)
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-	if err := r.Body.Close(); err != nil {
-		return err
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-	r.ContentLength = int64(len(body))
-	return nil
 }

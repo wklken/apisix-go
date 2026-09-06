@@ -18,7 +18,10 @@ XRPC, QUIC, or HTTP/3 subsystem still fail validation.
 
 `${{NAME}}` and `${{NAME:=fallback}}` expressions are expanded inside each
 file before that layer is merged. Absent, null, false, zero, and empty string
-remain distinct.
+remain distinct. During map merge, null deletes the key; schema defaults then
+apply to omitted fields, including `enable_http2: true` and an empty plugin list.
+Numeric HTTP timeout values use seconds. `send_timeout` is accepted but does
+not set a Go total-response write deadline.
 
 APISIX 3.17 reserves `APISIX_DEPLOYMENT_ETCD_HOST` for replacing
 `deployment.etcd.host`. Its value must be a JSON array, for example

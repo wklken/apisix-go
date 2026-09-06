@@ -33,8 +33,10 @@ func RecordStreamOutcome(r *http.Request, transport StreamTransport, streamErr e
 	outcome := StreamOutcomeSuccess
 	if streamErr != nil {
 		outcome = StreamOutcomeError
-		if errors.Is(streamErr, ErrClientDisconnected) || errors.Is(streamErr, context.Canceled) ||
-			errors.Is(streamErr, context.DeadlineExceeded) || r != nil && r.Context().Err() != nil {
+		if errors.Is(streamErr, ErrMaxStreamDuration) || errors.Is(streamErr, ErrClientDisconnected) ||
+			errors.Is(streamErr, context.Canceled) ||
+			errors.Is(streamErr, context.DeadlineExceeded) ||
+			r != nil && r.Context().Err() != nil {
 			outcome = StreamOutcomeCanceled
 		}
 	}

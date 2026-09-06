@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/samber/lo"
+	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -87,58 +88,59 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := base.ReadRequestBody(r)
-		if err != nil {
-			writeAPISIXMessage(w, http.StatusBadRequest, "Empty request body")
-			return
-		}
-		if len(body) == 0 {
-			writeAPISIXMessage(w, http.StatusBadRequest, "Empty request body")
-			return
-		}
+	return base.AdaptRequestPhase(p, next)
+}
 
-		var bodyTab map[string]any
-		if err := json.Unmarshal(body, &bodyTab); err != nil {
-			writeAPISIXMessage(w, http.StatusBadRequest, err.Error())
-			return
-		}
-
-		protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
-		if err != nil || protocol == ai_protocols.Passthrough {
-			writeEmptyResponse(w)
-			return
-		}
-
-		messages := ai_protocols.ExtractMessages(protocol, bodyTab)
-		if protocol == ai_protocols.OpenAIChat {
-			if chatMessages, ok := chatMessagesPreservingEmptyContent(bodyTab); ok {
-				messages = chatMessages
-			}
-		}
-		if protocol != ai_protocols.OpenAIResponses && !p.config.MatchAllConversationHistory {
-			messages = lastMessage(messages)
-		}
-		if !p.config.MatchAllRoles {
-			messages = userMessages(messages)
-		}
-		if len(messages) == 0 {
-			writeEmptyResponse(w)
-			return
-		}
-		content := joinContent(messages)
-		if len(p.config.allowPatterns) > 0 && !matchesAny(p.config.allowPatterns, content) {
-			writeAPISIXMessage(w, http.StatusBadRequest, "Request doesn't match allow patterns")
-			return
-		}
-		if matchesAny(p.config.denyPatterns, content) {
-			writeAPISIXMessage(w, http.StatusBadRequest, "Request contains prohibited content")
-			return
-		}
-
-		next.ServeHTTP(w, r)
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	body, err := base.ReadRequestBody(r)
+	if err != nil {
+		writeAPISIXMessage(w, http.StatusBadRequest, "Empty request body")
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
-	return http.HandlerFunc(fn)
+	if len(body) == 0 {
+		writeAPISIXMessage(w, http.StatusBadRequest, "Empty request body")
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	var bodyTab map[string]any
+	if err := json.Unmarshal(body, &bodyTab); err != nil {
+		writeAPISIXMessage(w, http.StatusBadRequest, err.Error())
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	protocol, err := ai_protocols.Detect(r.URL.Path, bodyTab)
+	if err != nil || protocol == ai_protocols.Passthrough {
+		writeEmptyResponse(w)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	messages := ai_protocols.ExtractMessages(protocol, bodyTab)
+	if protocol == ai_protocols.OpenAIChat {
+		if chatMessages, ok := chatMessagesPreservingEmptyContent(bodyTab); ok {
+			messages = chatMessages
+		}
+	}
+	if protocol != ai_protocols.OpenAIResponses && !p.config.MatchAllConversationHistory {
+		messages = lastMessage(messages)
+	}
+	if !p.config.MatchAllRoles {
+		messages = userMessages(messages)
+	}
+	if len(messages) == 0 {
+		writeEmptyResponse(w)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	content := joinContent(messages)
+	if len(p.config.allowPatterns) > 0 && !matchesAny(p.config.allowPatterns, content) {
+		writeAPISIXMessage(w, http.StatusBadRequest, "Request doesn't match allow patterns")
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+	if matchesAny(p.config.denyPatterns, content) {
+		writeAPISIXMessage(w, http.StatusBadRequest, "Request contains prohibited content")
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	return base.ContinueRequest(r)
 }
 
 func writeAPISIXMessage(w http.ResponseWriter, status int, message string) {

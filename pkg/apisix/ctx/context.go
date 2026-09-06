@@ -534,12 +534,7 @@ func RegisterSensitiveQueryName(r *http.Request, name string) {
 	state := newRequestState()
 	state.ApisixVars, _ = r.Context().Value(ApisixVarsKey).(map[string]any)
 	state.RequestVars, _ = r.Context().Value(RequestVarsKey).(map[string]any)
-	if state.ApisixVars == nil {
-		state.ApisixVars = newVars()
-	}
-	if state.RequestVars == nil {
-		state.RequestVars = newVars()
-	}
+	ensureRequestVariables(state)
 	state.sensitiveQueryNames = map[string]struct{}{name: {}}
 	*r = *r.WithContext(context.WithValue(r.Context(), requestStateKey, state))
 }
@@ -583,6 +578,7 @@ func WithApisixVars(r *http.Request, vars map[string]string) *http.Request {
 	for k, v := range vars {
 		state.ApisixVars[k] = v
 	}
+	ensureRequestVariables(state)
 	return r
 }
 
@@ -637,7 +633,7 @@ func AttachConsumerWithSource(r *http.Request, consumer resource.Consumer, sourc
 	consumer = cloneConsumer(consumer)
 	consumer.ID = consumer.Username
 	consumer.ConsumerName = consumer.ID
-	if source != "" {
+	if source != "" && consumer.CredentialID == "" {
 		consumer.AuthConf = nil
 		if config, ok := consumer.Plugins[source]; ok {
 			consumer.AuthConf = cloneConsumerValue(config)
@@ -691,9 +687,7 @@ func WithRequestVars(r *http.Request) *http.Request {
 		state.ApisixVars, _ = r.Context().Value(ApisixVarsKey).(map[string]any)
 		r = r.WithContext(context.WithValue(r.Context(), requestStateKey, state))
 	}
-	if state.RequestVars == nil {
-		state.RequestVars = newVars()
-	}
+	ensureRequestVariables(state)
 	return r
 }
 

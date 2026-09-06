@@ -71,10 +71,20 @@ func newConfigTestCommand(load func(string) (*config.EffectiveConfig, error)) *c
 		Short: "validate configuration without starting the server",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := loadCommandEffective(cmd, load); err != nil {
+			effective, err := loadCommandEffective(cmd, load)
+			if err != nil {
 				return err
 			}
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), "configuration is valid")
+			provider, err := config.EffectiveConfigProvider(&effective.Config)
+			if err != nil {
+				return err
+			}
+			if provider == "yaml" {
+				if err := config.ValidateStandaloneYAMLFile(config.StandaloneConfigFile(provider)); err != nil {
+					return err
+				}
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), "configuration is valid")
 			return err
 		},
 	}

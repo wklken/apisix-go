@@ -1,5 +1,9 @@
 cases:
   - name: invalid-prefer-name
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       routes:
@@ -15,6 +19,10 @@ cases:
         wait: 100ms
 
   - name: profile-metrics-scrape
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       routes:
@@ -64,6 +72,10 @@ cases:
           status: 200
           body: {matches: 'apisix_http_latency_count\{[^\n]*route="prometheus-profile"[^\n]*type="request"[^\n]*\} 10'}
   - name: bounded-route-service-labels
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       services:
@@ -97,6 +109,10 @@ cases:
             matches: 'apisix_http_status\{[^\n]*route="prometheus-route-name"[^\n]*service="prometheus-service-name"[^\n]*\} 1'
 
   - name: ai-proxy-active-connections
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       routes:
@@ -146,6 +162,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_llm_active_connections\{[^\n]*route_id="prometheus-ai-active-chat"[^\n]*\} 0'}}
 
   - name: regular-request-omits-llm-series
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       routes:
@@ -170,6 +190,7 @@ cases:
     runtime:
       plugin_attr:
         prometheus:
+          enable_export_server: false
           metrics:
             http_status: {expire: 1}
             http_latency: {expire: 1}
@@ -203,6 +224,10 @@ cases:
         output: {status: 200, body: {not_matches: '(apisix_(http_status|bandwidth)|apisix_http_latency_(bucket|count|sum))\{[^\n]*route="prometheus-expire"'}}
 
   - name: service-bound-metrics
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       services:
@@ -224,6 +249,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-source-route"[^\n]*service="prometheus-source-service"[^\n]*type="egress"[^\n]*\} [1-9][0-9]*'}}
 
   - name: early-response-metrics
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       routes:
@@ -243,6 +272,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*response_source="early_stop"[^\n]*route="prometheus-early"[^\n]*\} 1'}}
 
   - name: global-rule-request-metrics
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       global_rules:
@@ -268,6 +301,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_latency_count\{[^\n]*route="prometheus-global-route"[^\n]*type="apisix"[^\n]*\} 1'}}
 
   - name: service-latency-buckets
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       services:
@@ -296,6 +333,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_latency_bucket\{[^\n]*service="3"[^\n]*type="apisix"[^\n]*le="500"[^\n]*\} 3'}}
 
   - name: node-info-from-prometheus-source
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     target_plugin_exempt_reason: node-info is asserted through the public metrics route without executing the target plugin route
     config:
       routes:
@@ -308,6 +349,10 @@ cases:
     output: {status: 200, body: {matches: 'apisix_node_info\{hostname="[^"]+",version="[^"]+"\} 1'}}
 
   - name: consumer-labels
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       consumers:
@@ -341,6 +386,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*code="200"[^\n]*consumer="jack"[^\n]*route="prometheus-consumer-route"[^\n]*\} 1'}}
 
   - name: route-name-with-service-id-fallback
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       services:
@@ -365,6 +414,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-named-route"[^\n]*service="prometheus-unnamed-service"[^\n]*\} [1-9][0-9]*'}}
 
   - name: route-id-with-service-name
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       services:
@@ -389,6 +442,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-unnamed-route"[^\n]*service="prometheus-named-service"[^\n]*\} [1-9][0-9]*'}}
 
   - name: source-retains-service-name-after-route-name-removal
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       services:
@@ -413,6 +470,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_bandwidth\{[^\n]*route="prometheus-retained-route-id"[^\n]*service="prometheus-retained-service"[^\n]*\} [1-9][0-9]*'}}
 
   - name: route-binding-wins-over-global-binding
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     wait_for_generation: true
     config:
       global_rules:
@@ -440,6 +501,7 @@ cases:
     runtime:
       plugin_attr:
         prometheus:
+          enable_export_server: false
           metrics:
             bandwidth:
               extra_labels:
@@ -468,6 +530,7 @@ cases:
     runtime:
       plugin_attr:
         prometheus:
+          enable_export_server: false
           default_buckets: [15, 55, 105, 205, 505]
     config:
       routes:
@@ -497,6 +560,7 @@ cases:
     runtime:
       plugin_attr:
         prometheus:
+          enable_export_server: false
           metrics:
             http_status:
               extra_labels:
@@ -520,6 +584,10 @@ cases:
         output: {status: 200, body: {matches: 'apisix_http_status\{[^\n]*dummy=""[^\n]*route="prometheus-missing-label"[^\n]*\} 1'}}
 
   - name: node-info-from-prometheus4-source
+    runtime:
+      plugin_attr:
+        prometheus:
+          enable_export_server: false
     target_plugin_exempt_reason: node-info is asserted through the public metrics route without executing the target plugin route
     config:
       routes:

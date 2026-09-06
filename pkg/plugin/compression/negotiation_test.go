@@ -264,3 +264,14 @@ func TestNegotiationReportsIdentityFallbackAvailability(t *testing.T) {
 		})
 	}
 }
+
+func TestDecimalZeroBrotliRuleDoesNotEnableGzip(t *testing.T) {
+	for _, accept := range []string{"gzip;q=0.0", "*;q=0.0"} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("Accept-Encoding", accept)
+		_, state := Register(request, eligibleOffer(Gzip, 995))
+		if got := state.Decide(ResponseMeta{Status: http.StatusOK}).Coding; got != Identity {
+			t.Fatalf("%s selected %s; want identity", accept, got)
+		}
+	}
+}

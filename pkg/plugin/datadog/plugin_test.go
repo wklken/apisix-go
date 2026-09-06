@@ -751,9 +751,10 @@ func TestRunLogPhaseCapturesStatusAndSizes(t *testing.T) {
 
 	if err := p.RunLogPhase(base.LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{
-			Method: http.MethodPut,
-			URI:    "/orders/1",
-			Scheme: "https",
+			Method:     http.MethodPut,
+			URI:        "/orders/1",
+			Scheme:     "https",
+			APISIXVars: map[string]any{"$matched_uri": "/orders/1"},
 			RequestVars: map[string]any{
 				"$request_length": int64(97),
 				"$bytes_sent":     int64(126),

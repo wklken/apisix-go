@@ -120,7 +120,8 @@ func (p *Plugin) PostInit() error {
 	}
 	dialContext := p.dialMirrorContext
 	transport := proxy.NewTransport(
-		(&proxy.TransportOptionBuilder{}).WithDialTimeout(mirrorTimeout).Build(),
+		(&proxy.TransportOptionBuilder{}).WithDialTimeout(mirrorTimeout).
+			WithHTTP2(strings.HasPrefix(p.config.Host, "grpcs://")).Build(),
 	)
 	transport.DialContext = dialContext
 	p.client = &http.Client{
@@ -234,10 +235,14 @@ func (p *Plugin) mirrorFinalizedRequest(r *http.Request) error {
 	if !p.admitMirror() {
 		return nil
 	}
-	body, err := base.ReadRequestBodyLimited(r, p.maxBodySize)
+	body, err := readMirrorBodyWithoutConsumingPrimary(r, p.maxBodySize)
 	if err != nil {
 		p.releaseMirrorAdmission()
 		return fmt.Errorf("proxy-mirror read request body: %w", err)
+	}
+	if len(body) > p.maxBodySize {
+		p.releaseMirrorAdmission()
+		return nil
 	}
 	mirrorReq, err := p.buildMirrorRequest(r, body)
 	if err != nil {
@@ -259,6 +264,22 @@ func (p *Plugin) mirrorFinalizedRequest(r *http.Request) error {
 		return err
 	}
 	return nil
+}
+
+// The mirror copy budget must not reject or truncate the primary request.
+func readMirrorBodyWithoutConsumingPrimary(r *http.Request, limit int) ([]byte, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, nil
+	}
+	original := r.Body
+	prefix, err := io.ReadAll(io.LimitReader(original, int64(limit)+1))
+	r.Body = &restoredMirrorBody{Reader: io.MultiReader(bytes.NewReader(prefix), original), Closer: original}
+	return prefix, err
+}
+
+type restoredMirrorBody struct {
+	io.Reader
+	io.Closer
 }
 
 func (p *Plugin) admitMirror() bool {

@@ -1406,7 +1406,7 @@ func TestSendBatchWritesBulkNDJSONWithHeadersAndAuth(t *testing.T) {
 	}
 }
 
-func TestSendBatchDetectsBulkItemFailures(t *testing.T) {
+func TestSendBatchAcceptsHTTP200WithBulkItemFailures(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -1443,11 +1443,11 @@ func TestSendBatchDetectsBulkItemFailures(t *testing.T) {
 		[]map[string]any{{"path": "/a"}, {"path": "/b"}, {"path": "/c"}},
 		3,
 	)
-	if err == nil {
-		t.Fatal("SendBatch() error = nil, want detected bulk item failure")
+	if err != nil {
+		t.Fatalf("SendBatch() error = %v, want successful HTTP200 delivery", err)
 	}
-	if firstFail != 2 {
-		t.Fatalf("firstFail = %d, want 2 (second bulk item)", firstFail)
+	if firstFail != 0 {
+		t.Fatalf("firstFail = %d, want 0 for completed HTTP200 delivery", firstFail)
 	}
 	select {
 	case <-received:
@@ -1456,7 +1456,7 @@ func TestSendBatchDetectsBulkItemFailures(t *testing.T) {
 	}
 }
 
-func TestSendBatchMalformedBulkResponse(t *testing.T) {
+func TestSendBatchAcceptsHTTP200WithMalformedBulkResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			w.Header().Set("X-Elastic-Product", "Elasticsearch")
@@ -1478,11 +1478,11 @@ func TestSendBatchMalformedBulkResponse(t *testing.T) {
 	})
 
 	firstFail, err := p.SendBatch(context.Background(), []map[string]any{{"path": "/a"}}, 1)
-	if err == nil {
-		t.Fatal("SendBatch() error = nil, want malformed bulk response error")
+	if err != nil {
+		t.Fatalf("SendBatch() error = %v, want successful HTTP200 delivery", err)
 	}
-	if firstFail != 1 {
-		t.Fatalf("firstFail = %d, want 1 for an undecodable bulk result", firstFail)
+	if firstFail != 0 {
+		t.Fatalf("firstFail = %d, want 0 for completed HTTP200 delivery", firstFail)
 	}
 }
 
@@ -1749,7 +1749,7 @@ func TestRunLogPhaseResolvesIndexTimeAndApisixVariables(t *testing.T) {
 	}
 }
 
-func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseCustomFormatDoesNotInjectBodies(t *testing.T) {
 	tests := []struct {
 		name         string
 		requestBody  string
@@ -1757,9 +1757,8 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 		header       string
 		requestExpr  [][]any
 		responseExpr [][]any
-		wantBodies   bool
 	}{
-		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`, wantBodies: true},
+		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`},
 		{
 			name:         "expressions match",
 			requestBody:  `{"order":2}`,
@@ -1769,7 +1768,6 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 				{"http_x_log_body", "==", "yes"},
 			},
 			responseExpr: [][]any{{"status", "==", "201"}},
-			wantBodies:   true,
 		},
 		{
 			name: "expressions miss", requestBody: `{"order":3}`, responseBody: `{"created":false}`, header: "no",
@@ -1838,22 +1836,10 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 			select {
 			case body := <-received:
 				document := extractBulkDocument(t, body)
-				if !test.wantBodies {
-					if _, ok := document["request"]; ok {
-						t.Fatalf("document request = %#v, want no request body", document["request"])
+				for _, key := range []string{"request", "response"} {
+					if _, ok := document[key]; ok {
+						t.Fatalf("custom format unexpectedly contains %s", key)
 					}
-					if _, ok := document["response"]; ok {
-						t.Fatalf("document response = %#v, want no response body", document["response"])
-					}
-					return
-				}
-				request, ok := document["request"].(map[string]any)
-				if !ok || request["body"] != test.requestBody {
-					t.Fatalf("document request = %#v, want body %q", document["request"], test.requestBody)
-				}
-				response, ok := document["response"].(map[string]any)
-				if !ok || response["body"] != test.responseBody {
-					t.Fatalf("document response = %#v, want body %q", document["response"], test.responseBody)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("timed out waiting for Elasticsearch bulk request")
@@ -2068,9 +2054,10 @@ func TestResolveIndexVarsSnapshotMatchesAPISIXTemplateContract(t *testing.T) {
 	}
 }
 
-func TestSendBatchVersionDetectionRunsOncePerStableConfig(t *testing.T) {
+func TestSendBatchCachesVersionAfterRetryingInitialFailure(t *testing.T) {
 	var versionGets atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Elastic-Product", "Elasticsearch")
 		if r.URL.Path == "/" {
 			if versionGets.Add(1) == 1 {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -2097,7 +2084,7 @@ func TestSendBatchVersionDetectionRunsOncePerStableConfig(t *testing.T) {
 		t.Fatalf("second SendBatch() error = %v", err)
 	}
 
-	if got := versionGets.Load(); got != 1 {
-		t.Fatalf("version detection requests = %d, want 1 per stable config", got)
+	if got := versionGets.Load(); got != 2 {
+		t.Fatalf("version detection requests = %d, want one failed probe followed by one cached successful probe", got)
 	}
 }

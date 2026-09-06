@@ -1,10 +1,12 @@
 package graphql_limit_count
 
 import (
-	"fmt"
+	"errors"
 
 	"github.com/wklken/apisix-go/pkg/plugin/graphql"
 )
+
+var errEmptyGraphQLQuery = errors.New("empty graphql query")
 
 func queryDepth(query string) (int, error) {
 	doc, err := graphql.Parse(query)
@@ -12,7 +14,7 @@ func queryDepth(query string) (int, error) {
 		return 0, err
 	}
 	if len(doc.Operations) == 0 {
-		return 0, fmt.Errorf("empty graphql query")
+		return 0, errEmptyGraphQLQuery
 	}
 	depth := 0
 	for _, operation := range doc.Operations {

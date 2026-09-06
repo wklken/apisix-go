@@ -275,15 +275,14 @@ func (p *Plugin) processRequest(r *http.Request, _ function_upstream.Config) {
 	if p.config.Authorization == nil {
 		return
 	}
-	if p.config.Authorization.APIKey != "" {
-		deleteHeader(r.Header, "X-Api-Key")
+	if p.config.Authorization.APIKey != "" && !hasHeader(r.Header, "X-Api-Key") {
 		_ = p.useAPIKeyLocked(func(apiKey string) error {
 			r.Header.Set("X-Api-Key", apiKey)
 			return nil
 		})
 		return
 	}
-	if p.config.Authorization.IAM == nil {
+	if p.config.Authorization.IAM == nil || hasHeader(r.Header, "Authorization") {
 		return
 	}
 
@@ -330,6 +329,15 @@ func isIAMCredentialHeader(name string) bool {
 	}
 }
 
+func hasHeader(headers http.Header, name string) bool {
+	for existing, values := range headers {
+		if strings.EqualFold(existing, name) && len(values) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func deleteHeader(headers http.Header, name string) {
 	for existing := range headers {
 		if strings.EqualFold(existing, name) {
@@ -353,7 +361,6 @@ func (p *Plugin) signIAMRequest(r *http.Request, iam *IAM, accessKey, secretKey 
 		DeriveHeadersFromRequest: true,
 		CanonicalURI:             ai_auth.CanonicalURICleaned,
 		CanonicalQuery:           ai_auth.CanonicalQuerySortedParts,
-		RewriteQuery:             true,
 	}, now())
 }
 

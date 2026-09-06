@@ -162,7 +162,8 @@ func (p *Plugin) PostInit() error {
 	if p.client == nil {
 		timeout := time.Duration(p.config.Timeout) * time.Millisecond
 		p.client = &http.Client{
-			Transport: proxy.NewProgressTimeoutTransport(p.transport(), timeout, timeout),
+			Transport:     proxy.NewProgressTimeoutTransport(p.transport(), timeout, timeout),
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 	}
 
@@ -372,6 +373,11 @@ func (p *Plugin) writeActionResponse(w http.ResponseWriter, res *http.Response, 
 	status := res.StatusCode
 	if result.StatusCode != 0 {
 		status = result.StatusCode
+	}
+	if status == http.StatusContinue {
+		// APISIX cannot finalize the action's 100 Continue response and closes
+		// the connection without a final status. Preserve that wire behavior.
+		panic(http.ErrAbortHandler)
 	}
 	if _, ok := util.TerminalStatus(status); !ok {
 		http.Error(w, "failed to parse openwhisk response data", http.StatusServiceUnavailable)

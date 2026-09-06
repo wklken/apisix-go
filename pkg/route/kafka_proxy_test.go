@@ -430,9 +430,9 @@ func TestBuildKafkaPubSubHandlerMapsKafkaAuthError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePubSubResponse() error = %v", err)
 	}
-	if response.Sequence != 9 || response.Kind != kafka_proxy.RespError || response.Code != 502 ||
-		response.Message != "Kafka authentication failed" {
-		t.Fatalf("response = %#v, want sanitized 502 authentication error", response)
+	if response.Sequence != 9 || response.Kind != kafka_proxy.RespError || response.Code != 0 ||
+		response.Message != "failed to fetch message, topic: topic, partition: 0, err: "+kafka.SASLAuthenticationFailed.Error() {
+		t.Fatalf("response = %#v, want PubSub code zero with broker error", response)
 	}
 }
 
@@ -457,8 +457,9 @@ func TestBuildKafkaPubSubHandlerMapsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePubSubResponse() error = %v", err)
 	}
-	if response.Sequence != 10 || response.Kind != kafka_proxy.RespError || response.Code != 504 {
-		t.Fatalf("response = %#v, want sanitized 504 timeout error", response)
+	if response.Sequence != 10 || response.Kind != kafka_proxy.RespError || response.Code != 0 ||
+		response.Message != "failed to list offset, topic: topic, partition: 0, err: context deadline exceeded" {
+		t.Fatalf("response = %#v, want PubSub code zero with timeout error", response)
 	}
 }
 
@@ -582,7 +583,7 @@ func TestKafkaProxyMetadataBindingKeepsHandlerAcrossResponsePlanTerminal(t *test
 		t.Fatal("ordinary fallback ran despite Kafka route terminal ownership")
 	})
 	ordinary := ensureRouteLifecycle(plan.Install(pipeline, fallback))
-	transparent, err := buildTransparentUpgradeHandler(pipeline, plan, fallback, true)
+	transparent, err := buildTransparentUpgradeHandler(pipeline, plan, fallback)
 	if err != nil {
 		t.Fatalf("buildTransparentUpgradeHandler() error = %v", err)
 	}

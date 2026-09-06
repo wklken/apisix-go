@@ -433,7 +433,9 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
 	if err := p.validateProviderRequest(document, protocol); err != nil {
-		base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, err.Error())
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
 	request := ai_runtime.WithExecution(r, "ai-proxy-"+p.config.Provider, func(
@@ -496,11 +498,11 @@ func (*Config) DescribeResponseMode() (base.ResponseModeDescriptor, error) {
 }
 
 func (p *Plugin) validateProviderRequest(document ai_protocols.Document, protocol ai_protocols.Protocol) error {
-	if p.config.Provider != "bedrock" {
-		return nil
+	if err := ai_protocols.ValidateProviderProtocol(p.config.Provider, protocol); err != nil {
+		return err
 	}
-	if protocol != ai_protocols.BedrockConverse {
-		return fmt.Errorf("bedrock provider does not support %s protocol", protocol.OverrideKey)
+	if p.config.Provider != "bedrock" || protocol == ai_protocols.Passthrough {
+		return nil
 	}
 	if p.requestModelDocument(document) == "" {
 		return fmt.Errorf("could not resolve upstream path: bedrock requires options.model or request body model")
@@ -544,14 +546,6 @@ func (p *Plugin) executeProviderRequest(
 	}
 	if prepared.anthropicConversion {
 		ai_protocols.ConvertAnthropicHeadersToOpenAI(proxyReq.Header)
-	}
-	if prepared.clientDocument.IsStreaming(prepared.clientProtocol) && p.config.MaxStreamDurationMS > 0 {
-		deadlineContext, cancel := context.WithTimeout(
-			proxyReq.Context(),
-			time.Duration(p.config.MaxStreamDurationMS)*time.Millisecond,
-		)
-		defer cancel()
-		proxyReq = proxyReq.WithContext(deadlineContext)
 	}
 	upstreamStarted := time.Now()
 	registerUpstreamTargetVars(r, proxyReq)
@@ -838,11 +832,7 @@ func (p *Plugin) buildProviderRequestDocument(
 		return nil, err
 	}
 
-	method := http.MethodPost
-	if protocol == ai_protocols.Passthrough {
-		method = r.Method
-	}
-	req, err := http.NewRequestWithContext(r.Context(), method, endpoint, bytes.NewReader(providerBody))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(providerBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM request: %w", err)
 	}
@@ -936,23 +926,25 @@ func (p *Plugin) writeProviderResponse(
 		})
 		defer ai_stream.ClosePreservingPanic(streamWriter)
 		streamWriter.WriteHeader(resp.StatusCode)
+		bodyReader := ai_stream.LimitDuration(resp.Body, started,
+			time.Duration(p.config.MaxStreamDurationMS)*time.Millisecond)
 		var usage ai_stream.Usage
 		var err error
 		transport := ai_stream.StreamTransportSSE
 		if prepared.providerProtocol == ai_protocols.BedrockConverse {
 			transport = ai_stream.StreamTransportAWSEventStream
-			usage, err = ai_stream.ForwardAWSEventStream(streamWriter, resp.Body, p.config.MaxResponseBytes)
+			usage, err = ai_stream.ForwardAWSEventStream(streamWriter, bodyReader, p.config.MaxResponseBytes)
 		} else if prepared.anthropicConversion {
 			usage, err = ai_stream.ForwardOpenAIAsAnthropicSSE(
 				streamWriter,
-				resp.Body,
+				bodyReader,
 				p.config.MaxResponseBytes,
 				prepared.toolNameMap,
 			)
 		} else {
 			usage, err = ai_stream.ForwardSSE(
 				streamWriter,
-				resp.Body,
+				bodyReader,
 				prepared.providerProtocol,
 				p.config.MaxResponseBytes,
 			)
@@ -960,6 +952,15 @@ func (p *Plugin) writeProviderResponse(
 		outcome := ai_stream.RecordStreamOutcome(r, transport, err)
 		if p.streamOutcomeRecorded != nil {
 			p.streamOutcomeRecorded()
+		}
+		if errors.Is(err, ai_stream.ErrMaxStreamDuration) {
+			logger.Warnf("aborting AI stream: max_stream_duration_ms exceeded")
+			registerStreamingLLMRequestVars(r, prepared.clientDocument, usage)
+			if !streamWriter.Wrote() {
+				clear(w.Header())
+				http.Error(w, ai_stream.ErrMaxStreamDuration.Error(), http.StatusGatewayTimeout)
+			}
+			return
 		}
 		if err != nil {
 			wrote := streamWriter.Wrote()

@@ -37,13 +37,7 @@ var supportedRouteMethods = map[string]struct{}{
 // 2. prefix match: /blog/bar*     same
 // 3. parameters in path: /blog/:name => /blog/{name} ok
 // 4. embedded wildcard: /articles/*/comments => chi prefix wildcard plus an exact suffix guard
-// FIXME:
-//
-//	https://github.com/api7/lua-resty-radixtree/#parameters-in-path
-//	5. not supported yet:
-//	   - /user/:user/*action
-//	   this will match `/user/john/` and also `/user/john/send`
-//	   - /user/*action
+// 5. named terminal wildcards: /user/:user/*action => /user/{user}/*
 func convertURI(uri string) (string, error) {
 	if uri == "" || !strings.HasPrefix(uri, "/") || strings.ContainsAny(uri, "{}") {
 		return "", fmt.Errorf("not supported uri: %s", uri)
@@ -56,7 +50,7 @@ func convertURI(uri string) (string, error) {
 		return uri, nil
 	}
 
-	if withColon && !withAsterisk {
+	if withColon {
 		segments := strings.Split(uri, "/")
 		names := make(map[string]struct{})
 		for i, segment := range segments {
@@ -73,25 +67,28 @@ func convertURI(uri string) (string, error) {
 			names[name] = struct{}{}
 			segments[i] = "{" + name + "}"
 		}
-		return strings.Join(segments, "/"), nil
+		uri = strings.Join(segments, "/")
+		if !withAsterisk {
+			return uri, nil
+		}
 	}
 
-	if !withColon && withAsterisk {
+	if withAsterisk {
 		if strings.Count(uri, "*") != 1 {
 			return "", fmt.Errorf("not supported uri: %s", uri)
 		}
 		if strings.HasSuffix(uri, "*") {
 			return uri, nil
 		}
-		if !strings.Contains(uri, "/*/") {
+		wildcard := strings.IndexByte(uri, '*')
+		if wildcard == 0 || uri[wildcard-1] != '/' {
 			return "", fmt.Errorf("not supported uri: %s", uri)
 		}
-		return uri[:strings.IndexByte(uri, '*')+1], nil
-	}
-
-	if withColon && withAsterisk {
-		// not supported yet
-		return "", fmt.Errorf("not supported uri: %s", uri)
+		name, suffix, _ := strings.Cut(uri[wildcard+1:], "/")
+		if name != "" && !parameterInPathRegexp.MatchString(":"+name) || strings.ContainsRune(suffix, '{') {
+			return "", fmt.Errorf("not supported uri: %s", uri)
+		}
+		return uri[:wildcard+1], nil
 	}
 
 	return "", fmt.Errorf("not supported uri: %s", uri)
@@ -134,12 +131,17 @@ func newRouteRegistrar(mux *chi.Mux, notFoundHandlers ...http.Handler) *routeReg
 	}
 }
 
+type routeRegistrationOptions struct {
+	vars     *expr.Expression
+	priority int
+}
+
 func (r *routeRegistrar) registerRouteWithHosts(
 	methods []string,
 	uri string,
 	hosts []string,
 	handler http.Handler,
-	expressions ...*expr.Expression,
+	options ...routeRegistrationOptions,
 ) error {
 	converted, err := convertURI(uri)
 	if err != nil {
@@ -147,12 +149,12 @@ func (r *routeRegistrar) registerRouteWithHosts(
 	}
 	registrationIndex := r.nextRegistrationIndex
 	r.nextRegistrationIndex++
-	var vars *expr.Expression
-	if len(expressions) > 0 {
-		vars = expressions[0]
+	var option routeRegistrationOptions
+	if len(options) > 0 {
+		option = options[0]
 	}
-	r.hasVars = r.hasVars || vars != nil
-	r.registerWildcardRoute(methods, converted, uri, hosts, handler, registrationIndex, vars)
+	r.hasVars = r.hasVars || option.vars != nil
+	r.registerWildcardRoute(methods, converted, uri, hosts, handler, registrationIndex, option)
 	return nil
 }
 
@@ -163,6 +165,7 @@ type wildcardRoute struct {
 	hosts             []string
 	handler           http.Handler
 	registrationIndex uint64
+	priority          int
 	vars              *expr.Expression
 	graphqlMaxSize    int
 }
@@ -298,8 +301,18 @@ func (d *routeHostDecision) add(route wildcardRoute) {
 	d.exact[route.method] = insertRouteCandidate(d.exact[route.method], route)
 }
 
+func higherRoutePrecedence(candidate, current wildcardRoute) bool {
+	if candidate.priority != current.priority {
+		return candidate.priority > current.priority
+	}
+	if candidate.embedded && current.embedded && len(candidate.pattern) != len(current.pattern) {
+		return len(candidate.pattern) > len(current.pattern)
+	}
+	return candidate.registrationIndex > current.registrationIndex
+}
+
 func insertRouteCandidate(current routeCandidate, route wildcardRoute) routeCandidate {
-	if !current.valid || current.route.registrationIndex < route.registrationIndex {
+	if !current.valid || higherRoutePrecedence(route, current.route) {
 		candidate := routeCandidate{route: route, valid: true}
 		// Only conditional winners need to retain lower-priority alternatives.
 		if route.vars != nil && current.valid {
@@ -438,13 +451,13 @@ func (r *routeRegistrar) registerWildcardRoute(
 	hosts []string,
 	handler http.Handler,
 	registrationIndex uint64,
-	vars *expr.Expression,
+	option routeRegistrationOptions,
 ) {
 	identity := effectiveRouteURI(converted)
 	dispatcher := r.dispatchers[identity]
 	if dispatcher == nil {
 		dispatcher = &wildcardDispatcher{
-			prefix:    strings.TrimSuffix(converted, "*"),
+			prefix:    strings.SplitN(pattern, "*", 2)[0],
 			notFound:  r.notFound,
 			registrar: r,
 			embedded:  make(map[string]*routeDecisionIndex),
@@ -453,7 +466,8 @@ func (r *routeRegistrar) registerWildcardRoute(
 		r.dispatchers[identity] = dispatcher
 	}
 
-	embedded := strings.Contains(pattern, "/*/")
+	_, embedded := embeddedWildcardSuffix(pattern)
+	r.hasVars = r.hasVars || embedded
 	if len(methods) == 0 {
 		dispatcher.add(wildcardRoute{
 			method:            "*",
@@ -462,7 +476,8 @@ func (r *routeRegistrar) registerWildcardRoute(
 			hosts:             hosts,
 			handler:           handler,
 			registrationIndex: registrationIndex,
-			vars:              vars,
+			vars:              option.vars,
+			priority:          option.priority,
 			graphqlMaxSize:    r.graphqlMaxSize,
 		})
 		return
@@ -476,7 +491,8 @@ func (r *routeRegistrar) registerWildcardRoute(
 			hosts:             hosts,
 			handler:           handler,
 			registrationIndex: registrationIndex,
-			vars:              vars,
+			vars:              option.vars,
+			priority:          option.priority,
 			graphqlMaxSize:    r.graphqlMaxSize,
 		})
 	}
@@ -487,7 +503,7 @@ func (d *wildcardDispatcher) add(route wildcardRoute) {
 		d.embedded = make(map[string]*routeDecisionIndex)
 	}
 	if route.embedded {
-		suffix := route.pattern[strings.IndexByte(route.pattern, '*')+1:]
+		suffix, _ := embeddedWildcardSuffix(route.pattern)
 		decision := d.embedded[suffix]
 		if decision == nil {
 			decision = &routeDecisionIndex{pattern: route.pattern}
@@ -591,16 +607,16 @@ func (d *wildcardDispatcher) matchEmbeddedRoute(
 	methodIndex int,
 ) (wildcardRoute, bool, bool, bool) {
 	requestPath := request.URL.Path
-	if len(requestPath) <= len(d.prefix) || !strings.HasPrefix(requestPath, d.prefix) {
+	prefixLength, prefixMatches := matchRoutePrefix(d.prefix, requestPath)
+	if !prefixMatches {
 		return wildcardRoute{}, false, false, false
 	}
 
-	bestIndex := uint64(0)
 	bestFound := false
 	var bestRoute wildcardRoute
 	pathMatched := false
 	hostMatched := false
-	for searchFrom := len(d.prefix); searchFrom < len(requestPath); {
+	for searchFrom := prefixLength; searchFrom < len(requestPath); {
 		relativeSlash := strings.IndexByte(requestPath[searchFrom:], '/')
 		if relativeSlash < 0 {
 			break
@@ -608,7 +624,7 @@ func (d *wildcardDispatcher) matchEmbeddedRoute(
 		suffixStart := searchFrom + relativeSlash
 		suffix := requestPath[suffixStart:]
 		decision := d.embedded[suffix]
-		if decision != nil && len(requestPath) > len(d.prefix)+len(suffix) {
+		if decision != nil && len(requestPath) >= prefixLength+len(suffix) {
 			pathMatched = true
 			candidate, matchedHost, ok := decision.lookup(
 				host,
@@ -618,8 +634,7 @@ func (d *wildcardDispatcher) matchEmbeddedRoute(
 				request,
 			)
 			hostMatched = hostMatched || matchedHost
-			if ok && (!bestFound || candidate.route.registrationIndex > bestIndex) {
-				bestIndex = candidate.route.registrationIndex
+			if ok && (!bestFound || higherRoutePrecedence(candidate.route, bestRoute)) {
 				bestFound = true
 				bestRoute = candidate.route
 			}
@@ -667,12 +682,15 @@ func matchesRoutePath(pattern string, requestPath string) bool {
 }
 
 func matchesParameterizedRoute(pattern, requestPath string) bool {
+	if strings.ContainsRune(pattern, '*') {
+		return matchesWildcardRoute(pattern, requestPath)
+	}
 	patternParts := strings.Split(pattern, "/")
 	requestParts := strings.Split(requestPath, "/")
-	if len(patternParts) != len(requestParts) {
-		return false
-	}
 	for i := range patternParts {
+		if i >= len(requestParts) {
+			return false
+		}
 		if strings.HasPrefix(patternParts[i], ":") {
 			if len(patternParts[i]) == 1 || requestParts[i] == "" {
 				return false
@@ -683,7 +701,7 @@ func matchesParameterizedRoute(pattern, requestPath string) bool {
 			return false
 		}
 	}
-	return true
+	return len(patternParts) == len(requestParts)
 }
 
 func routeHostRank(patterns []string, requestHost string) int {
@@ -722,15 +740,56 @@ func matchOneLabelHostWildcard(pattern, host string) bool {
 	return strings.HasSuffix(host, suffix)
 }
 
+func embeddedWildcardSuffix(pattern string) (string, bool) {
+	wildcard := strings.IndexByte(pattern, '*')
+	if wildcard < 0 {
+		return "", false
+	}
+	slash := strings.IndexByte(pattern[wildcard+1:], '/')
+	if slash < 0 {
+		return "", false
+	}
+	return pattern[wildcard+1+slash:], true
+}
+
+// Resolve a literal/parameter prefix against the actual path so wildcard offsets
+// do not depend on the lengths of parameter names in the configured route.
+func matchRoutePrefix(prefix, path string) (int, bool) {
+	offset := 0
+	for i := 0; i < len(prefix); {
+		if prefix[i] == ':' && (i == 0 || prefix[i-1] == '/') {
+			end := strings.IndexByte(prefix[i:], '/')
+			if end < 0 {
+				end = len(prefix) - i
+			}
+			i += end
+			if offset >= len(path) || path[offset] == '/' {
+				return 0, false
+			}
+			valueEnd := strings.IndexByte(path[offset:], '/')
+			if valueEnd < 0 {
+				valueEnd = len(path) - offset
+			}
+			offset += valueEnd
+			continue
+		}
+		if offset >= len(path) || prefix[i] != path[offset] {
+			return 0, false
+		}
+		i++
+		offset++
+	}
+	return offset, true
+}
+
 func matchesWildcardRoute(pattern string, path string) bool {
 	wildcard := strings.IndexByte(pattern, '*')
-	prefix := pattern[:wildcard]
-	suffix := pattern[wildcard+1:]
-	if suffix == "" {
-		return strings.HasPrefix(path, prefix)
+	prefixLength, ok := matchRoutePrefix(pattern[:wildcard], path)
+	if !ok {
+		return false
 	}
-	return strings.HasPrefix(path, prefix) && strings.HasSuffix(path, suffix) &&
-		len(path) > len(prefix)+len(suffix)
+	suffix, _ := embeddedWildcardSuffix(pattern)
+	return strings.HasSuffix(path, suffix) && len(path) >= prefixLength+len(suffix)
 }
 
 func normalizeRouteOrder(routes []resource.Route) []resource.Route {

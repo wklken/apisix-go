@@ -3,6 +3,7 @@ package data_encryption
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/wklken/apisix-go/pkg/capability"
 )
@@ -88,6 +89,14 @@ func (s Service) ResolveDeclared(
 	_, err := s.ValidateDeclaration(factory, source, field)
 	if err != nil {
 		return "", err
+	}
+	if source == capability.SecretSSLConfig {
+		if (field != "key" && field != "keys") || strings.HasPrefix(value, "---") || len(s.keyring) == 0 {
+			return value, nil
+		}
+		// SSL key decryption depends on the GDE keyring, independently of the
+		// enable_encrypt_fields switch used for plugin fields.
+		return newResolverWithKeyring(true, s.keyring).ResolveOptionalForContext(value, factory+"."+field), nil
 	}
 	if !s.enabled {
 		return value, nil

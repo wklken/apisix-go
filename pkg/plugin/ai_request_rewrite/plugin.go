@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -190,7 +192,7 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
-	if (p.config.Provider == "openai-compatible" || p.config.Provider == "azure-openai") &&
+	if p.config.Provider == "openai-compatible" &&
 		p.config.Override.Endpoint == "" {
 		return fmt.Errorf("override.endpoint is required for %s provider", p.config.Provider)
 	}
@@ -247,29 +249,55 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		body, err := base.ReadRequestBody(r)
-		if err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, "could not get body: "+err.Error())
-			return
-		}
-		if len(bytes.TrimSpace(body)) == 0 {
-			p.warn("missing request body")
-			base.WriteJSONMessage(w, http.StatusBadRequest, "missing request body")
-			return
-		}
+	return base.AdaptRequestPhase(p, next)
+}
 
-		llmResp, err := p.requestLLM(r, string(body))
-		if err != nil {
-			base.WriteJSONMessage(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		base.ReplaceRequestBody(r, llmResp)
-
-		next.ServeHTTP(w, r)
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	body, err := base.ReadRequestBody(r)
+	if err != nil {
+		p.warn("failed to get request body")
+		w.WriteHeader(http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
 	}
-	return http.HandlerFunc(fn)
+	if len(bytes.TrimSpace(body)) == 0 {
+		p.warn("missing request body")
+		w.WriteHeader(http.StatusBadRequest)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	llmResp, err := p.requestLLM(r, string(body))
+	if err != nil {
+		p.logError(rewriteFailureDiagnostic(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return base.StopRequestWithSource(r, apisixctx.ResponseSourceEarlyStop)
+	}
+
+	base.ReplaceRequestBody(r, llmResp)
+
+	return base.ContinueRequest(r)
+}
+
+// Keep the failed stage observable without copying provider URLs, credentials,
+// response bytes, or backend references from wrapped errors into the log.
+func rewriteFailureDiagnostic(err error) string {
+	message := err.Error()
+	const statusPrefix = "LLM service returned error status: "
+	if status, ok := strings.CutPrefix(message, statusPrefix); ok {
+		if code, parseErr := strconv.Atoi(status); parseErr == nil {
+			return fmt.Sprintf("%s%d", statusPrefix, code)
+		}
+	}
+	for _, stage := range []string{
+		"failed to encode LLM request body", "failed to create LLM request",
+		"authenticate GCP request", "sign Bedrock request", "failed to request LLM",
+		"failed to read LLM response body", "failed to decode LLM response",
+		"failed to extract text from LLM response",
+	} {
+		if message == stage || strings.HasPrefix(message, stage+":") {
+			return stage
+		}
+	}
+	return "failed to rewrite request with LLM"
 }
 
 func (p *Plugin) requestLLM(r *http.Request, originalBody string) ([]byte, error) {
@@ -342,8 +370,6 @@ func (p *Plugin) requestLLMWithAuth(
 		return nil, fmt.Errorf("failed to read LLM response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		message := fmt.Sprintf("LLM service returned error status: %d", resp.StatusCode)
-		p.logError(message)
 		return nil, fmt.Errorf("LLM service returned error status: %d", resp.StatusCode)
 	}
 

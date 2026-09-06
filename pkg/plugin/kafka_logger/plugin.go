@@ -385,10 +385,13 @@ func (p *Plugin) PostInit() error {
 		return err
 	}
 
-	if len(p.config.LogFormat) > 0 {
+	if p.config.LogFormat != nil {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.LogFormat = nil
+		}
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -405,7 +408,23 @@ func (p *Plugin) PostInit() error {
 			if err != nil {
 				return err
 			}
-			p.sender = &kafkaGoSender{writer: writer}
+			sender := &kafkaGoSender{writer: writer}
+			if p.config.ProducerType == "async" {
+				// This worker owns batching and the bounded admission queue.
+				writer.Async = false
+				writer.BatchTimeout = time.Nanosecond
+				asyncSender, err := newAsyncKafkaSender(p.TaskOwner(), sender,
+					p.config.ProducerMaxBuffering, p.config.ProducerBatchNum,
+					time.Duration(p.config.ProducerTimeLinger)*time.Second,
+					time.Duration(p.config.Timeout)*time.Second)
+				if err != nil {
+					_ = sender.Close()
+					return err
+				}
+				p.sender = asyncSender
+			} else {
+				p.sender = sender
+			}
 			return nil
 		}); err != nil {
 			return err
@@ -570,17 +589,19 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		return p.enqueueKafkaLogIfRunning(map[string]any{originLogKey: kafkaSnapshotOrigin(snapshot, body)})
 	}
 	var fields map[string]any
-	if len(p.LogFormat) > 0 {
+	if p.LogFormat != nil {
 		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
 	} else {
 		fields = kafkaSnapshotDefaultFields(p, snapshot)
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}

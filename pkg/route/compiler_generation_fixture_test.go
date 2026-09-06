@@ -372,7 +372,10 @@ func TestPreparedGenerationTrafficSplitSnapshotOwnsRuntimeAcrossGenerationOverla
 }
 
 func TestPreparedGenerationExplicitFalseWebsocketOverridesService(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "" || r.Header.Get("Connection") != "" {
+			t.Errorf("explicit false forwarded upgrade: %v", r.Header)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(backend.Close)
@@ -402,11 +405,11 @@ func TestPreparedGenerationExplicitFalseWebsocketOverridesService(t *testing.T) 
 	request.Header.Set("Upgrade", "websocket")
 	response := httptest.NewRecorder()
 	prepared.HTTP().Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
+	if response.Code != http.StatusNoContent {
 		t.Fatalf(
 			"explicit false websocket status = %d, want %d",
 			response.Code,
-			http.StatusBadRequest,
+			http.StatusNoContent,
 		)
 	}
 }

@@ -29,7 +29,6 @@ const (
 	defaultUserAgent          = "apisix-go"
 	upstreamStartTimeVar      = "$upstream_start_time"
 	upstreamLatencyVar        = "$upstream_latency"
-	websocketDisabledMessage  = "websocket upgrade is disabled"
 )
 
 // PreparedUpstreamRuntime is the authority-free view of an already prepared
@@ -144,8 +143,14 @@ func BuildPreparedHandler(input PreparedHandlerInput) (http.Handler, error) {
 		return nil, fmt.Errorf("build prepared handler route %q consumers: %w", routeResource.ID, err)
 	}
 
+	websocketEnabled := routeResource.EnableWebsocket
+	if !routeResource.EnableWebsocketConfigured() {
+		websocketEnabled = service.EnableWebsocket
+	}
+	proxyRoute := routeResource
+	proxyRoute.EnableWebsocket = websocketEnabled
 	terminal, terminals, err := buildPreparedReverseHandler(
-		routeResource,
+		proxyRoute,
 		upstream,
 		targets,
 		input.Runtime,
@@ -176,17 +181,13 @@ func BuildPreparedHandler(input PreparedHandlerInput) (http.Handler, error) {
 	if len(terminalCandidates) == 0 {
 		pipeline = pipeline.WithBeforeProxyHooksAtTransport()
 	}
-	websocketEnabled := routeResource.EnableWebsocket
-	if !routeResource.EnableWebsocketConfigured() {
-		websocketEnabled = service.EnableWebsocket
-	}
-	ordinary := responsePlan.Install(pipeline, requireWebsocketEnablement(terminal, websocketEnabled))
-	upgrade, err := buildTransparentUpgradeHandler(pipeline, responsePlan, terminal, websocketEnabled)
+	ordinary := responsePlan.Install(pipeline, terminal)
+	upgrade, err := buildTransparentUpgradeHandler(pipeline, responsePlan, terminal)
 	if err != nil {
 		return nil, fmt.Errorf("build prepared handler route %q upgrade path: %w", routeResource.ID, err)
 	}
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if isUpgradeRequest(request) {
+		if isUpgradeRequest(request) && (websocketEnabled || len(terminalCandidates) > 0) {
 			upgrade.ServeHTTP(writer, request)
 			return
 		}
@@ -246,6 +247,10 @@ func freezePreparedConsumerResolver(
 			)
 		}
 		consumer := clonePlanningConsumer(record.Consumer)
+		if authenticatedConsumer.CredentialID != "" {
+			consumer.CredentialID = authenticatedConsumer.CredentialID
+			consumer.AuthConf = authenticatedConsumer.AuthConf
+		}
 		request = apisixctx.WithApisixVars(request, nil)
 		consumer = apisixctx.AttachConsumerWithSource(request, consumer, state.Source)
 		overrides := make(map[string]struct{}, len(record.Bindings)+len(record.OverrideFactories))
@@ -362,6 +367,10 @@ func buildPreparedReverseHandler(
 			return
 		}
 		applyFinalProxyRewrite(request)
+		if !routeResource.EnableWebsocket {
+			request.Header.Del("Upgrade")
+			request.Header.Del("Connection")
+		}
 		if _, configured := request.Header["User-Agent"]; !configured {
 			request.Header.Set("User-Agent", defaultUserAgent)
 		}
@@ -379,7 +388,11 @@ func buildPreparedReverseHandler(
 	)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			request = pxy.WithHealthReporter(request, healthReporter(loadBalancer))
-			if err := bufferRequestBodyIfNeeded(writer, request); err != nil {
+			cleanup, err := bufferRequestBodyIfNeeded(request)
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if err != nil {
 				apisixctx.SetRequestResponseSource(request, apisixctx.ResponseSourceAPISIX)
 				var maxBytesErr *http.MaxBytesError
 				if errors.As(err, &maxBytesErr) {
@@ -394,6 +407,8 @@ func buildPreparedReverseHandler(
 		}), routeProtocolTerminals{
 			dubbo: routeDubboTerminal{
 				lb: loadBalancer, targets: compiledTargets, retries: httpRetryCount(upstream),
+				timeouts:     resolveUpstreamTimeouts(routeResource.Timeout, upstream.Timeout),
+				routeTimeout: routeResource.Timeout,
 			},
 			httpDubbo: routeHTTPDubboTerminal{
 				lb: loadBalancer, targets: compiledTargets, retries: httpRetryCount(upstream),
@@ -451,11 +466,10 @@ func buildTransparentUpgradeHandler(
 	pipeline plugin.RequestPipeline,
 	plan plugin.ResponsePlan,
 	terminal http.Handler,
-	enabled bool,
 ) (http.Handler, error) {
 	terminals := plan.RouteTerminals()
 	if len(terminals) == 0 {
-		return pipeline.Then(requireWebsocketEnablement(terminal, enabled)), nil
+		return pipeline.Then(terminal), nil
 	}
 	streaming, err := plugin.NewStreamingResponseExecutor(nil)
 	if err != nil {
@@ -466,7 +480,7 @@ func buildTransparentUpgradeHandler(
 		return nil, err
 	}
 	terminalOnly := streaming.Then(terminal)
-	return pipeline.Then(requireWebsocketEnablement(terminalOnly, enabled)), nil
+	return pipeline.Then(terminalOnly), nil
 }
 
 func newRequestPipelineWithLog(
@@ -485,17 +499,6 @@ func ensureRouteLifecycle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		request, _ := apisixctx.EnsureRequestLifecycle(r, time.Now())
 		next.ServeHTTP(w, request)
-	})
-}
-
-func requireWebsocketEnablement(next http.Handler, enabled bool) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !enabled && isUpgradeRequest(r) {
-			apisixctx.SetRequestResponseSource(r, apisixctx.ResponseSourceAPISIX)
-			_ = util.WriteJSONMessage(w, http.StatusBadRequest, websocketDisabledMessage)
-			return
-		}
-		next.ServeHTTP(w, r)
 	})
 }
 
@@ -717,6 +720,20 @@ func newErrorHandler(staticConfig *appconfig.Config) pxy.ErrorHandler {
 		// w.WriteHeader(statusCode)
 		// ! here, not clean the body first, what will happen?
 		logger.Errorf("proxy request %s %s failed: %v", r.Method, proxyFailureLogPath(r), err)
+		if status == http.StatusGatewayTimeout {
+			// Match the default response emitted by APISIX 3.17/OpenResty
+			// before any response-filter plugin replaces the page.
+			const body = "<html>\r\n<head><title>504 Gateway Time-out</title></head>\r\n" +
+				"<body>\r\n<center><h1>504 Gateway Time-out</h1></center>\r\n" +
+				"<hr><center>openresty</center>\r\n" +
+				"<p><em>Powered by <a href=\"https://apisix.apache.org/\">APISIX</a>.</em></p>" +
+				"</body>\r\n</html>\r\n"
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
+			return
+		}
 		_ = util.WriteJSON(w, status, "upstream request failed")
 	}
 }

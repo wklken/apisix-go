@@ -160,3 +160,32 @@ cases:
       - {name: route-3-uses-its-template, input: {method: POST, path: /3, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}
       - {name: route-4-uses-its-template, input: {method: POST, path: /4, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}
       - {name: route-5-uses-its-template, input: {method: POST, path: /5, headers: {Content-Type: application/json}, body: '{"template_name":"same name","field":"foo"}'}, output: {status: 200, body: {equals: passed}}}
+
+  - name: preserve-extra-fields-and-escape-interpolation
+    config:
+      routes:
+        - id: template-extra-fields
+          uri: /template
+          plugins:
+            ai-prompt-template:
+              templates:
+                - name: extra
+                  template:
+                    model: m
+                    temperature: 0.5
+                    messages: [{role: user, content: 'Say {{prompt}}'}]
+                    options: {user: '{{speaker}}', stream: false}
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - body: {json_equals: '{"model":"m","temperature":0.5,"messages":[{"role":"user","content":"Say say &quot;hi&quot;"}],"options":{"user":"Ada","stream":false}}'}
+        respond: [{status: 200, body: rendered}]
+    steps:
+      - name: fields-and-quoted-value-survive
+        input: {method: POST, path: /template, headers: {Content-Type: application/json}, body: '{"template_name":"extra","prompt":"say \"hi\"","speaker":"Ada"}'}
+        output: {status: 200, body: {equals: rendered}}
+      - name: numeric-name-is-not-configured
+        input: {method: POST, path: /template, headers: {Content-Type: application/json}, body: '{"template_name":1}'}
+        output: {status: 400, body: {json_equals: '{"message":"template: 1 not configured."}'}}

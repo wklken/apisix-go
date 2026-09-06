@@ -560,6 +560,9 @@ func (p *Plugin) reserveQuotas(quotas []quota) int {
 }
 
 func (p *Plugin) quotasForRequest(r *http.Request) ([]quota, bool, error) {
+	if _, selected := PickedAIInstanceName(r); !selected {
+		return nil, false, nil
+	}
 	if len(p.config.Rules) > 0 {
 		document := p.limitCountRulesDocument()
 		quotas := make([]quota, 0, len(p.config.Rules))
@@ -665,27 +668,7 @@ func (p *Plugin) quotaForRequest(r *http.Request) (quota, bool, error) {
 		}, true, nil
 	}
 
-	if len(p.config.Instances) > 0 {
-		return quota{}, false, nil
-	}
-	limit, err := resolveQuotaValue(r, p.config.Limit, "limit")
-	if err != nil {
-		return quota{}, false, err
-	}
-	window, err := resolveQuotaValue(r, p.config.TimeWindow, "time_window")
-	if err != nil {
-		return quota{}, false, err
-	}
-	windowDuration, err := quotaWindow(window, "time_window")
-	if err != nil {
-		return quota{}, false, err
-	}
-	return quota{
-		key:        p.limitCountInstanceKey("ai-rate-limiting#global", limit, windowDuration),
-		headerName: "global",
-		limit:      limit,
-		window:     windowDuration,
-	}, true, nil
+	return quota{}, false, nil
 }
 
 func (p *Plugin) hasAPISIXPluginContext() bool {
@@ -1052,7 +1035,7 @@ func (p *Plugin) snapshot(q quota) (int64, int64) {
 
 func (p *Plugin) reject(w http.ResponseWriter) {
 	if p.config.RejectedMsg == "" {
-		http.Error(w, http.StatusText(p.config.RejectedCode), p.config.RejectedCode)
+		w.WriteHeader(p.config.RejectedCode)
 		return
 	}
 	payload, _ := json.Marshal(map[string]string{"error_msg": p.config.RejectedMsg})

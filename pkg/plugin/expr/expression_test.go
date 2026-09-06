@@ -163,7 +163,7 @@ func TestRequestValueResolvesBuiltInHTTPVariables(t *testing.T) {
 		{name: "arg_item", want: "book"},
 		{name: "cookie_session", want: "cookie-value"},
 		{name: "cookie_missing", want: ""},
-		{name: "http_x_trace", want: []string{"one", "two"}},
+		{name: "http_x_trace", want: "one, two"},
 		{name: "http_missing", want: ""},
 	}
 

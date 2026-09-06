@@ -23,6 +23,10 @@ import (
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
+// Process log files outlive individual generation instances. Serialize rotation
+// through archive completion so overlapping generation workers cannot overwrite one another.
+var processRotationMu sync.Mutex
+
 type Plugin struct {
 	base.BasePlugin
 	config Config
@@ -130,21 +134,23 @@ func (p *Plugin) Config() any {
 	return &p.config
 }
 
-// rotationWorker owns log rotation: one bounded trigger channel coalesces
-// requests while the worker runs the (potentially slow) rename, compression,
-// and history pruning off the request path.
+// rotationWorker checks elapsed intervals even on an idle gateway. The trigger
+// also coalesces request-driven size checks off the request path.
 func (p *Plugin) rotationWorker(ctx context.Context) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-ticker.C:
 		case <-p.trigger:
-			if ctx.Err() != nil {
-				return nil
-			}
-			if err := p.rotate(p.now()); err != nil {
-				logger.Errorf("log-rotate failed: %s", err)
-			}
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err := p.rotate(p.now()); err != nil {
+			logger.Errorf("log-rotate failed: %s", err)
 		}
 	}
 }
@@ -183,6 +189,12 @@ func (p *Plugin) requestRotation() {
 }
 
 func (p *Plugin) Rotate(now time.Time) error {
+	return p.WithHTTPPublication(func() error { return p.rotatePublished(now) })
+}
+
+func (p *Plugin) rotatePublished(now time.Time) error {
+	processRotationMu.Lock()
+	defer processRotationMu.Unlock()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -343,6 +355,13 @@ func (p *Plugin) rotateFile(file logFile, date string) (string, error) {
 	}
 
 	rotated := filepath.Join(filepath.Dir(file.path), date+"__"+file.name)
+	// Another generation may already have completed this timestamp's rotation.
+	// Compression removes the raw archive, so checking only that path is insufficient.
+	if _, err := os.Stat(rotated + ".tar.gz"); err == nil {
+		return "", nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
 	if _, err := os.Stat(rotated); err == nil {
 		return rotated, nil
 	} else if !os.IsNotExist(err) {
@@ -453,10 +472,19 @@ func compressFile(path string) error {
 	}
 	defer func() { _ = src.Close() }()
 
-	dst, err := os.Create(path + ".tar.gz")
+	archivePath := path + ".tar.gz"
+	dst, err := os.OpenFile(archivePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return err
 	}
+
+	complete := false
+	defer func() {
+		_ = dst.Close()
+		if !complete {
+			_ = os.Remove(archivePath)
+		}
+	}()
 
 	gz := gzip.NewWriter(dst)
 	tw := tar.NewWriter(gz)
@@ -491,5 +519,6 @@ func compressFile(path string) error {
 	if err := dst.Close(); err != nil {
 		return err
 	}
+	complete = true
 	return os.Remove(path)
 }

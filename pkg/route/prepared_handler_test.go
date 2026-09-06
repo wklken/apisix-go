@@ -204,8 +204,15 @@ func TestBuildPreparedHandlerEnforcesPreparedUpgradePolicy(t *testing.T) {
 		Runtime: PreparedUpstreamRuntime{
 			LoadBalancer: proxy.NewSingleLoadBalance(target),
 			RoundTripper: preparedHandlerRoundTripper(func(request *http.Request) (*http.Response, error) {
-				t.Fatalf("disabled websocket reached prepared upstream: %s", request.URL)
-				return nil, nil
+				if request.Header.Get("Upgrade") != "" || request.Header.Get("Connection") != "" {
+					t.Errorf("disabled upgrade forwarded headers: %v", request.Header)
+				}
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Header:     make(http.Header),
+					Body:       http.NoBody,
+					Request:    request,
+				}, nil
 			}),
 		},
 	})
@@ -221,8 +228,8 @@ func TestBuildPreparedHandlerEnforcesPreparedUpgradePolicy(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 
-			if response.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
 			}
 		})
 	}
@@ -395,10 +402,10 @@ func TestBuildPreparedHandlerUsesOnlyPreparedBindingsAndRuntime(t *testing.T) {
 	t.Parallel()
 
 	binding, err := plugin.BindPluginChecked(
-		"request-id",
+		"proxy-rewrite",
 		&preparedHandlerTestPlugin{
-			name:     "request-id",
-			priority: 12015,
+			name:     "proxy-rewrite",
+			priority: 1008,
 			handler: func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 					if got := apisixctx.GetApisixVar(request, "$node_id"); got != "node-1" {

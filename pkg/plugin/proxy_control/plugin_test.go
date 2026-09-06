@@ -48,25 +48,15 @@ func TestHandlerSetsRequestBufferingContext(t *testing.T) {
 	}
 }
 
-func TestRequestBufferingStateCarriesFixedLimit(t *testing.T) {
+func TestRequestBufferingDefaultsOnAndCanBeDisabled(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("body"))
-	if got := GetRequestBufferingLimit(request); got != 0 {
-		t.Fatalf("GetRequestBufferingLimit() without state = %d, want 0", got)
-	}
-
-	request = WithRequestBuffering(request, true)
 	if !GetRequestBuffering(request) {
-		t.Fatal("GetRequestBuffering() = false after enabling buffering")
+		t.Fatal("buffering must default to on without a plugin")
 	}
-	if got := GetRequestBufferingLimit(request); got != DefaultRequestBufferingLimit {
-		t.Fatalf("GetRequestBufferingLimit() = %d, want %d", got, DefaultRequestBufferingLimit)
+	if GetRequestBuffering(WithRequestBuffering(request, false)) {
+		t.Fatal("explicit false must disable buffering")
 	}
-
-	request = WithRequestBuffering(request, false)
-	if GetRequestBuffering(request) {
-		t.Fatal("GetRequestBuffering() = true after disabling buffering")
-	}
-	if got := GetRequestBufferingLimit(request); got != DefaultRequestBufferingLimit {
-		t.Fatalf("disabled GetRequestBufferingLimit() = %d, want %d", got, DefaultRequestBufferingLimit)
+	if !GetRequestBuffering(WithRequestBuffering(request, true)) {
+		t.Fatal("explicit true must enable buffering")
 	}
 }

@@ -22,8 +22,8 @@ type storeIntent struct {
 	requestHeader        http.Header
 	ttl                  time.Duration
 	cacheControl         bool
+	diskCache            bool
 	cacheSetCookie       bool
-	hideCacheHeaders     bool
 	cacheHTTPStatuses    []int
 	responseCacheHeaders http.Header
 }
@@ -133,7 +133,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		status = "MISS"
 	}
 	if status == "HIT" {
-		r = publishCacheHit(r, entry, "HIT")
+		r = p.publishCacheHit(r, entry, "HIT")
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceCacheHit)
 	} else if status == "EXPIRED" || status == "STALE" {
 		setCacheHeader(w, cacheStatusHeader, status)
@@ -172,10 +172,10 @@ func (p *Plugin) newStoreIntent(key string, r *http.Request) storeIntent {
 	return storeIntent{
 		key:               key,
 		requestHeader:     requestHeader,
-		ttl:               time.Duration(p.config.CacheTTL) * time.Second,
+		ttl:               p.defaultCacheTTL(),
 		cacheControl:      p.cacheControlEnabled(),
+		diskCache:         p.diskEnabled,
 		cacheSetCookie:    p.cacheSetCookieEnabled(),
-		hideCacheHeaders:  p.config.HideCacheHeaders,
 		cacheHTTPStatuses: slices.Clone(p.config.CacheHTTPStatus),
 	}
 }
@@ -186,7 +186,7 @@ func setCacheHeader(w http.ResponseWriter, field, value string) {
 	}
 }
 
-func publishCacheHit(r *http.Request, entry cacheEntry, status string) *http.Request {
+func (p *Plugin) publishCacheHit(r *http.Request, entry cacheEntry, status string) *http.Request {
 	holder := base.CacheHitResponseHolderFromRequest(r)
 	if holder == nil {
 		holder = base.NewCacheHitResponseHolder()
@@ -194,6 +194,10 @@ func publishCacheHit(r *http.Request, entry cacheEntry, status string) *http.Req
 	}
 	header := cacheutil.CloneHeader(entry.header)
 	removeDerivedCacheHeaders(header)
+	if p.config.HideCacheHeaders {
+		deleteHeaderFold(header, "Cache-Control")
+		deleteHeaderFold(header, "Expires")
+	}
 	age := max(time.Since(entry.storedAt)/time.Second, 0)
 	header.Set("Age", strconv.FormatInt(int64(age), 10))
 	header.Set(cacheStatusHeader, status)
@@ -247,6 +251,13 @@ func (p *Plugin) RunFinalResponseStore(r *http.Request, state base.ResponseState
 	policyHeaders := canonical.Header
 	if intent.responseCacheHeaders != nil {
 		policyHeaders = intent.responseCacheHeaders
+		// Preserve origin cache metadata in the shared entry. Hiding belongs to
+		// the serving plugin and must not affect another route or generation.
+		for field, values := range policyHeaders {
+			if strings.EqualFold(field, "Cache-Control") || strings.EqualFold(field, "Expires") {
+				canonical.Header[field] = slices.Clone(values)
+			}
+		}
 	}
 	if !slices.Contains(intent.cacheHTTPStatuses, canonical.Status) ||
 		responseCacheControlSkipsStore(policyHeaders) ||
@@ -254,14 +265,20 @@ func (p *Plugin) RunFinalResponseStore(r *http.Request, state base.ResponseState
 		return nil
 	}
 	ttl := intent.ttl
-	if intent.cacheControl {
+	if intent.diskCache {
+		var cacheable bool
+		ttl, cacheable = diskResponseCacheTTL(policyHeaders, ttl)
+		if !cacheable {
+			return nil
+		}
+	} else if intent.cacheControl {
 		var cacheable bool
 		ttl, cacheable = responseCacheControlTTL(policyHeaders)
 		if !cacheable {
 			return nil
 		}
 	}
-	return p.storeStateWithHeader(intent.requestHeader, intent.key, canonical, ttl, intent.hideCacheHeaders)
+	return p.storeStateWithHeader(intent.requestHeader, intent.key, canonical, ttl)
 }
 
 func removeDerivedCacheHeaders(header http.Header) {
@@ -288,13 +305,12 @@ func (p *Plugin) storeState(
 	key string,
 	state base.ResponseState,
 	ttl time.Duration,
-	hideCacheHeaders bool,
 ) error {
 	var requestHeader http.Header
 	if r != nil {
 		requestHeader = r.Header
 	}
-	return p.storeStateWithHeader(requestHeader, key, state, ttl, hideCacheHeaders)
+	return p.storeStateWithHeader(requestHeader, key, state, ttl)
 }
 
 func (p *Plugin) storeStateWithHeader(
@@ -302,7 +318,6 @@ func (p *Plugin) storeStateWithHeader(
 	key string,
 	state base.ResponseState,
 	ttl time.Duration,
-	hideCacheHeaders bool,
 ) error {
 	varyHeaders, cacheable := cacheutil.ParseVaryHeader(state.Header)
 	if !cacheable {
@@ -318,10 +333,6 @@ func (p *Plugin) storeStateWithHeader(
 		expiresAt: now.Add(ttl),
 	}
 	removeDerivedCacheHeaders(entry.header)
-	if hideCacheHeaders {
-		deleteHeaderFold(entry.header, "Expires")
-		deleteHeaderFold(entry.header, "Cache-Control")
-	}
 
 	p.lock.Lock()
 	defer p.lock.Unlock()

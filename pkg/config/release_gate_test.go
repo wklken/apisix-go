@@ -225,7 +225,7 @@ func TestEffectiveConfigProviderRejectsUnsupportedRolePairs(t *testing.T) {
 	}{
 		{name: "data plane missing", role: "data_plane"},
 		{name: "data plane xds", role: "data_plane", provider: "xds"},
-		{name: "traditional yaml", role: "traditional", provider: "yaml"},
+		{name: "traditional json", role: "traditional", provider: "json"},
 		{name: "control plane", role: "control_plane", provider: "etcd"},
 		{name: "unknown role", role: "sidecar", provider: "etcd"},
 	}

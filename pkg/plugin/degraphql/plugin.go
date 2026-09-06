@@ -93,23 +93,23 @@ func validateGraphQLQuery(query string, operationName string) error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			if err := p.rewritePOST(r); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-		case http.MethodGet:
-			p.rewriteGET(r)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
+	return base.AdaptRequestPhase(p, next)
+}
 
-		next.ServeHTTP(w, r)
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	switch r.Method {
+	case http.MethodPost:
+		if err := p.rewritePOST(r); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return base.StopRequest(r)
+		}
+	case http.MethodGet:
+		p.rewriteGET(r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return base.StopRequest(r)
 	}
-	return http.HandlerFunc(fn)
+	return base.ContinueRequest(r)
 }
 
 func (p *Plugin) rewritePOST(r *http.Request) error {
@@ -165,7 +165,7 @@ func (p *Plugin) rewriteGET(r *http.Request) {
 			args.Set("variables", string(encoded))
 		}
 	}
-	r.URL.RawQuery = args.Encode()
+	r.URL.RawQuery = strings.ReplaceAll(args.Encode(), "+", "%20")
 }
 
 func (p *Plugin) pickVariables(body map[string]any) map[string]any {

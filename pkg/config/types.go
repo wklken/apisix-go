@@ -58,7 +58,8 @@ type ProxyProtocol struct {
 }
 
 type ProxyCache struct {
-	Zones []Zone `mapstructure:"zones"`
+	CacheTTL *time.Duration `mapstructure:"cache_ttl"`
+	Zones    []Zone         `mapstructure:"zones"`
 }
 
 type Zone struct {
@@ -121,14 +122,21 @@ type NginxConfig struct {
 	HTTP          NginxHTTP `mapstructure:"http"`
 }
 
+type NginxHTTPUpstream struct {
+	Keepalive         int           `mapstructure:"keepalive"`
+	KeepaliveRequests int           `mapstructure:"keepalive_requests"`
+	KeepaliveTimeout  time.Duration `mapstructure:"keepalive_timeout"`
+}
+
 type NginxHTTP struct {
-	EnableAccessLog     bool          `mapstructure:"enable_access_log"`
-	AccessLog           string        `mapstructure:"access_log"`
-	KeepaliveTimeout    time.Duration `mapstructure:"keepalive_timeout"`
-	ClientHeaderTimeout time.Duration `mapstructure:"client_header_timeout"`
-	ClientBodyTimeout   time.Duration `mapstructure:"client_body_timeout"`
-	ClientMaxBodySize   int64         `mapstructure:"client_max_body_size"`
-	SendTimeout         time.Duration `mapstructure:"send_timeout"`
+	Upstream            *NginxHTTPUpstream `mapstructure:"upstream"`
+	EnableAccessLog     bool               `mapstructure:"enable_access_log"`
+	AccessLog           string             `mapstructure:"access_log"`
+	KeepaliveTimeout    time.Duration      `mapstructure:"keepalive_timeout"`
+	ClientHeaderTimeout time.Duration      `mapstructure:"client_header_timeout"`
+	ClientBodyTimeout   time.Duration      `mapstructure:"client_body_timeout"`
+	ClientMaxBodySize   int64              `mapstructure:"client_max_body_size"`
+	SendTimeout         time.Duration      `mapstructure:"send_timeout"`
 }
 
 type ExtPlugin struct {

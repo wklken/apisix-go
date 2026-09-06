@@ -21,7 +21,27 @@ func decodeConfig(root *valueNode) (*Config, error) {
 		return nil, fmt.Errorf("configuration root must be a mapping")
 	}
 
+	// APISIX accepts either one key or an array for data_encryption.keyring.
+	if apisix, ok := raw["apisix"].(map[string]any); ok {
+		if encryption, ok := apisix["data_encryption"].(map[string]any); ok {
+			if keys, ok := encryption["keyring"].([]any); ok {
+				for _, key := range keys {
+					if _, valid := key.(string); !valid {
+						return nil, fmt.Errorf("apisix.data_encryption.keyring must contain strings")
+					}
+				}
+			}
+			if key, ok := encryption["keyring"].(string); ok {
+				encryption["keyring"] = []string{key}
+			}
+		}
+	}
 	var cfg Config
+	if apisix, ok := raw["apisix"].(map[string]any); ok {
+		if _, present := apisix["enable_http2"]; !present {
+			apisix["enable_http2"] = true
+		}
+	}
 	if err := decodeMapstructure(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("decode static configuration: %w", err)
 	}
@@ -41,7 +61,7 @@ func decodeMapstructure(input any, result any) error {
 	}
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		DecodeHook:       mapstructure.ComposeDecodeHookFunc(jsonNumberDecodeHook, configDecodeHook),
-		WeaklyTypedInput: true,
+		WeaklyTypedInput: false,
 		Result:           result,
 		TagName:          "mapstructure",
 		ZeroFields:       true,
@@ -60,6 +80,9 @@ func jsonNumberDecodeHook(from reflect.Type, to reflect.Type, data any) (any, er
 		return data, nil
 	}
 	number := string(data.(json.Number))
+	if to == reflect.TypeFor[time.Duration]() {
+		return decodeNGINXDuration(number)
+	}
 	value := reflect.New(to).Elem()
 	switch to.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -83,11 +106,7 @@ func jsonNumberDecodeHook(from reflect.Type, to reflect.Type, data any) (any, er
 
 func configDecodeHook(from reflect.Type, to reflect.Type, data any) (any, error) {
 	if from.Kind() == reflect.String && to == reflect.TypeFor[time.Duration]() {
-		duration, err := time.ParseDuration(strings.TrimSpace(data.(string)))
-		if err != nil {
-			return nil, fmt.Errorf("duration value is invalid")
-		}
-		return duration, nil
+		return decodeNGINXDuration(data.(string))
 	}
 
 	switch to {
@@ -115,21 +134,19 @@ func configDecodeHook(from reflect.Type, to reflect.Type, data any) (any, error)
 		}
 	}
 
-	if from.Kind() == reflect.String && to.Kind() == reflect.Slice && to.Elem().Kind() == reflect.String {
-		value := strings.TrimSpace(data.(string))
-		if value == "" {
-			return []string{}, nil
-		}
-		if strings.Contains(value, ",") {
-			parts := strings.Split(value, ",")
-			for index := range parts {
-				parts[index] = strings.TrimSpace(parts[index])
-			}
-			return parts, nil
-		}
-		return strings.Fields(value), nil
-	}
 	return data, nil
+}
+
+func decodeNGINXDuration(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if _, err := strconv.ParseInt(value, 10, 64); err == nil {
+		value += "s"
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("duration value is invalid")
+	}
+	return duration, nil
 }
 
 func decodeNodeListen(data any) (any, error) {

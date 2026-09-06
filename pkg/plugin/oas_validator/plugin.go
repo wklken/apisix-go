@@ -190,22 +190,21 @@ func (p *Plugin) PostInit() error {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		release, err := p.acquireOASWork()
-		if err != nil {
-			logger.Error(err.Error())
-			base.WriteJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
-			return
-		}
-		proceed := func() bool {
-			defer release()
-			return p.validateOASRequest(w, r)
-		}()
-		if proceed {
-			next.ServeHTTP(w, r)
-		}
+	return base.AdaptRequestPhase(p, next)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	release, err := p.acquireOASWork()
+	if err != nil {
+		logger.Error(err.Error())
+		base.WriteJSONMessage(w, http.StatusInternalServerError, "failed to parse openapi spec")
+		return base.StopRequest(r)
 	}
-	return http.HandlerFunc(fn)
+	defer release()
+	if !p.validateOASRequest(w, r) {
+		return base.StopRequest(r)
+	}
+	return base.ContinueRequest(r)
 }
 
 func (p *Plugin) validateOASRequest(w http.ResponseWriter, r *http.Request) bool {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	apisixvar "github.com/wklken/apisix-go/pkg/apisix/variable"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/plugin/luautil"
@@ -349,6 +351,10 @@ func detachedRequest(snapshot base.LogSnapshot) (*http.Request, error) {
 	req.Host = snapshot.Request.Host
 	req.RemoteAddr = snapshot.Request.RemoteAddr
 	req.Header = snapshot.Request.Header.Clone()
+	if requestURI, ok := snapshot.Request.RequestVars["$request_uri"].(string); ok {
+		req = apisixctx.WithRequestVars(req)
+		apisixctx.RegisterRequestVar(req, "$request_uri", requestURI)
+	}
 	return req, nil
 }
 
@@ -617,9 +623,17 @@ func (r *luaRunner) ctxTable() lua.LValue {
 
 	vars := l.NewTable()
 	vars.RawSetString("uri", lua.LString(r.req.URL.Path))
-	vars.RawSetString("request_uri", lua.LString(r.req.URL.RequestURI()))
+	requestURI, captured := apisixctx.GetRequestVar(r.req, "$request_uri").(string)
+	if !captured {
+		requestURI = r.req.URL.RequestURI()
+		*r.req = *apisixctx.WithRequestVars(r.req)
+		apisixctx.RegisterRequestVar(r.req, "$request_uri", requestURI)
+	}
+	vars.RawSetString("request_uri", lua.LString(requestURI))
 	vars.RawSetString("request_method", lua.LString(r.req.Method))
-	vars.RawSetString("host", lua.LString(r.req.Host))
+	vars.RawSetString("host", lua.LString(apisixvar.GetNginxVar(r.req, "$host")))
+	vars.RawSetString("scheme", lua.LString(apisixvar.GetNginxVar(r.req, "$scheme")))
+	vars.RawSetString("upstream_uri", lua.LString(r.currentUpstreamURI()))
 	t.RawSetString("var", vars)
 	return t
 }
@@ -629,15 +643,40 @@ func (r *luaRunner) persistContext() {
 		return
 	}
 	externalUser := r.luaContext.RawGetString("external_user")
-	if externalUser == lua.LNil {
+	if externalUser != lua.LNil {
+		apisixctx.RegisterApisixVar(r.req, "$external_user", luautil.LuaValueToGo(externalUser))
+	}
+	vars, ok := r.luaContext.RawGetString("var").(*lua.LTable)
+	if !ok {
 		return
 	}
-	apisixctx.RegisterApisixVar(r.req, "$external_user", luautil.LuaValueToGo(externalUser))
+	uri, ok := vars.RawGetString("upstream_uri").(lua.LString)
+	if !ok || string(uri) == r.currentUpstreamURI() {
+		return
+	}
+	values, _ := r.req.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+	values = maps.Clone(values)
+	if values == nil {
+		values = make(map[string]any)
+	}
+	values["uri"] = string(uri)
+	*r.req = *r.req.WithContext(context.WithValue(r.req.Context(), apisixctx.ProxyRewriteKey, values))
+	apisixctx.FinalizeProxyRewrite(r.req)
+}
+
+func (r *luaRunner) currentUpstreamURI() string {
+	values, _ := r.req.Context().Value(apisixctx.ProxyRewriteKey).(map[string]any)
+	if uri, ok := values["uri"].(string); ok {
+		return uri
+	}
+	return r.req.URL.RequestURI()
 }
 
 func (r *luaRunner) registerNgx() {
 	l := r.state
 	ngx := l.NewTable()
+	ngx.RawSetString("HTTP_MOVED_PERMANENTLY", lua.LNumber(http.StatusMovedPermanently))
+	ngx.RawSetString("var", r.ctxTable().(*lua.LTable).RawGetString("var"))
 	ngx.RawSetString("ERR", lua.LNumber(3))
 	ngx.RawSetString("WARN", lua.LNumber(4))
 	ngx.RawSetString("INFO", lua.LNumber(6))

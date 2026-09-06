@@ -154,7 +154,7 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		}
 	})
 
-	t.Run("consumer override runs consumer phase once", func(t *testing.T) {
+	t.Run("consumer override does not repeat existing rewrite", func(t *testing.T) {
 		routeCalls := 0
 		consumerCalls := 0
 		routePlugin := &requestPhaseMetadataPlugin{name: "request-id", priority: 200, phaseCalls: &routeCalls}
@@ -182,8 +182,8 @@ func TestRequestPhaseMetadataContract(t *testing.T) {
 		pipeline.Then(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-		if routeCalls != 1 || consumerCalls != 1 {
-			t.Fatalf("route calls = %d, consumer calls = %d; want 1, 1", routeCalls, consumerCalls)
+		if routeCalls != 1 || consumerCalls != 0 {
+			t.Fatalf("route calls = %d, consumer calls = %d; want 1, 0", routeCalls, consumerCalls)
 		}
 	})
 

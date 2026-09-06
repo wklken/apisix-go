@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
+	"github.com/wklken/apisix-go/pkg/apisix/variable"
 	appconfig "github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
@@ -438,7 +439,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		if entry, status := p.lookup(r, key); status == "HIT" {
-			writeCachedResponse(w, entry, status)
+			p.writeCachedResponse(w, entry, status)
 			return
 		} else if status == "EXPIRED" {
 			shouldStore := r.Method != http.MethodHead && !p.hasTruthyValue(r, p.config.NoCache)
@@ -477,13 +478,11 @@ func (p *Plugin) fetchAndMaybeStore(
 	if responseCacheControlSkipsStore(recorder.Header()) {
 		shouldStore = false
 	}
-	cacheTTL := time.Duration(p.config.CacheTTL) * time.Second
-	if shouldStore && p.cacheControlEnabled() {
-		var ok bool
-		cacheTTL, ok = responseCacheControlTTL(recorder.Header())
-		if !ok {
-			shouldStore = false
-		}
+	cacheTTL := p.defaultCacheTTL()
+	if shouldStore && p.diskEnabled {
+		cacheTTL, shouldStore = diskResponseCacheTTL(recorder.Header(), cacheTTL)
+	} else if shouldStore && p.cacheControlEnabled() {
+		cacheTTL, shouldStore = responseCacheControlTTL(recorder.Header())
 	}
 	if shouldStore && p.cacheableStatus(recorder.StatusCode()) &&
 		(p.cacheSetCookieEnabled() || recorder.Header().Get("Set-Cookie") == "") {
@@ -583,7 +582,7 @@ func (p *Plugin) store(r *http.Request, key string, recorder *base.BufferedRespo
 		Status: recorder.StatusCode(),
 		Header: recorder.Header(),
 		Body:   recorder.Body(),
-	}, ttl, p.config.HideCacheHeaders)
+	}, ttl)
 }
 
 func (p *Plugin) cacheKey(r *http.Request) string {
@@ -625,8 +624,32 @@ func (p *Plugin) hasTruthyValue(r *http.Request, values []string) bool {
 	return false
 }
 
+func (p *Plugin) defaultCacheTTL() time.Duration {
+	if p.diskEnabled {
+		if effective := p.StaticConfig(); effective != nil && effective.Config.Apisix.ProxyCache.CacheTTL != nil {
+			return *effective.Config.Apisix.ProxyCache.CacheTTL
+		}
+		return 10 * time.Second
+	}
+	return time.Duration(p.config.CacheTTL) * time.Second
+}
+
+// Disk caching inherits NGINX's origin freshness, falling back to the static
+// proxy_cache_valid duration only when the origin supplies no expiration.
+func diskResponseCacheTTL(header http.Header, fallback time.Duration) (time.Duration, bool) {
+	if _, ok := headerCacheControlDirectiveValue(
+		header,
+		"s-maxage",
+		"max-age",
+	); ok ||
+		headerHasField(header, "Expires") {
+		return responseCacheControlTTL(header)
+	}
+	return fallback, fallback > 0
+}
+
 func (p *Plugin) cacheControlEnabled() bool {
-	return p.config.CacheControl && !p.diskEnabled && !cacheKeyHasIdentity(p.config.CacheKey)
+	return p.config.CacheControl && !p.diskEnabled
 }
 
 func (p *Plugin) cacheSetCookieEnabled() bool {
@@ -743,11 +766,15 @@ func cacheControlValueDirective(value string, names ...string) (string, bool) {
 	return found, ok
 }
 
-func writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus string) {
+func (p *Plugin) writeCachedResponse(w http.ResponseWriter, entry cacheEntry, cacheStatus string) {
 	for field, values := range entry.header {
 		for _, value := range values {
 			w.Header().Add(field, value)
 		}
+	}
+	if p.config.HideCacheHeaders {
+		deleteHeaderFold(w.Header(), "Cache-Control")
+		deleteHeaderFold(w.Header(), "Expires")
 	}
 	age := max(time.Since(entry.storedAt)/time.Second, 0)
 	w.Header().Set("Age", strconv.FormatInt(int64(age), 10))
@@ -779,7 +806,7 @@ func requestVar(r *http.Request, name string) string {
 	case name == "request_uri":
 		return r.URL.RequestURI()
 	case name == "host":
-		return r.Host
+		return variable.GetNginxVar(r, "$host")
 	case name == "request_method":
 		return r.Method
 	case name == "scheme":

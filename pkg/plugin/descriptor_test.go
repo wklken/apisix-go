@@ -11,7 +11,7 @@ func TestDescriptorForFactoryUsesRegistryPhaseAndScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if descriptor.Priority != 0 || descriptor.Factory != "request-id" ||
-		!slices.Equal(descriptor.Phases, []Phase{PhaseRewrite}) ||
+		!slices.Equal(descriptor.Phases, []Phase{PhaseRewrite, PhaseHeaderFilter}) ||
 		!slices.Equal(descriptor.Scopes, []Scope{ScopeGlobal, ScopeRoute, ScopeConsumer}) {
 		t.Fatalf("descriptor = %#v", descriptor)
 	}

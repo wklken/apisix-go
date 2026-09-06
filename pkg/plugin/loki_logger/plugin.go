@@ -11,11 +11,14 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	apisixlog "github.com/wklken/apisix-go/pkg/apisix/log"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/limitbase"
 	"github.com/wklken/apisix-go/pkg/plugin/logger_batch"
 	"github.com/wklken/apisix-go/pkg/shared"
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
 type Plugin struct {
@@ -32,7 +35,7 @@ const (
 	priority               = 414
 	name                   = "loki-logger"
 	lokiEntryEnvelopeField = "loki_entry_envelope"
-	serverVersion          = "apisix-go"
+	serverVersion          = version.APISIXVersion
 )
 
 var randomEndpointIndex = rand.Intn
@@ -340,10 +343,13 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	if len(p.config.LogFormat) > 0 {
+	if p.config.LogFormat != nil {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.LogFormat = nil
+		}
 		p.logFormatExtra = metadata.LogFormatExtra
 	}
 	if p.config.MaxPendingEntries == 0 {
@@ -403,7 +409,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		requestStart = time.Now()
 	}
 	var fields map[string]any
-	if len(p.LogFormat) > 0 {
+	if p.LogFormat != nil {
 		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
 		base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	} else {
@@ -418,17 +424,19 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 			}
 		}
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
 	}
-	return p.EnqueueLog(wrapLokiEntry(fields, requestStart, lokiSnapshotLabels(p, snapshot, fields)))
+	return p.EnqueueLog(wrapLokiEntry(fields, requestStart, lokiSnapshotLabels(p, snapshot)))
 }
 
 func lokiSnapshotDefaultFields(snapshot base.LogSnapshot, requestStart time.Time) map[string]any {
@@ -487,18 +495,21 @@ func lokiSnapshotDefaultFields(snapshot base.LogSnapshot, requestStart time.Time
 	return fields
 }
 
-func lokiSnapshotLabels(p *Plugin, snapshot base.LogSnapshot, fields map[string]any) map[string]string {
+func lokiSnapshotLabels(p *Plugin, snapshot base.LogSnapshot) map[string]string {
 	labels := make(map[string]string, len(p.config.LogLabels))
 	for key, value := range p.config.LogLabels {
-		if after, ok := strings.CutPrefix(value, "$"); ok {
-			if resolved, ok := fields[after]; ok {
-				labels[key] = fmt.Sprint(resolved)
-			} else {
-				labels[key] = fmt.Sprint(base.SnapshotValue(snapshot, value))
+		resolved, count := limitbase.ResolveVarsWithLookup(value, func(name string) (string, bool) {
+			field, found := apisixlog.LookupValueFromSnapshot(snapshot, name)
+			if !found {
+				return "", false
 			}
-			continue
+			return fmt.Sprint(field), true
+		})
+		if count > 0 {
+			labels[key] = resolved
+		} else {
+			labels[key] = value
 		}
-		labels[key] = value
 	}
 	return labels
 }

@@ -176,6 +176,9 @@ func (engine *GenerationEngine) Publish(
 		engine.mu.Unlock()
 		return cleanup(generation.ErrIntegrity)
 	}
+	if domains&ownerDomainHTTP != 0 && predecessor.http != nil {
+		predecessor.http.prepared.SetHTTPPublished(false)
+	}
 	candidate := predecessor.withDomains(owner, domains)
 	owner.activateDomains(domains)
 	engine.active.Store(&candidate)
@@ -183,6 +186,9 @@ func (engine *GenerationEngine) Publish(
 		if err := engine.checkpoint("candidate-bundle-published"); err != nil {
 			engine.active.Store(predecessor)
 			owner.deactivateDomains(domains)
+			if domains&ownerDomainHTTP != 0 && predecessor.http != nil {
+				predecessor.http.prepared.SetHTTPPublished(true)
+			}
 			engine.mu.Unlock()
 			return cleanup(err)
 		}
@@ -195,6 +201,9 @@ func (engine *GenerationEngine) Publish(
 		if replaced.deactivateDomains(replacedDomains) {
 			engine.enqueueRetirementLocked(replaced, context.WithoutCancel(ctx))
 		}
+	}
+	if domains&ownerDomainHTTP != 0 {
+		prepared.SetHTTPPublished(true)
 	}
 	engine.mu.Unlock()
 	engine.wakeRetirement()
@@ -320,6 +329,9 @@ func (engine *GenerationEngine) captureCloseOwner(ctx context.Context) {
 	engine.mu.Lock()
 	engine.closed = true
 	bundle := engine.active.Load()
+	if bundle != nil && bundle.http != nil {
+		bundle.http.prepared.SetHTTPPublished(false)
+	}
 	engine.active.Store(&activeBundle{})
 	owners := make(map[*generationOwner]struct{}, 2)
 	if bundle != nil && bundle.http != nil {

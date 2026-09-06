@@ -196,11 +196,28 @@ func decodeStructuralView(
 		view.hasInlineUpstream, issues = inlineUpstreamPresence(key, object, issues)
 	case "consumers":
 		view.consumerGroupID, issues = optionalReferenceID(key, object, "group_id", issues)
+		view.credentialConsumerID, view.credentialID = consumerCredentialIdentity(key.ID)
+		if view.credentialID != "" && !validCredentialEnvelope(object) {
+			issues = append(
+				issues,
+				newIssue(key, "credential-schema-invalid", "credential envelope schema validation failed"),
+			)
+		}
 	}
 	if resourceKindHasPlugins(key.Kind) {
 		view.plugins, issues = decodePluginMap(key, object, issues)
 	}
 	return view, issues
+}
+
+// Credential identity belongs to the provider resource key. Embedded credential
+// IDs can be either the leaf ID or the full parent/credentials/ID path.
+func consumerCredentialIdentity(id string) (string, string) {
+	parts := strings.Split(id, "/")
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "credentials" && parts[2] != "" {
+		return parts[0], parts[2]
+	}
+	return "", ""
 }
 
 func inlineUpstreamPresence(

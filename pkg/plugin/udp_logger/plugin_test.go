@@ -397,7 +397,7 @@ func TestRunLogPhaseDefaultLogMatchesAPISIXFullLogShape(t *testing.T) {
 		t.Fatalf("os.Hostname() error = %v", err)
 	}
 	assertNestedField(t, payload, "server", "hostname", hostname)
-	assertNestedField(t, payload, "server", "version", "apisix-go")
+	assertNestedField(t, payload, "server", "version", "3.17.0")
 	if payload["service_id"] != "service-default" {
 		t.Fatalf("service_id = %#v, want service-default", payload["service_id"])
 	}

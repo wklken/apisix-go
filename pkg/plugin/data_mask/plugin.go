@@ -247,7 +247,7 @@ func maskSnapshotRequestID(snapshot *base.LogSnapshot, original, masked string) 
 		snapshot.Request.APISIXVars,
 		snapshot.Request.RequestVars,
 	} {
-		for _, key := range []string{"$request_id", "$http_x_request_id"} {
+		for _, key := range []string{"$apisix_request_id", "$http_x_request_id"} {
 			value, ok := variables[key].(string)
 			if !ok || value != original {
 				continue

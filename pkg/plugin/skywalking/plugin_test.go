@@ -372,8 +372,8 @@ func TestHandlerInjectsSW8AndReportsSegment(t *testing.T) {
 			t.Fatalf("segment trace IDs missing: %#v", segment)
 		}
 		spans, ok := segment["spans"].([]any)
-		if !ok || len(spans) != 1 {
-			t.Fatalf("spans = %#v, want one span", segment["spans"])
+		if !ok || len(spans) != 2 {
+			t.Fatalf("spans = %#v, want Entry and Exit spans", segment["spans"])
 		}
 		span := spans[0].(map[string]any)
 		if span["operationName"] != "GET /orders" {
@@ -624,11 +624,13 @@ func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
 	request, lifecycle := apisixctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodGet, "http://gateway.test/orders", nil), time.Now(),
 	)
+	request = request.WithContext(context.WithValue(request.Context(), apisixctx.RequestIDKey, "trace-request-1"))
 	result := p.RunRequestPhase(httptest.NewRecorder(), request)
 	if result.Decision != base.RequestContinue {
 		t.Fatalf("request phase decision = %d, want continue", result.Decision)
 	}
 	result.Request.Header.Set("X-Request-Id", "trace-request-1")
+	lifecycle.SetFinalRequest(result.Request)
 	apisixctx.RegisterRequestVar(result.Request, "$retry_count", 2)
 	apisixctx.RegisterRequestVar(result.Request, "$upstream_status", http.StatusCreated)
 	lifecycle.Complete(
@@ -649,8 +651,8 @@ func TestTraceStartsAtInheritedRewriteAndEndsOnce(t *testing.T) {
 			t.Fatalf("segments = %d, want one", len(segments))
 		}
 		spans, ok := segments[0]["spans"].([]any)
-		if !ok || len(spans) != 1 {
-			t.Fatalf("spans = %#v, want one", segments[0]["spans"])
+		if !ok || len(spans) != 2 {
+			t.Fatalf("spans = %#v, want Entry and Exit", segments[0]["spans"])
 		}
 		span := spans[0].(map[string]any)
 		tags, ok := span["tags"].([]any)

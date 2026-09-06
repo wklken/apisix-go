@@ -3,6 +3,7 @@ package graphql_limit_count
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -536,7 +537,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 		depth, err := queryDepth(query)
 		if err != nil {
-			http.Error(w, "Invalid graphql request: failed to parse graphql query", http.StatusBadRequest)
+			message := "Invalid graphql request: failed to parse graphql query"
+			if errors.Is(err, errEmptyGraphQLQuery) {
+				message = "Invalid graphql request: empty graphql query"
+			}
+			writeGraphQLRequestError(w, message)
 			return
 		}
 
@@ -646,6 +651,12 @@ func (p *Plugin) applyLimit(
 	return false
 }
 
+func writeGraphQLRequestError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
+}
+
 func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -654,7 +665,7 @@ func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, b
 
 	body, err := base.ReadRequestBodyLimited(r, p.maxSize)
 	if err != nil || len(bytes.TrimSpace(body)) == 0 {
-		http.Error(w, "Invalid graphql request: can't get graphql request body", http.StatusBadRequest)
+		writeGraphQLRequestError(w, "Invalid graphql request: can't get graphql request body")
 		return "", false
 	}
 
@@ -662,15 +673,15 @@ func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, b
 	if strings.HasPrefix(contentType, "application/json") {
 		var req graphqlRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			http.Error(w, "invalid graphql request, "+err.Error(), http.StatusBadRequest)
+			writeGraphQLRequestError(w, "invalid graphql request, "+err.Error())
 			return "", false
 		}
 		if req.Query == nil {
-			http.Error(w, "invalid graphql request, json body[query] is nil", http.StatusBadRequest)
+			writeGraphQLRequestError(w, "invalid graphql request, json body[query] is nil")
 			return "", false
 		}
 		if strings.TrimSpace(*req.Query) == "" {
-			http.Error(w, "Invalid graphql request: empty graphql query", http.StatusBadRequest)
+			writeGraphQLRequestError(w, "Invalid graphql request: empty graphql query")
 			return "", false
 		}
 		return *req.Query, true
@@ -680,7 +691,7 @@ func (p *Plugin) graphqlQuery(w http.ResponseWriter, r *http.Request) (string, b
 		return string(body), true
 	}
 
-	http.Error(w, "invalid graphql request, error content-type: "+contentType, http.StatusBadRequest)
+	writeGraphQLRequestError(w, "invalid graphql request, error content-type: "+contentType)
 	return "", false
 }
 
@@ -692,7 +703,11 @@ func (p *Plugin) incoming(
 	timeWindow int64,
 ) (int64, int64, bool, error) {
 	if p.config.Policy == "redis" || p.config.Policy == "redis-cluster" {
-		return p.redisLimiter.incoming(r, key, cost, count, timeWindow)
+		scopedKey, err := p.scopedCounterKey(key)
+		if err != nil {
+			return 0, 0, false, err
+		}
+		return p.redisLimiter.incoming(r, scopedKey, cost, count, timeWindow)
 	}
 	if p.rateLimitState != nil {
 		scopedKey, err := p.localCounterKey(key)
@@ -751,8 +766,7 @@ func incomingLocal(
 }
 
 type redisCountLimiter struct {
-	client    redis.UniversalClient
-	namespace string
+	client redis.UniversalClient
 }
 
 func (p *Plugin) newRedisLimiter() countLimiter {
@@ -796,7 +810,7 @@ func (p *Plugin) newRedisLimiter() countLimiter {
 		return nil
 	}
 	p.clientRelease = release
-	return &redisCountLimiter{client: value.(redis.UniversalClient), namespace: p.counterNamespace()}
+	return &redisCountLimiter{client: value.(redis.UniversalClient)}
 }
 
 func (p *Plugin) newRedisClusterLimiter() countLimiter {
@@ -836,7 +850,7 @@ func (p *Plugin) newRedisClusterLimiter() countLimiter {
 		return nil
 	}
 	p.clientRelease = release
-	return &redisCountLimiter{client: value.(redis.UniversalClient), namespace: p.counterNamespace()}
+	return &redisCountLimiter{client: value.(redis.UniversalClient)}
 }
 
 func (l *redisCountLimiter) incoming(
@@ -849,7 +863,7 @@ func (l *redisCountLimiter) incoming(
 	result, err := l.client.Eval(
 		r.Context(),
 		redisLimitCountScript,
-		[]string{"plugin-graphql-limit-count:" + l.namespace + ":" + key},
+		[]string{"plugin-graphql-limit-count" + key},
 		cost,
 		count,
 		timeWindow,
@@ -986,6 +1000,15 @@ func (p *Plugin) SetAPISIXPluginContext(pluginContext base.APISIXPluginContext) 
 }
 
 func (p *Plugin) localCounterKey(key string) (string, error) {
+	scoped, err := p.scopedCounterKey(key)
+	if err != nil {
+		return "", err
+	}
+	// APISIX keeps GraphQL counters in its own plugin shared dictionary.
+	return name + ":" + scoped, nil
+}
+
+func (p *Plugin) scopedCounterKey(key string) (string, error) {
 	pluginContext := p.apisixContext
 	document := pluginContext.SourceConfig
 	if document == nil {
@@ -998,10 +1021,5 @@ func (p *Plugin) localCounterKey(key string) (string, error) {
 		}
 		pluginContext.SourceResourceKey = p.counterNamespace()
 	}
-	scoped, err := limit_count.BuildLocalKey(pluginContext, document, key)
-	if err != nil {
-		return "", err
-	}
-	// APISIX keeps GraphQL counters in its own plugin shared dictionary.
-	return name + ":" + scoped, nil
+	return limit_count.BuildLocalKey(pluginContext, document, key)
 }

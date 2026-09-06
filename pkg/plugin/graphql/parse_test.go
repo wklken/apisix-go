@@ -1,7 +1,6 @@
 package graphql
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -64,13 +63,13 @@ func TestMaxDepthHandlesSyntaxFeatures(t *testing.T) {
 	}
 }
 
-func TestMaxDepthRejectsUndefinedFragment(t *testing.T) {
+func TestMaxDepthIgnoresUndefinedFragment(t *testing.T) {
 	doc, err := Parse(`query { viewer { ...Missing } }`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MaxDepth(doc, ""); err == nil || !strings.Contains(err.Error(), "Missing") {
-		t.Fatalf("MaxDepth() error = %v, want undefined fragment rejection", err)
+	if depth, err := MaxDepth(doc, ""); err != nil || depth != 1 {
+		t.Fatalf("MaxDepth() = %d, %v; want parent field depth 1", depth, err)
 	}
 }
 

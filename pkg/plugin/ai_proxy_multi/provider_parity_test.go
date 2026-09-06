@@ -97,7 +97,7 @@ func TestAPISIX317DefaultOpenAIHealthTarget(t *testing.T) {
 	}
 }
 
-func TestMalformedSSEUsesPrecommit502OrPostcommitTerminalEvent(t *testing.T) {
+func TestMalformedSSEIsForwardedBeforeAndAfterValidEvents(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		body       string
@@ -106,14 +106,14 @@ func TestMalformedSSEUsesPrecommit502OrPostcommitTerminalEvent(t *testing.T) {
 	}{
 		{
 			name: "precommit", body: "event: message\ndata: {malformed\n\n",
-			wantStatus: http.StatusBadGateway,
+			wantStatus: http.StatusOK,
 		},
 		{
 			name: "postcommit",
 			body: "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n" +
 				"data: {malformed\n\n",
 			wantStatus: http.StatusOK,
-			wantEvent:  true,
+			wantEvent:  false,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -140,13 +140,16 @@ func TestMalformedSSEUsesPrecommit502OrPostcommitTerminalEvent(t *testing.T) {
 			if got := strings.Contains(response.Body.String(), "event: error"); got != test.wantEvent {
 				t.Fatalf("terminal SSE event = %v, want %v; body = %q", got, test.wantEvent, response.Body.String())
 			}
+			if response.Body.String() != test.body {
+				t.Fatalf("body = %q, want %q", response.Body.String(), test.body)
+			}
 			if got := apisixctx.GetRequestVar(
 				request,
 				"$ai_stream_outcome",
 			); got != string(
-				ai_stream.StreamOutcomeError,
+				ai_stream.StreamOutcomeSuccess,
 			) {
-				t.Fatalf("stream outcome = %#v, want error", got)
+				t.Fatalf("stream outcome = %#v, want success", got)
 			}
 		})
 	}

@@ -23,7 +23,6 @@ func TestParitySharedDiskPurge(t *testing.T) {
 		key,
 		base.ResponseState{Status: 200, Header: http.Header{}, Body: []byte("old")},
 		300*time.Second,
-		false,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +99,6 @@ func TestParityColdDiskPurgeStatus(t *testing.T) {
 		a.cacheKey(r),
 		base.ResponseState{Status: 200, Header: http.Header{}, Body: []byte("old")},
 		300*time.Second,
-		false,
 	); err != nil {
 		t.Fatal(err)
 	}

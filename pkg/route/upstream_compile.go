@@ -69,7 +69,7 @@ func planTrafficSplitClusterWithSSLResolver(
 	transport, err := buildTransportOptionWithSSLResolver(
 		cloneCompileRoute(routeResource),
 		resourceUpstream,
-		resolveSSL,
+		resolveSSL, staticConfig,
 	)
 	if err != nil {
 		return proxy.ClusterConfig{}, err
@@ -81,6 +81,8 @@ func planTrafficSplitClusterWithSSLResolver(
 	if err != nil {
 		return proxy.ClusterConfig{}, err
 	}
+	// The traffic-split plugin owns its hash ring and target selection.
+	config.Type, config.HashOn, config.HashKey, config.HashKeyConfigured = "", "", "", false
 	config.Retries = max(upstream.Retries, 0)
 	config.RetriesConfigured = upstream.RetriesConfigured()
 	config.Targets = maps.Clone(config.Targets)
@@ -184,7 +186,7 @@ func PlanRouteUpstream(
 		return plan, nil
 	}
 	transport, err := buildTransportOptionWithSSLResolver(
-		cloneCompileRoute(routeResource), resolved, plannedSSLResolver(ssls),
+		cloneCompileRoute(routeResource), resolved, plannedSSLResolver(ssls), staticConfig,
 	)
 	if err != nil {
 		return UpstreamPlan{}, err
@@ -368,13 +370,7 @@ func validateUnsupportedUpstreamDiscovery(
 func validateHTTPUpstreamType(upstream resource.Upstream) error {
 	switch strings.ToLower(upstream.Scheme) {
 	case "", "http", "https", "grpc", "grpcs":
-		if upstream.Type != "" && upstream.Type != "roundrobin" {
-			return fmt.Errorf(
-				"unsupported upstream type %q for %q scheme: only roundrobin is supported",
-				upstream.Type,
-				upstream.Scheme,
-			)
-		}
+		return proxy.ValidateAlgorithm(upstream.Type, upstream.HashOn, upstream.Key, upstream.KeyConfigured())
 	}
 	return nil
 }

@@ -293,10 +293,11 @@ type NetworkResponse struct {
 }
 
 type FileAssertion struct {
-	Path      *Matcher                `yaml:"path"`
-	Body      *Matcher                `yaml:"body,omitempty"`
-	JSONLines *FileJSONLinesAssertion `yaml:"json_lines,omitempty"`
-	Absent    bool                    `yaml:"absent,omitempty"`
+	Path       *Matcher                `yaml:"path"`
+	ConcatGlob bool                    `yaml:"concat_glob,omitempty"`
+	Body       *Matcher                `yaml:"body,omitempty"`
+	JSONLines  *FileJSONLinesAssertion `yaml:"json_lines,omitempty"`
+	Absent     bool                    `yaml:"absent,omitempty"`
 }
 
 type FileJSONLinesAssertion struct {
@@ -450,6 +451,7 @@ type HTTPOutput struct {
 	DifferentHeaders        [][]string               `yaml:"different_headers,omitempty"`
 	Body                    *Matcher                 `yaml:"body,omitempty"`
 	Chunks                  []Matcher                `yaml:"chunks,omitempty"`
+	FirstChunkLessThan      time.Duration            `yaml:"first_chunk_less_than,omitempty"`
 	GzipBody                *Matcher                 `yaml:"gzip_body,omitempty"`
 	BrotliBody              *Matcher                 `yaml:"brotli_body,omitempty"`
 	Logs                    *Matcher                 `yaml:"logs,omitempty"`
@@ -1064,6 +1066,12 @@ func validateHTTPScenario(input HTTPInput, output HTTPOutput) error {
 			return fmt.Errorf("output body: %w", err)
 		}
 	}
+	if output.FirstChunkLessThan < 0 {
+		return errors.New("first_chunk_less_than must not be negative")
+	}
+	if output.FirstChunkLessThan > 0 && len(output.Chunks) == 0 {
+		return errors.New("first_chunk_less_than requires output chunks")
+	}
 	for i, matcher := range output.Chunks {
 		if err := matcher.validate(matcherBody); err != nil {
 			return fmt.Errorf("output chunk %d: %w", i+1, err)
@@ -1592,6 +1600,9 @@ func validateFileAssertions(assertions []FileAssertion, kind string) error {
 			return fmt.Errorf("%s %d path must begin with {{WORK_DIR}}/", kind, i+1)
 		}
 		if assertion.Absent {
+			if assertion.ConcatGlob {
+				return fmt.Errorf("%s %d concat_glob cannot be combined with absent", kind, i+1)
+			}
 			if assertion.Body != nil || assertion.JSONLines != nil {
 				return fmt.Errorf("%s %d content assertions must not be set when absent is true", kind, i+1)
 			}

@@ -100,9 +100,6 @@ func ParsePubSubRequest(data []byte) (PubSubRequest, error) {
 			data = data[consumed:]
 		}
 	}
-	if !commandSeen {
-		return PubSubRequest{}, fmt.Errorf("%w: missing command", ErrMalformedPubSub)
-	}
 	return request, nil
 }
 

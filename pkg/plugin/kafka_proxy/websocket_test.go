@@ -340,6 +340,12 @@ func TestServePubSubWebSocketFullLoop(t *testing.T) {
 		t.Fatalf("malformed-request response = %#v, want sequence 0 wrong command", malformedResponse)
 	}
 
+	// A valid protobuf envelope without a command is silently skipped.
+	for _, empty := range [][]byte{nil, {0x08, 0x09}} {
+		if err := conn.WriteMessage(websocket.BinaryMessage, empty); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("ignored")); err != nil {
 		t.Fatalf("write text message: %v", err)
 	}

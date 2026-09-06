@@ -355,7 +355,7 @@ func TestLogglyTokensAreAttemptOwnedAcrossHTTPDeliveries(t *testing.T) {
 	paths := make(chan string, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths <- r.URL.Path
-		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
 
@@ -431,7 +431,7 @@ type retainedLogglyRoundTripper struct {
 func (transport *retainedLogglyRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	transport.request = request
 	transport.response = &http.Response{
-		StatusCode: http.StatusAccepted,
+		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader("retained response")),
 		Request:    request,
@@ -480,7 +480,7 @@ func (transport *blockingLogglyRoundTripper) RoundTrip(request *http.Request) (*
 	transport.once.Do(func() { close(transport.started) })
 	<-transport.release
 	return &http.Response{
-		StatusCode: http.StatusAccepted,
+		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
 		Body:       http.NoBody,
 		Request:    request,
@@ -545,7 +545,7 @@ func TestLogglyStopFlushesPendingBatchBeforeCleanup(t *testing.T) {
 	received := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received <- r.URL.Path
-		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
 	p := newTestPlugin(t, Config{

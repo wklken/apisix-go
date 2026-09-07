@@ -379,7 +379,7 @@ func TestHandlerAllowsRegexOrigin(t *testing.T) {
 	}
 }
 
-func TestPostInitRejectsCredentialsWithEmptyOptions(t *testing.T) {
+func TestPostInitRejectsCredentialsWithOmittedOptions(t *testing.T) {
 	p := &Plugin{config: Config{
 		AllowOrigins:    "http://test.com",
 		AllowMethods:    "",

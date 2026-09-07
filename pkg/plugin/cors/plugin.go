@@ -136,7 +136,9 @@ const metadataSchema = `
 }`
 
 type Config struct {
-	maxAgeSet bool
+	maxAgeSet       bool
+	allowMethodsSet bool
+	allowHeadersSet bool
 
 	AllowOrigins    string `json:"allow_origins"`
 	AllowMethods    string `json:"allow_methods"`
@@ -152,17 +154,28 @@ type Config struct {
 	TimingAllowOriginsByRegex []string `json:"timing_allow_origins_by_regex"`
 }
 
-// UnmarshalJSON preserves an explicit zero, which disables preflight reuse.
+// UnmarshalJSON distinguishes omitted defaults from explicit empty options
+// and an explicit zero max_age, which disables preflight reuse.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type configJSON Config
 	var decoded struct {
 		configJSON
-		MaxAge *int `json:"max_age"`
+		MaxAge       *int    `json:"max_age"`
+		AllowMethods *string `json:"allow_methods"`
+		AllowHeaders *string `json:"allow_headers"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	*c = Config(decoded.configJSON)
+	c.allowMethodsSet = decoded.AllowMethods != nil
+	if c.allowMethodsSet {
+		c.AllowMethods = *decoded.AllowMethods
+	}
+	c.allowHeadersSet = decoded.AllowHeaders != nil
+	if c.allowHeadersSet {
+		c.AllowHeaders = *decoded.AllowHeaders
+	}
 	c.maxAgeSet = decoded.MaxAge != nil
 	if c.maxAgeSet {
 		c.MaxAge = *decoded.MaxAge
@@ -195,10 +208,10 @@ func (p *Plugin) PostInit() error {
 	if p.config.AllowOrigins == "" {
 		p.config.AllowOrigins = "*"
 	}
-	if p.config.AllowMethods == "" {
+	if !p.config.allowMethodsSet && p.config.AllowMethods == "" {
 		p.config.AllowMethods = "*"
 	}
-	if p.config.AllowHeaders == "" {
+	if !p.config.allowHeadersSet && p.config.AllowHeaders == "" {
 		p.config.AllowHeaders = "*"
 	}
 	if !p.config.maxAgeSet && p.config.MaxAge == 0 {

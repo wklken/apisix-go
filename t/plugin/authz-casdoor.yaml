@@ -84,7 +84,7 @@ cases:
           status: 302
           headers:
             Location:
-              matches: '^http://127\.0\.0\.1:[0-9]+/login/oauth/authorize\?.*client_id=7ceb9b7fda4a9061ec1c.*redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A[0-9]+%2Fanything%2Fcallback.*state=[0-9a-f]+.*$'
+              matches: '^http://127\.0\.0\.1:[0-9]+/login/oauth/authorize\?.*client_id=7ceb9b7fda4a9061ec1c.*redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A[0-9]+%2Fanything%2Fcallback.*state=[0-9]+(?:&|$).*$'
             Set-Cookie:
               matches: '^authz_casdoor_session_[0-9a-f]{64}='
 
@@ -161,7 +161,7 @@ cases:
           status: 302
           headers:
             Location:
-              equals: /anything/d?param1=foo&param2=bar
+              equals: /anything/d
       - name: authenticated
         input:
           path: /anything/d?param1=foo&param2=bar
@@ -213,9 +213,34 @@ cases:
         output:
           status: 400
           body:
-            matches: 'invalid state'
+            equals: invalid state
           logs:
             matches: 'invalid state'
+
+  - name: missing-code-or-state
+    config:
+      routes:
+        - id: authz-casdoor-missing-code
+          uri: /anything/*
+          plugins:
+            authz-casdoor: *default_auth
+    fixtures:
+      - *unused_casdoor
+    steps:
+      - name: begin-login
+        input:
+          path: /anything/d?param1=foo&param2=bar
+        output:
+          <<: *authorize_redirect
+      - name: reject-missing
+        input:
+          path: /anything/callback
+        output:
+          status: 400
+          body:
+            equals: failed when accessing token. Invalid code or state
+          logs:
+            matches: 'failed when accessing token. Invalid code or state'
 
   - name: invalid-access-token
     config:

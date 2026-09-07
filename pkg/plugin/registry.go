@@ -543,7 +543,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"authz-casbin": {
 		create:              func() Plugin { return &authz_casbin.Plugin{} },
-		phases:              phaseAccess,
+		phases:              phaseRewrite,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,

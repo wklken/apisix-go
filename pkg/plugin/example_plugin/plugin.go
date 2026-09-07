@@ -21,7 +21,7 @@ const (
 	priority = 0
 	name     = "example-plugin"
 
-	helloURI = "/v1/plugin/example-plugin/hello"
+	HelloURI = "/v1/plugin/example-plugin/hello"
 )
 
 const schema = `
@@ -87,7 +87,7 @@ func (p *Plugin) PostInit() error {
 	if p.registry == nil {
 		p.registry = public_api.NewRegistry()
 	}
-	p.registry.Register(http.MethodGet, helloURI, http.HandlerFunc(hello))
+	p.registry.Register(http.MethodGet, HelloURI, http.HandlerFunc(Hello))
 	return nil
 }
 
@@ -113,7 +113,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func hello(w http.ResponseWriter, r *http.Request) {
+func Hello(w http.ResponseWriter, r *http.Request) {
 	if _, ok := r.URL.Query()["json"]; ok {
 		body, err := json.Marshal(map[string]string{"msg": "world"})
 		if err != nil {

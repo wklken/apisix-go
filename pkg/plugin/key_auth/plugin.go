@@ -180,14 +180,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
 	ctx.RegisterSensitiveQueryName(r, p.config.Query)
-	fromHeader := true
+	fromHeader := false
 	key := ctx.RestoreTrustedRequestHeader(r, p.config.Header)
-	if key == "" {
+	if _, present := r.Header[http.CanonicalHeaderKey(p.config.Header)]; present {
+		fromHeader = true
+	} else {
 		key = r.URL.Query().Get(p.config.Query)
-		fromHeader = false
 	}
 
-	if key == "" {
+	if key == "" && !fromHeader {
 		if result, ok := p.anonymousConsumerResult(w, r); ok {
 			return result
 		}

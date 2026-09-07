@@ -199,7 +199,7 @@ func TestVerifyAPISIXTimeClaimsNbfLeewayBoundary(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "before boundary", nbf: boundary - 1},
-		{name: "at boundary", nbf: boundary},
+		{name: "at boundary", nbf: boundary, wantErr: true},
 		{name: "after boundary", nbf: boundary + 1, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -374,6 +374,48 @@ func TestHandlerRejectsMissingToken(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Missing JWT token in request") {
 		t.Fatalf("body = %q, want missing token message", rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsEmptyHeaderAndDoesNotFallThroughToQuery(t *testing.T) {
+	addJWTConsumer(t, "query-jwt-user", "query-jwt-key", "jwt-secret")
+	p := newTestPlugin(t, Config{})
+	token := signHS256(t, "jwt-secret", map[string]any{
+		"key": "query-jwt-key",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?jwt="+token, nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Authorization", "")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("empty Authorization must not fall through to a valid query jwt")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsEmptyQueryAndDoesNotFallThroughToCookie(t *testing.T) {
+	addJWTConsumer(t, "cookie-jwt-user", "cookie-jwt-key", "jwt-secret")
+	p := newTestPlugin(t, Config{})
+	token := signHS256(t, "jwt-secret", map[string]any{
+		"key": "cookie-jwt-key",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?jwt=", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.AddCookie(&http.Cookie{Name: "jwt", Value: token})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("empty jwt query must not fall through to a valid cookie")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
 	}
 }
 

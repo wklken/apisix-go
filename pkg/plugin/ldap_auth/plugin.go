@@ -151,6 +151,12 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequest(r)
 	}
 
+	if !ldapPluginConsumersPresent(p.ConsumerLookup()) {
+		p.recordAuthDiagnostic(r, "failed to find user: invalid user")
+		p.writeAuthError(w, http.StatusUnauthorized, "Missing related consumer")
+		return base.StopRequest(r)
+	}
+
 	var consumer resource.Consumer
 	found, credentialErr := base.UseConsumerCredential(
 		r.Context(), p.ConsumerLookup(), name, p.userDN(user.username),
@@ -221,7 +227,21 @@ func (p *Plugin) userDN(username string) string {
 }
 
 func ldapUserDN(uid, username, baseDN string) string {
-	return uid + "=" + ldap.EscapeDN(username) + "," + baseDN
+	return uid + "=" + username + "," + baseDN
+}
+
+type pluginConsumerPresence interface {
+	HasPluginConsumers(plugin string) bool
+}
+
+func ldapPluginConsumersPresent(lookup base.ConsumerLookup) bool {
+	if lookup == nil {
+		return false
+	}
+	if presence, ok := lookup.(pluginConsumerPresence); ok {
+		return presence.HasPluginConsumers(name)
+	}
+	return true
 }
 
 func (p *Plugin) writeAuthError(w http.ResponseWriter, status int, message string) {

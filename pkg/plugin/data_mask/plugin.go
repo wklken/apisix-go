@@ -10,6 +10,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 )
 
@@ -122,10 +123,11 @@ func (p *Plugin) PostInit() error {
 			rule.pathSegments = nil
 			if rule.Action == "regex" {
 				compiled, err := regexp.Compile(rule.Regex)
-				if err != nil {
-					return fmt.Errorf("invalid regex %q for %s: %w", rule.Regex, rule.Name, err)
+				if err == nil {
+					rule.compiledRegex = compiled
+				} else {
+					logger.Errorf("failed to apply regex substitution: %s", err)
 				}
-				rule.compiledRegex = compiled
 			}
 			if rule.Type == "body" && rule.BodyFormat == "json" {
 				segments, err := parseJSONPath(rule.Name)
@@ -184,15 +186,17 @@ func (p *Plugin) SanitizeLogSnapshot(snapshot *base.LogSnapshot) error {
 		return nil
 	}
 	if snapshot.Request.BodyTruncated || len(snapshot.Request.Body) > p.config.MaxBodySize {
-		snapshot.Request.Body = nil
-		snapshot.Request.BodyTruncated = true
-		return fmt.Errorf("request body is incomplete for data masking")
+		logger.Warnf(
+			"data-mask: skipping body masking because body size (%d) exceeds max_body_size (%d)",
+			len(snapshot.Request.Body),
+			p.config.MaxBodySize,
+		)
+		return nil
 	}
 	body, _, err := p.maskBodyRules(snapshot.Request.Body, p.bodyRules)
 	if err != nil {
-		snapshot.Request.Body = nil
-		snapshot.Request.BodyTruncated = true
-		return fmt.Errorf("mask request body: %w", err)
+		logger.Warnf("data-mask: skipping body masking: %s", err)
+		return nil
 	}
 	snapshot.Request.Body = body
 	delete(snapshot.Request.RequestVars, "$request_body")
@@ -581,6 +585,7 @@ func maskString(value string, rule MaskRule) (string, bool) {
 		var err error
 		re, err = regexp.Compile(rule.Regex)
 		if err != nil {
+			logger.Errorf("failed to apply regex substitution: %s", err)
 			return value, false
 		}
 	}

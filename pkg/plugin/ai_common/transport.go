@@ -1,8 +1,12 @@
 package ai_common
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
+	"net"
 	"net/http"
+	"syscall"
 	"time"
 )
 
@@ -22,6 +26,29 @@ func ApplyTransportSSLVerify(transport *http.Transport, verify *bool) {
 	if verify != nil && !*verify {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
+}
+
+// ProviderRequestErrorStatus maps LLM transport failures the same way as
+// APISIX 3.17 ai-proxy: 504 on timeout, otherwise 500.
+func ProviderRequestErrorStatus(err error) int {
+	if isTimeoutError(err) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusInternalServerError
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+	var timeoutErr net.Error
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 // HasProtocolRequestBodyOverride reports whether values contains a key for a

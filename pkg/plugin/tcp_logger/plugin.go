@@ -38,7 +38,7 @@ const schema = `
 	  },
 	  "ssl_verify": {
 		"type": "boolean",
-		"default": true
+		"default": false
 	  },
 	  "tls_options": {
 		"type": "string"
@@ -226,7 +226,7 @@ func (p *Plugin) PostInit() error {
 		p.config.Timeout = 1000
 	}
 	if p.config.SSLVerify == nil {
-		sslVerify := true
+		sslVerify := false
 		p.config.SSLVerify = &sslVerify
 	}
 	if p.config.MaxReqBodyBytes == 0 {
@@ -419,10 +419,10 @@ func (p *Plugin) dial(ctx context.Context) (net.Conn, error) {
 		return dialer.DialContext(ctx, "tcp", p.config.addr)
 	}
 
-	sslVerify := p.config.SSLVerify == nil || *p.config.SSLVerify
+	sslVerify := p.config.SSLVerify != nil && *p.config.SSLVerify
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: !sslVerify, //nolint:gosec // explicit ssl_verify=false is the user opt-out
+		InsecureSkipVerify: !sslVerify, //nolint:gosec // APISIX 3.17 sslhandshake third arg is false; ssl_verify=true is opt-in
 	}
 	if p.config.TLSOptions != nil && *p.config.TLSOptions != "" {
 		tlsConfig.ServerName = *p.config.TLSOptions

@@ -572,6 +572,38 @@ func TestExistingSessionPassesRequest(t *testing.T) {
 	}
 }
 
+func TestIdPLogoutRequestDeletesTicketEvenWhenSessionCookiePresent(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		IDPURI:         "https://cas.example.com",
+		CASCallbackURI: "/cas_callback",
+		LogoutURI:      "/logout",
+		Cookie: CookieConfig{
+			Secret: strings.Repeat("s", 32),
+			Secure: new(false),
+		},
+	})
+	p.storeSession("ST-1", "alice")
+	p.storeSession("ST-cookie", "bob")
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/cas_callback",
+		strings.NewReader(`<samlp:LogoutRequest><samlp:SessionIndex>ST-1</samlp:SessionIndex></samlp:LogoutRequest>`),
+	)
+	req.AddCookie(&http.Cookie{Name: p.sessionOptions().cookieName, Value: "ST-cookie"})
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler was called for SLO while a session cookie was present")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if testSessionExists(p, "ST-1") {
+		t.Fatal("SLO ticket still exists when a session cookie was present")
+	}
+}
+
 func TestIdPLogoutRequestDeletesMatchingCASSession(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		IDPURI:         "https://cas.example.com",

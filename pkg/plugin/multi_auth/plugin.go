@@ -475,7 +475,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 	failures := make([]authFailure, 0, len(auths))
 	for _, auth := range auths {
-		authenticatedRequest, failure := auth.succeeds(r)
+		authenticatedRequest, failure := auth.succeeds(r, w.Header())
 		if authenticatedRequest != nil {
 			return base.ContinueRequest(authenticatedRequest)
 		}
@@ -510,12 +510,20 @@ func (p *Plugin) releaseAuthGeneration(generation *authGeneration) {
 	closePreparedAuthChildren(retired)
 }
 
-func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
+func (a configuredAuth) succeeds(r *http.Request, responseHeaders http.Header) (*http.Request, authFailure) {
 	var authenticatedRequest *http.Request
 	originalBody := r.Body
 	apisixVars := cloneContextMap(ctx.GetApisixVars(r))
 	requestVars := cloneContextMap(ctx.GetRequestVars(r))
 	writer := &probeResponseWriter{header: http.Header{}, status: http.StatusOK}
+	defer func() {
+		// Preserve explicit APISIX authentication challenges across children,
+		// without leaking headers synthesized by Go error-response helpers.
+		key := http.CanonicalHeaderKey("WWW-Authenticate")
+		if values, assigned := writer.header[key]; assigned {
+			responseHeaders[key] = slices.Clone(values)
+		}
+	}()
 	probeTemplate := r.Clone(r.Context())
 	probeTemplate.Body = nil
 	probeTemplate.GetBody = nil
@@ -532,7 +540,7 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		} else {
 			authenticatedRequest = probeRequest
 		}
-		if result.Decision == base.RequestContinue && hasAuthenticationState(authenticatedRequest) {
+		if result.Decision == base.RequestContinue && childAuthenticated(authenticatedRequest) {
 			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 		}
 		authenticatedRequest = nil
@@ -540,12 +548,12 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		a.plugin.Handler(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 			authenticatedRequest = request
 		})).ServeHTTP(writer, probeRequest)
-		if hasAuthenticationState(authenticatedRequest) {
+		if childAuthenticated(authenticatedRequest) {
 			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 		}
 		authenticatedRequest = nil
 	}
-	if hasAuthenticationState(authenticatedRequest) {
+	if childAuthenticated(authenticatedRequest) {
 		return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 	}
 	if bodyState != nil {
@@ -553,6 +561,7 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 	}
 	restoreContextMap(ctx.GetApisixVars(r), apisixVars)
 	restoreContextMap(ctx.GetRequestVars(r), requestVars)
+	applyFailedChildRequestMutations(r, probeRequest)
 	message := strings.TrimSpace(recordedDiagnostic.String())
 	if message == "" {
 		message = strings.TrimSpace(writer.body.String())
@@ -600,6 +609,19 @@ func restoreContextMap(target, source map[string]any) {
 		}
 	}
 	maps.Copy(target, source)
+}
+
+func applyFailedChildRequestMutations(parent, probe *http.Request) {
+	if parent == nil || probe == nil {
+		return
+	}
+	parent.Header = probe.Header.Clone()
+	parent.Host = probe.Host
+	if probe.URL == nil {
+		return
+	}
+	cloned := *probe.URL
+	parent.URL = &cloned
 }
 
 // truncateAuthDiagnostic appends message to buffer without a separator,
@@ -678,6 +700,17 @@ func (body *snapshotErrorBody) Close() error             { return nil }
 
 func hasAuthenticationState(request *http.Request) bool {
 	_, ok := ctx.AuthenticationStateFrom(request)
+	return ok
+}
+
+func childAuthenticated(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	if hasAuthenticationState(request) {
+		return true
+	}
+	_, ok := ctx.AuthSuccessWithoutConsumer(request)
 	return ok
 }
 

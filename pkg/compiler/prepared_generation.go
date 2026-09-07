@@ -366,6 +366,16 @@ func (view consumerLookupView) ConsumerByPluginKey(plugin, key string) (resource
 	return view.bindings.ConsumerByPluginKey(plugin, key)
 }
 
+func (view consumerLookupView) HasPluginConsumers(plugin string) bool {
+	if len(view.candidates[plugin]) > 0 {
+		return true
+	}
+	if view.bindings == nil {
+		return false
+	}
+	return view.bindings.HasPluginConsumers(plugin)
+}
+
 func (view consumerLookupView) ConsumerByID(id string) (resource.Consumer, bool) {
 	if view.bindings == nil {
 		return resource.Consumer{}, false

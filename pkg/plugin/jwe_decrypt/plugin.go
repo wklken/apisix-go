@@ -120,16 +120,14 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		var consumer resource.Consumer
 		var plaintext []byte
 		found, credentialErr := base.UseConsumerCredential(
 			r.Context(), p.ConsumerLookup(), name, token.header.Kid,
-			func(candidate resource.Consumer, config resource.PluginConfig) error {
+			func(_ resource.Consumer, config resource.PluginConfig) error {
 				decrypted, err := decryptJWE(token, config)
 				if err != nil {
 					return err
 				}
-				consumer = candidate
 				plaintext = decrypted
 				return nil
 			},
@@ -144,7 +142,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		}
 
 		r.Header.Set(p.config.ForwardHeader, string(plaintext))
-		next.ServeHTTP(w, ctx.WithAuthenticationState(r, ctx.NewAuthenticationState(name, consumer)))
+		next.ServeHTTP(w, ctx.WithAuthSuccessWithoutConsumer(r, name))
 	}
 	return http.HandlerFunc(fn)
 }

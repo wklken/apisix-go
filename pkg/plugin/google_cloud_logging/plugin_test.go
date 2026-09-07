@@ -1433,6 +1433,35 @@ func TestLoadAuthConfigFromFile(t *testing.T) {
 	if auth.ProjectID != "project-from-file" {
 		t.Fatalf("project_id = %q, want project-from-file", auth.ProjectID)
 	}
+	wantScope := []string{"https://www.googleapis.com/auth/cloud-platform"}
+	if !slicesEqual(auth.Scope, wantScope) || len(auth.Scopes) != 0 {
+		t.Fatalf("auth_file scope = %#v scopes = %#v, want cloud-platform only", auth.Scope, auth.Scopes)
+	}
+}
+
+func TestAuthConfigAppliesFourSchemaDefaultScopes(t *testing.T) {
+	pemKey, _ := testPrivateKey(t)
+	p := newTestPlugin(t, Config{AuthConfig: &AuthConfig{
+		ClientEmail: "svc@example.iam.gserviceaccount.com",
+		PrivateKey:  pemKey,
+		ProjectID:   "project-a",
+		TokenURI:    "https://oauth2.googleapis.com/token",
+	}})
+	if !slicesEqual(p.config.AuthConfig.Scope, defaultScopes) {
+		t.Fatalf("auth_config scope = %#v, want four schema default scopes", p.config.AuthConfig.Scope)
+	}
+}
+
+func slicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func writeTempAuthFile(t *testing.T, pemKey string) string {

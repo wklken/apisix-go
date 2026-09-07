@@ -200,11 +200,11 @@ func parseBasicAuthorization(header string) (string, string, error) {
 	if err != nil {
 		return "", "", errInvalidBasicEncoding
 	}
-	user, pass, found := strings.Cut(string(decoded), ":")
-	if !found {
+	parts := strings.Split(string(decoded), ":")
+	if len(parts) < 2 {
 		return "", "", errInvalidBasicValue
 	}
-	return normalizeBasicCredential(user), normalizeBasicCredential(pass), nil
+	return normalizeBasicCredential(parts[0]), normalizeBasicCredential(parts[1]), nil
 }
 
 func normalizeBasicCredential(value string) string {

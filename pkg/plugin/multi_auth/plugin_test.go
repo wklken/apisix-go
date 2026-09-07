@@ -469,7 +469,7 @@ func TestHandlerAllowsBasicAuthWhenLaterPluginWouldFail(t *testing.T) {
 	}
 }
 
-func TestHandlerDoesNotLetFailedAuthMutateLaterAlternative(t *testing.T) {
+func TestHandlerAppliesFailedJWTHideCredentialsToLaterAlternative(t *testing.T) {
 	addAuthConsumer(t, "basic-after-jwt-user", map[string]any{
 		"basic-auth": map[string]any{"username": "basic-after-jwt-user", "password": "secret"},
 	})
@@ -486,15 +486,15 @@ func TestHandlerDoesNotLetFailedAuthMutateLaterAlternative(t *testing.T) {
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("basic-after-jwt-user:secret")))
 	res := httptest.NewRecorder()
 
-	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "basic-after-jwt-user" {
-			t.Fatalf("consumer_name = %v, want basic-after-jwt-user", got)
-		}
-		w.WriteHeader(http.StatusNoContent)
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("failed jwt-auth hide_credentials must strip Authorization before later children")
 	})).ServeHTTP(res, req)
 
-	if res.Code != http.StatusNoContent {
-		t.Fatalf("response code = %d, want 204; body=%s", res.Code, res.Body.String())
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401; body=%s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "Authorization Failed") {
+		t.Fatalf("body = %q, want Authorization Failed", res.Body.String())
 	}
 }
 
@@ -617,7 +617,10 @@ func TestHandlerRunsEveryAuthPluginWithinArrayObject(t *testing.T) {
 
 func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
 	req := newMultiAuthRequest()
-	authenticated, failure := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(req)
+	authenticated, failure := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(
+		req,
+		http.Header{},
+	)
 	if authenticated != nil || failure.status != http.StatusUnauthorized || failure.message != "" {
 		t.Fatalf(
 			"status-only auth result = (%v, %+v), want nil request with 401 empty-message failure",
@@ -629,7 +632,10 @@ func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
 
 func TestSuccessfulDirectAuthDoesNotLeakProbeRecorderContext(t *testing.T) {
 	req := newMultiAuthRequest()
-	authenticated, failure := (configuredAuth{name: "direct-success-auth", plugin: directSuccessAuth{}}).succeeds(req)
+	authenticated, failure := (configuredAuth{name: "direct-success-auth", plugin: directSuccessAuth{}}).succeeds(
+		req,
+		http.Header{},
+	)
 	if authenticated == nil || failure.name != "" {
 		t.Fatalf(
 			"direct success result = (%v, %+v), want authenticated request without failure",
@@ -895,6 +901,34 @@ func TestHandlerRejectsWhenAllAuthPluginsFail(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "Authorization Failed") {
 		t.Fatalf("body = %q, want Authorization Failed", res.Body.String())
+	}
+}
+
+func TestHandlerCopiesLastFailedChildWWWAuthenticate(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		AuthPlugins: []AuthPluginConfig{
+			{"basic-auth": {"realm": "basic-first"}},
+			{"key-auth": {"realm": "key-last"}},
+		},
+	})
+	req := newMultiAuthRequest()
+	res := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(res, req)
+
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want 401", res.Code)
+	}
+	if got := res.Body.String(); got != `{"message":"Authorization Failed"}` {
+		t.Fatalf("body = %q, want exact Authorization Failed JSON", got)
+	}
+	if got := res.Header().Get("WWW-Authenticate"); got != `apikey realm="key-last"` {
+		t.Fatalf("WWW-Authenticate = %q, want last key-auth realm", got)
+	}
+	if got := res.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("Content-Type = %q, want omitted probe header", got)
 	}
 }
 

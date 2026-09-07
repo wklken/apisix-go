@@ -149,7 +149,7 @@ func TestSnapshotDefaultLogFieldsBoundsHostnameResolution(t *testing.T) {
 	}
 }
 
-func TestDefaultFileLoggerFieldsRedactSensitiveHeaders(t *testing.T) {
+func TestDefaultFileLoggerFieldsIncludeSensitiveHeaders(t *testing.T) {
 	detached := snapshotDefaultLogFields(base.LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{
 			Method: http.MethodGet,
@@ -161,7 +161,7 @@ func TestDefaultFileLoggerFieldsRedactSensitiveHeaders(t *testing.T) {
 		Started:  time.Unix(100, 0),
 		Finished: time.Unix(101, 0),
 	})
-	assertSafeFileLoggerHeaders(t, detached)
+	assertDefaultFileLoggerHeaders(t, detached)
 }
 
 func TestCustomFileLoggerFormatRetainsSensitiveHeader(t *testing.T) {
@@ -312,7 +312,7 @@ func testFileLoggerHeaders() http.Header {
 	}
 }
 
-func assertSafeFileLoggerHeaders(t *testing.T, fields map[string]any) {
+func assertDefaultFileLoggerHeaders(t *testing.T, fields map[string]any) {
 	t.Helper()
 	for _, section := range []string{"request", "response"} {
 		payload, ok := fields[section].(map[string]any)
@@ -324,8 +324,8 @@ func assertSafeFileLoggerHeaders(t *testing.T, fields map[string]any) {
 			t.Fatalf("%s headers = %#v, want object", section, payload["headers"])
 		}
 		for _, name := range testSensitiveFileLoggerHeaders {
-			if _, ok := headers[name]; ok {
-				t.Fatalf("%s sensitive header %q = %#v, want omitted", section, name, headers[name])
+			if _, ok := headers[name]; !ok {
+				t.Fatalf("%s header %q missing, want official default access-log value", section, name)
 			}
 		}
 		if got := headers["x-visible"]; got == nil {

@@ -257,7 +257,8 @@ func (p *Plugin) consumerByID(id string) (resource.Consumer, bool) {
 // APISIX semantics with the configured grace period.
 func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
 	ctx.RegisterSensitiveQueryName(r, p.config.Query)
-	if token := ctx.RestoreTrustedRequestHeader(r, p.config.Header); token != "" {
+	token := ctx.RestoreTrustedRequestHeader(r, p.config.Header)
+	if _, present := r.Header[http.CanonicalHeaderKey(p.config.Header)]; present {
 		if *p.config.HideCredentials {
 			r.Header.Del(p.config.Header)
 		}
@@ -268,7 +269,8 @@ func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
 	}
 
 	query := r.URL.Query()
-	if token := query.Get(p.config.Query); token != "" {
+	if query.Has(p.config.Query) {
+		token := query.Get(p.config.Query)
 		if *p.config.HideCredentials {
 			query.Del(p.config.Query)
 			r.URL.RawQuery = query.Encode()
@@ -277,7 +279,7 @@ func (p *Plugin) fetchToken(r *http.Request) (string, bool) {
 	}
 
 	cookie, err := r.Cookie(p.config.Cookie)
-	if err != nil || cookie.Value == "" {
+	if err != nil {
 		return "", false
 	}
 	if *p.config.HideCredentials {

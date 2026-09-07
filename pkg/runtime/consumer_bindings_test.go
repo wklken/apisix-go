@@ -88,6 +88,12 @@ func TestConsumerBindingsIndexesAnonymousConsumerAndCredential(t *testing.T) {
 	if _, ok := bindings.ConsumerByPluginKey("basic-auth", "missing"); ok {
 		t.Fatal("ConsumerByPluginKey() found a missing credential")
 	}
+	if !bindings.HasPluginConsumers("basic-auth") {
+		t.Fatal("HasPluginConsumers(basic-auth) = false, want true")
+	}
+	if bindings.HasPluginConsumers("ldap-auth") {
+		t.Fatal("HasPluginConsumers(ldap-auth) = true, want false")
+	}
 }
 
 func TestConsumerBindingsPreservesEmptyCredentialLookupKeyCompatibility(t *testing.T) {

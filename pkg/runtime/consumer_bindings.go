@@ -114,6 +114,23 @@ func (bindings *ConsumerBindings) ConsumerByID(id string) (resource.Consumer, bo
 	return cloneBoundConsumer(consumer), true
 }
 
+func (bindings *ConsumerBindings) HasPluginConsumers(plugin string) bool {
+	if bindings == nil || plugin == "" {
+		return false
+	}
+	bindings.mu.RLock()
+	defer bindings.mu.RUnlock()
+	if bindings.closed {
+		return false
+	}
+	for key := range bindings.credentials {
+		if key.plugin == plugin {
+			return true
+		}
+	}
+	return false
+}
+
 func (bindings *ConsumerBindings) ConsumerGroupByID(id string) (resource.ConsumerGroup, bool) {
 	if bindings == nil {
 		return resource.ConsumerGroup{}, false

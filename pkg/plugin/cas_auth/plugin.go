@@ -256,6 +256,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
+		if r.Method == http.MethodPost && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) {
+			if p.handleIDPLogout(r) {
+				w.WriteHeader(http.StatusOK)
+				p.lifecycleMu.RUnlock()
+				return
+			}
+			http.Error(
+				w,
+				util.BuildMessageResponse("invalid logout request from IdP, no ticket"),
+				http.StatusBadRequest,
+			)
+			p.lifecycleMu.RUnlock()
+			return
+		}
+
 		opts := p.sessionOptions()
 		if sessionID := cookieValue(r, opts.cookieName); sessionID != "" {
 			if p.refreshSession(sessionID) {
@@ -276,21 +291,6 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 				p.lifecycleMu.RUnlock()
 				return
 			}
-		}
-
-		if r.Method == http.MethodPost && r.URL.Path == base.CallbackPath(p.config.CASCallbackURI) {
-			if p.handleIDPLogout(r) {
-				w.WriteHeader(http.StatusOK)
-				p.lifecycleMu.RUnlock()
-				return
-			}
-			http.Error(
-				w,
-				util.BuildMessageResponse("invalid logout request from IdP, no ticket"),
-				http.StatusBadRequest,
-			)
-			p.lifecycleMu.RUnlock()
-			return
 		}
 
 		p.firstAccess(w, r)

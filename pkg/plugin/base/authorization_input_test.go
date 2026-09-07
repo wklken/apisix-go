@@ -39,6 +39,9 @@ func TestCaptureAuthorizationFactsUsesTrustedRequestIdentity(t *testing.T) {
 	if facts.Path != "/orders" || facts.RawQuery != "role=admin&role=reader" {
 		t.Fatalf("URL facts = %#v", facts)
 	}
+	if facts.RequestURI != "/orders?role=admin&role=reader" {
+		t.Fatalf("RequestURI = %q, want original path and query", facts.RequestURI)
+	}
 	if got := facts.Headers["X-Role"]; len(got) != 2 || got[0] != "admin" || got[1] != "reader" {
 		t.Fatalf("X-Role = %v, want both values", got)
 	}
@@ -84,6 +87,20 @@ func TestCaptureAuthorizationFactsCopiesHeadersAndExposesOnlySafeResources(t *te
 		if strings.Contains(raw, secret) {
 			t.Fatalf("serialized facts contain %q: %s", secret, raw)
 		}
+	}
+}
+
+func TestCaptureAuthorizationFactsSnapshotsOriginalRequestURIAfterRewrite(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/admin?x=1", nil)
+	r.URL.Path = "/public"
+	r.URL.RawQuery = "rewritten=1"
+
+	facts := CaptureAuthorizationFacts(r, "", AuthorizationResource{}, AuthorizationResource{})
+	if facts.RequestURI != "/admin?x=1" {
+		t.Fatalf("RequestURI = %q, want original /admin?x=1", facts.RequestURI)
+	}
+	if facts.Path != "/public" || facts.RawQuery != "rewritten=1" {
+		t.Fatalf("current URI facts = %#v, want rewritten path and query", facts)
 	}
 }
 

@@ -16,7 +16,7 @@ cases:
                 - key-auth: {query: apikey, hide_credentials: true, header: apikey}
                 - jwt-auth: {cookie: jwt, query: jwt, hide_credentials: true, header: authorization}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
-        - id: multi-auth-failure-mutation-isolation
+        - id: multi-auth-failed-jwt-hides-credentials
           uri: /ordered
           plugins:
             multi-auth:
@@ -30,11 +30,9 @@ cases:
         expect:
           - {path: {equals: /hello}, headers: {Authorization: {equals: 'Basic Zm9vOmJhcg=='}}}
           - {path: {equals: /hello}, headers: {apikey: {absent: true}}}
-          - {path: {equals: /ordered}, headers: {Authorization: {equals: 'Basic Zm9vOmJhcg=='}}}
         respond:
           - {status: 200, body: hello world}
           - {status: 200, body: hello world}
-          - {status: 200, body: ordered alternative}
     steps:
       - name: missing-authorization-is-an-exact-401
         input: {path: /hello}
@@ -51,9 +49,9 @@ cases:
       - name: key-auth-allows-and-hides-the-header
         input: {path: /hello, headers: {apikey: auth-one}}
         output: {status: 200, body: {equals: hello world}}
-      - name: failed-hidden-jwt-alternative-cannot-remove-basic-credentials
+      - name: failed-hidden-jwt-removes-credentials-before-basic-fallback
         input: {path: /ordered, headers: {Authorization: 'Basic Zm9vOmJhcg=='}}
-        output: {status: 200, body: {equals: ordered alternative}, logs: {not_matches: '\bbar\b'}}
+        output: {status: 401, body: {equals: '{"message":"Authorization Failed"}'}, headers: {WWW-Authenticate: {equals: 'Basic realm="basic"'}}, logs: {not_matches: '\bbar\b'}}
 
   - name: invalid-first-auth-plugin-config
     config:

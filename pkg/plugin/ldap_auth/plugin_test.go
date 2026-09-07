@@ -42,6 +42,15 @@ func (lookup *ldapConsumerLookup) ConsumerByPluginKey(plugin, key string) (resou
 	return consumer, ok
 }
 
+func (lookup *ldapConsumerLookup) HasPluginConsumers(plugin string) bool {
+	if lookup == nil || plugin != name {
+		return false
+	}
+	lookup.mu.RLock()
+	defer lookup.mu.RUnlock()
+	return !lookup.closed && len(lookup.byKey) > 0
+}
+
 func (*ldapConsumerLookup) ConsumerByID(string) (resource.Consumer, bool) {
 	return resource.Consumer{}, false
 }
@@ -355,11 +364,11 @@ func TestLDAPConsumerLookupsAreGenerationIsolated(t *testing.T) {
 	assertConsumer(second, "ldap-generation-n-plus-one")
 }
 
-func TestUserDNEscapesRFC4514Metacharacters(t *testing.T) {
+func TestUserDNDoesNotEscapeRFC4514Metacharacters(t *testing.T) {
 	p := newTestPlugin(t, nil)
 
-	if got := p.userDN(`alice,ou=admins`); got != `cn=alice\,ou=admins,dc=example,dc=org` {
-		t.Fatalf("userDN() = %q, want escaped RDN value", got)
+	if got := p.userDN(`alice,ou=admins`); got != `cn=alice,ou=admins,dc=example,dc=org` {
+		t.Fatalf("userDN() = %q, want unescaped official concatenation", got)
 	}
 }
 
@@ -631,8 +640,30 @@ func TestHandlerRejectsMissingRelatedConsumer(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rr.Code)
 	}
+	if !strings.Contains(rr.Body.String(), "Missing related consumer") {
+		t.Fatalf("body = %q, want missing related consumer message", rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsUnknownUserDNWhenConsumersExist(t *testing.T) {
+	addLDAPConsumer(t, "ldap-alice", "cn=alice,dc=example,dc=org")
+	p := newTestPlugin(t, func(username, password string, cfg Config) error {
+		return nil
+	})
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rr, ldapRequest("missing", "secret"))
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
 	if !strings.Contains(rr.Body.String(), "Invalid user authorization") {
 		t.Fatalf("body = %q, want invalid user authorization message", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "Missing related consumer") {
+		t.Fatal("DN miss used the empty-consumer message")
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type Plugin struct {
@@ -204,9 +203,11 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if decision.StatusCode == 0 {
 				decision.StatusCode = http.StatusForbidden
 			}
-			if _, ok := util.TerminalStatus(decision.StatusCode); !ok {
-				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-				return
+			if decision.StatusCode >= 100 && decision.StatusCode < 200 {
+				// ngx.exit with an informational status does not complete a final
+				// response. Returning here would let net/http synthesize a 200.
+				<-r.Context().Done()
+				panic(http.ErrAbortHandler)
 			}
 			w.WriteHeader(decision.StatusCode)
 			if decision.Reason != nil {

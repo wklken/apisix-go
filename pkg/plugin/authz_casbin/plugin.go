@@ -140,7 +140,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		allowed, err := enforcer.Enforce(p.username(r), r.URL.Path, r.Method)
+		allowed, err := enforcer.Enforce(p.username(r), requestPath(r), r.Method)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 			return
@@ -194,4 +194,11 @@ func (p *Plugin) username(r *http.Request) string {
 		return username
 	}
 	return "anonymous"
+}
+
+func requestPath(r *http.Request) string {
+	if r.URL != nil {
+		return r.URL.Path
+	}
+	return ""
 }

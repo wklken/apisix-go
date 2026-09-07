@@ -132,22 +132,10 @@ func CollapseHeaderValues(values http.Header) map[string]any {
 	return collapseHeaderValues(values, nil)
 }
 
-// CollapseAccessLogHeaderValues normalizes default access-log headers while
-// omitting sensitive credentials and tokens.
+// CollapseAccessLogHeaderValues normalizes default access-log headers the
+// same way APISIX log-util.lua copies ngx.req.get_headers() with no omit list.
 func CollapseAccessLogHeaderValues(values http.Header) map[string]any {
-	return collapseHeaderValues(values, sensitiveAccessLogHeaders)
-}
-
-var sensitiveAccessLogHeaders = map[string]struct{}{
-	"authorization":        {},
-	"proxy-authorization":  {},
-	"cookie":               {},
-	"set-cookie":           {},
-	"apikey":               {},
-	"x-api-key":            {},
-	"x-functions-key":      {},
-	"x-amz-security-token": {},
-	"x-goog-api-key":       {},
+	return CollapseHeaderValues(values)
 }
 
 func collapseHeaderValues(values http.Header, omitted map[string]struct{}) map[string]any {

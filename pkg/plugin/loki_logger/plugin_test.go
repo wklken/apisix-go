@@ -56,7 +56,7 @@ func TestRunLogPhasePreservesLokiEnvelopeLabelsAndTimestamp(t *testing.T) {
 	}
 }
 
-func TestDefaultLogFieldsRedactSensitiveHeaders(t *testing.T) {
+func TestDefaultLogFieldsPreserveConfiguredHeaders(t *testing.T) {
 	requestHeaders := http.Header{
 		"Authorization": {"Bearer request-secret"},
 		"Cookie":        {"session=request-secret"},
@@ -77,18 +77,18 @@ func TestDefaultLogFieldsRedactSensitiveHeaders(t *testing.T) {
 		Response: apisixlog.ResponseLogSnapshot{Header: responseHeaders},
 		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
 	}
-	assertLokiHeadersSanitized(t, lokiSnapshotDefaultFields(snapshot, time.Unix(100, 0)))
+	assertLokiHeadersPreserved(t, lokiSnapshotDefaultFields(snapshot, time.Unix(100, 0)))
 }
 
-func assertLokiHeadersSanitized(t *testing.T, fields map[string]any) {
+func assertLokiHeadersPreserved(t *testing.T, fields map[string]any) {
 	t.Helper()
 	request := requiredObject(t, fields, "request")
 	requestHeaders := requiredObject(t, request, "headers")
-	if _, ok := requestHeaders["authorization"]; ok {
-		t.Fatalf("request headers contain authorization: %#v", requestHeaders)
+	if got := requestHeaders["authorization"]; got != "Bearer request-secret" {
+		t.Fatalf("request authorization = %#v, want original header", got)
 	}
-	if _, ok := requestHeaders["cookie"]; ok {
-		t.Fatalf("request headers contain cookie: %#v", requestHeaders)
+	if got := requestHeaders["cookie"]; got != "session=request-secret" {
+		t.Fatalf("request cookie = %#v, want original header", got)
 	}
 	if got := requestHeaders["x-trace-id"]; got != "trace-a" {
 		t.Fatalf("request x-trace-id = %#v, want trace-a", got)
@@ -96,8 +96,8 @@ func assertLokiHeadersSanitized(t *testing.T, fields map[string]any) {
 
 	response := requiredObject(t, fields, "response")
 	responseHeaders := requiredObject(t, response, "headers")
-	if _, ok := responseHeaders["set-cookie"]; ok {
-		t.Fatalf("response headers contain set-cookie: %#v", responseHeaders)
+	if got := responseHeaders["set-cookie"]; got != "session=response-secret" {
+		t.Fatalf("response set-cookie = %#v, want original header", got)
 	}
 	if got := responseHeaders["x-upstream"]; got != "orders" {
 		t.Fatalf("response x-upstream = %#v, want orders", got)

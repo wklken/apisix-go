@@ -1,8 +1,9 @@
 cases:
   - name: public-api-and-request-merging
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: batch-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
         - {id: batch-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
         - {id: batch-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
@@ -76,8 +77,10 @@ cases:
             matches: '"status":200.*"body":"B".*"status":201.*"body":"C".*"status":202.*"body":"D"'
 
   - name: request-schema-validation
-    runtime: {plugins: [batch-requests]}
-    config: {routes: []}
+    runtime: {plugins: [batch-requests, public-api]}
+    config:
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     steps:
       - name: missing-pipeline
         input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline1":[{"path":"/b"}]}'}
@@ -93,7 +96,7 @@ cases:
         output: {status: 400, body: {matches: 'no request body.*at least one pipeline'}}
       - name: malformed-json
         input: {method: POST, path: /apisix/batch-requests, body: invalid json string}
-        output: {status: 400, body: {matches: 'invalid request body: invalid character'}}
+        output: {status: 400, body: {matches: 'invalid request body: invalid json string, err:'}}
       - name: empty-path
         input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":""}]}'}
         output: {status: 400, body: {matches: 'pipeline\[0\]\.path is required'}}
@@ -120,9 +123,10 @@ cases:
         output: {status: 400, body: {matches: 'pipeline\[0\]\.path is required'}}
 
   - name: different-response-times
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: timed-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
         - {id: timed-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
         - {id: timed-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
@@ -141,9 +145,10 @@ cases:
           body: {matches: '"status":200.*"status":201.*"status":202'}
 
   - name: last-request-timeout
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: last-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
         - {id: last-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
         - {id: last-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
@@ -176,9 +181,10 @@ cases:
           body: {matches: '^\[\{"status":504,"reason":"Gateway Timeout".*"body":"intentional"\},\{"status":204,"reason":"No Content".*\}\]\n?$'}
 
   - name: first-request-timeout-stops-pipeline
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: first-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
         - {id: first-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
         - {id: first-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
@@ -199,9 +205,10 @@ cases:
           body: {matches: '^\[\{"status":504,"reason":"upstream timeout"\}\]\n?$'}
 
   - name: streamed-client-body-and-header-copy
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: copy-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
         - {id: copy-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
         - {id: copy-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
@@ -264,8 +271,10 @@ cases:
           body: {matches: 'request-cookies-b.*request-header-b.*request-cookies-c.*request-header-c.*request-cookies-d.*request-header-d'}
 
   - name: default-body-limit
-    runtime: {plugins: [batch-requests]}
-    config: {routes: []}
+    runtime: {plugins: [batch-requests, public-api]}
+    config:
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     steps:
       - name: content-length-above-one-megabyte
         input:
@@ -284,10 +293,11 @@ cases:
         output: *too_large
 
   - name: metadata-body-limit
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       plugin_metadata: [{id: batch-requests, max_body_size: 2048}]
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: metadata-a, uri: /a, upstream: {type: roundrobin, nodes: {"{{FIXTURE.a.ADDR}}": 1}}}
     fixtures:
       - name: a
@@ -323,9 +333,10 @@ cases:
         output: {status: 200, body: {matches: '"status":200.*"Base-Header":"base".*"X-Header1":"hello".*"X-Header2":"world".*"body":"A"'}}
 
   - name: pipeline-request-body
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: batch-echo, uri: /echo, upstream: {type: roundrobin, nodes: {"{{FIXTURE.echo.ADDR}}": 1}}}
     fixtures:
       - name: echo
@@ -342,10 +353,11 @@ cases:
         output: {status: 200, body: {matches: '"status":200.*"body":"hello"'}}
 
   - name: metadata-pipeline-limit
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       plugin_metadata: [{id: batch-requests, max_pipeline_items: 2}]
-      routes: []
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     steps:
       - name: configured-limit-allows-two
         input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing"},{"path":"/missing"}]}'}
@@ -355,18 +367,21 @@ cases:
         output: {status: 400, body: {matches: 'too many pipeline requests, 3 exceeds the maximum of 2'}}
 
   - name: empty-metadata-restores-defaults
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       plugin_metadata: [{id: batch-requests}]
-      routes: []
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing"}]}'}
     output: {status: 200, body: {matches: '"status":404'}}
 
   - name: custom-uri-replaces-default
     runtime:
-      plugins: [batch-requests]
+      plugins: [batch-requests, public-api]
       plugin_attr: {batch-requests: {uri: /foo/bar}}
-    config: {routes: []}
+    config:
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     input:
       method: POST
       path: /apisix/batch-requests
@@ -375,10 +390,11 @@ cases:
 
   - name: custom-uri-serves-batches
     runtime:
-      plugins: [batch-requests]
+      plugins: [batch-requests, public-api]
       plugin_attr: {batch-requests: {uri: /foo/bar}}
     config:
       routes:
+        - {id: batch-public-api, uri: /foo/bar, plugins: {public-api: {}}}
         - {id: custom-b, uri: /b, upstream: {type: roundrobin, nodes: {"{{FIXTURE.b.ADDR}}": 1}}}
         - {id: custom-c, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
         - {id: custom-d, uri: /d, upstream: {type: roundrobin, nodes: {"{{FIXTURE.d.ADDR}}": 1}}}
@@ -396,24 +412,29 @@ cases:
 
   - name: unrelated-plugin-attr-keeps-default
     runtime:
-      plugins: [batch-requests]
+      plugins: [batch-requests, public-api]
       plugin_attr: {x: {uri: /foo/bar}}
-    config: {routes: []}
+    config:
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     input: {method: POST, path: /apisix/batch-requests, body: '{"timeout":100,"pipeline":[{"path":"/missing"}]}'}
     output: {status: 200, body: {matches: '"status":404'}}
 
   - name: missing-uri-attr-keeps-default
     runtime:
-      plugins: [batch-requests]
+      plugins: [batch-requests, public-api]
       plugin_attr: {batch-requests: {xyz: /foo/bar}}
-    config: {routes: []}
+    config:
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     input: {method: POST, path: /apisix/batch-requests, body: '{"timeout":100,"pipeline":[{"path":"/missing"}]}'}
     output: {status: 200, body: {matches: '"status":404'}}
 
   - name: real-ip-header-is-authoritative
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: real-ip, uri: /c, upstream: {type: roundrobin, nodes: {"{{FIXTURE.c.ADDR}}": 1}}}
     fixtures:
       - name: c
@@ -442,8 +463,10 @@ cases:
         output: *real_ip_output
 
   - name: batch-response-content-type
-    runtime: {plugins: [batch-requests]}
-    config: {routes: []}
+    runtime: {plugins: [batch-requests, public-api]}
+    config:
+      routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
     input: {method: POST, path: /apisix/batch-requests, body: '{"pipeline":[{"path":"/missing","method":"PUT"}]}'}
     output:
       status: 200
@@ -451,9 +474,10 @@ cases:
       body: {matches: '"status":404'}
 
   - name: timed-out-subresponse-count
-    runtime: {plugins: [batch-requests]}
+    runtime: {plugins: [batch-requests, public-api]}
     config:
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - {id: batch-ok, uri: /ok, upstream: {type: roundrobin, nodes: {"{{FIXTURE.ok.ADDR}}": 1}}}
         - {id: batch-timeout, uri: /timeout, upstream: {type: roundrobin, nodes: {"{{FIXTURE.timeout.ADDR}}": 1}}}
     fixtures:
@@ -470,7 +494,7 @@ cases:
           body: {matches: '^\[\{"status":200.*"body":"ok"\},\{"status":504,"reason":"upstream timeout"\}\]\n?$'}
 
   - name: grpc-transcode-direct-and-batch
-    runtime: {plugins: [batch-requests, grpc-transcode]}
+    runtime: {plugins: [batch-requests, grpc-transcode, public-api]}
     config:
       protos:
         - id: "1"
@@ -487,6 +511,7 @@ cases:
               string message = 1;
             }
       routes:
+        - {id: batch-public-api, uri: /apisix/batch-requests, plugins: {public-api: {}}}
         - id: batch-grpc
           uri: /grpctest
           methods: [GET, POST]

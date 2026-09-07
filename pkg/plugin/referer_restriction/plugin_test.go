@@ -86,6 +86,21 @@ func TestBypassMissingAllowsMalformedReferer(t *testing.T) {
 	}
 }
 
+func TestWhitelistMatchesHostnameWithoutPort(t *testing.T) {
+	p := newTestPlugin(t, Config{Whitelist: []string{"www.example.com"}})
+	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)
+	req.Header.Set("Referer", "https://www.example.com:8443/path")
+
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
 func TestLeadingStarMatchesHostSuffix(t *testing.T) {
 	p := newTestPlugin(t, Config{Whitelist: []string{"*.example.com"}})
 	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)

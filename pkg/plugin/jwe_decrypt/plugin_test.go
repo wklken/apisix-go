@@ -170,9 +170,8 @@ func TestHandlerUsesInjectedJWEConsumerLookupAuthoritatively(t *testing.T) {
 		if got := r.Header.Get("X-Decrypted"); got != "Bearer lookup-plaintext" {
 			t.Fatalf("forwarded plaintext = %q", got)
 		}
-		state, ok := ctx.AuthenticationStateFrom(r)
-		if !ok || state.Consumer().Username != "lookup-jwe-user" {
-			t.Fatalf("authentication state = %#v/%v", state, ok)
+		if state, ok := ctx.AuthenticationStateFrom(r); ok {
+			t.Fatalf("authentication state = %#v, want unattached jwe-decrypt success", state)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(response, request)
@@ -217,15 +216,17 @@ func TestJWEConsumerLookupsAreGenerationIsolated(t *testing.T) {
 	}}
 	first := newLookupTestPlugin(t, Config{ForwardHeader: "X-Decrypted"}, firstLookup)
 	second := newLookupTestPlugin(t, Config{ForwardHeader: "X-Decrypted"}, secondLookup)
-	assertConsumer := func(p *Plugin, secret, plaintext, want string) {
+	assertDecrypted := func(p *Plugin, secret, plaintext string) {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
 		request.Header.Set("Authorization", makeCompactJWE(t, kid, []byte(secret), plaintext))
 		response := httptest.NewRecorder()
 		p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			state, ok := ctx.AuthenticationStateFrom(r)
-			if !ok || state.Consumer().Username != want || r.Header.Get("X-Decrypted") != plaintext {
-				t.Errorf("generation result = %#v/%v/%q", state, ok, r.Header.Get("X-Decrypted"))
+			if _, ok := ctx.AuthenticationStateFrom(r); ok {
+				t.Errorf("jwe-decrypt attached consumer identity")
+			}
+			if r.Header.Get("X-Decrypted") != plaintext {
+				t.Errorf("generation plaintext = %q, want %q", r.Header.Get("X-Decrypted"), plaintext)
 			}
 			w.WriteHeader(http.StatusNoContent)
 		})).ServeHTTP(response, request)
@@ -235,14 +236,14 @@ func TestJWEConsumerLookupsAreGenerationIsolated(t *testing.T) {
 	}
 	var group sync.WaitGroup
 	for range 16 {
-		group.Go(func() { assertConsumer(first, firstSecret, "first", "jwe-generation-n") })
+		group.Go(func() { assertDecrypted(first, firstSecret, "first") })
 		group.Go(func() {
-			assertConsumer(second, secondSecret, "second", "jwe-generation-n-plus-one")
+			assertDecrypted(second, secondSecret, "second")
 		})
 	}
 	group.Wait()
 	firstLookup.close()
-	assertConsumer(second, secondSecret, "second-after-close", "jwe-generation-n-plus-one")
+	assertDecrypted(second, secondSecret, "second-after-close")
 }
 
 func TestHandlerDecryptsBase64EncodedConsumerSecret(t *testing.T) {

@@ -12,13 +12,36 @@ import (
 )
 
 func TestRegisterExtraRoutesAddsNodeStatusWhenEnabled(t *testing.T) {
+	mux := chi.NewRouter()
+	registerExtraRoutes(mux, &config.Config{
+		Apisix:  config.Apisix{ID: "node-status-id"},
+		Plugins: []string{"node-status"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/apisix/status", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("response code = %d, want 404 without a public-api route; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegisterExtraRoutesRegistersNodeStatusOnPublicAPI(t *testing.T) {
 	staticConfig := &config.Config{
 		Apisix:  config.Apisix{ID: "node-status-id"},
 		Plugins: []string{"node-status"},
 	}
-
+	registry := public_api.NewRegistry()
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux, staticConfig)
+	registerExtraRoutes(mux, staticConfig, registry)
+
+	if handler := registry.Lookup(http.MethodGet, "/apisix/status"); handler == nil {
+		t.Fatal("node-status handler is missing from public API registry")
+	}
+
+	p := newPublicAPITestPlugin(t, map[string]any{}, registry)
+	mux.Method(http.MethodGet, "/apisix/status", p.Handler(http.NotFoundHandler()))
 
 	req := httptest.NewRequest(http.MethodGet, "/apisix/status", nil)
 	rr := httptest.NewRecorder()

@@ -1,6 +1,8 @@
 package ai_common
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -65,6 +67,15 @@ func TestMergeBodyMap(t *testing.T) {
 	}
 }
 
+func TestProviderRequestErrorStatus(t *testing.T) {
+	if got := ProviderRequestErrorStatus(context.DeadlineExceeded); got != http.StatusGatewayTimeout {
+		t.Fatalf("timeout status = %d, want 504", got)
+	}
+	if got := ProviderRequestErrorStatus(errors.New("connection refused")); got != http.StatusInternalServerError {
+		t.Fatalf("dial status = %d, want 500", got)
+	}
+}
+
 func TestCopyForwardHeadersSkipsHopByHop(t *testing.T) {
 	src := http.Header{
 		"Host":                {"example.com"},
@@ -93,6 +104,12 @@ func TestCopyForwardHeadersSkipsHopByHop(t *testing.T) {
 	if got := dst.Get("X-Forwarded-For"); got != "1.2.3.4" {
 		t.Fatalf("X-Forwarded-For = %q, want 1.2.3.4", got)
 	}
+	if got := dst.Get("Cookie"); got != "sid=abc" {
+		t.Fatalf("Cookie = %q, want forwarded client cookie", got)
+	}
+	if got := dst.Get("Authorization"); got != "Bearer client-secret" {
+		t.Fatalf("Authorization = %q, want forwarded client authorization", got)
+	}
 	for _, field := range []string{
 		"Host",
 		"Content-Length",
@@ -105,8 +122,6 @@ func TestCopyForwardHeadersSkipsHopByHop(t *testing.T) {
 		"Trailer",
 		"Transfer-Encoding",
 		"Upgrade",
-		"Cookie",
-		"Authorization",
 	} {
 		if values := dst.Values(field); len(values) != 0 {
 			t.Fatalf("%s values = %v, want dropped", field, values)

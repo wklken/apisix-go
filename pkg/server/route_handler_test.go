@@ -2334,18 +2334,27 @@ func TestRouteHandlerBatchRunsLimitConnFinalizer(t *testing.T) {
 	generation := newCompiledHTTPGenerationFixture(
 		t,
 		338,
-		[]string{"batch-requests", "limit-conn"},
-		[]generation.Resource{compiledHTTPRouteResource(
-			t,
-			"limited",
-			"/limited",
-			backend,
-			map[string]resource.PluginConfig{
-				"limit-conn": map[string]any{
-					"conn": 1, "burst": 0, "default_conn_delay": 0.001, "key": "remote_addr",
+		[]string{"batch-requests", "limit-conn", "public-api"},
+		[]generation.Resource{
+			compiledHTTPRouteResource(
+				t,
+				"batch-public-api",
+				batch_requests.DefaultURI,
+				backend,
+				map[string]resource.PluginConfig{"public-api": map[string]any{}},
+			),
+			compiledHTTPRouteResource(
+				t,
+				"limited",
+				"/limited",
+				backend,
+				map[string]resource.PluginConfig{
+					"limit-conn": map[string]any{
+						"conn": 1, "burst": 0, "default_conn_delay": 0.001, "key": "remote_addr",
+					},
 				},
-			},
-		)},
+			),
+		},
 	)
 	request := httptest.NewRequest(
 		http.MethodPost,

@@ -111,8 +111,8 @@ cases:
         - username: jack
           plugins:
             jwe-decrypt:
-              key: user-key
-              secret: "12345678901234567890123456789012"
+              key: '$encrypted://v2:H5SAw+y44nmBnmFdZtNfEohZnlHBy+QRLlJ7XHc8iAF1t9yI'
+              secret: '$encrypted://v2:RcBwf+ww5mTcMbfpJ4nqTLg3gkNk3sOYyFHZV3C7LOsvDoQRnw0a932FOXcF9cnKe63fddwd2asrCavm'
       routes:
         - id: jwe-decrypt-encrypted-consumer
           uri: /encrypted-consumer

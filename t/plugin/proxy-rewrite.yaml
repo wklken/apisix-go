@@ -708,7 +708,7 @@ cases:
   - name: forwarded-proto-untrusted-keeps-first
     runtime:
       apisix:
-        trusted_addresses: []
+        trusted_addresses: [192.0.2.0/24]
     config:
       routes:
         - id: proxy-rewrite-forwarded-proto-untrusted

@@ -785,7 +785,9 @@ func normalizeStandaloneResource(
 		if err := json.Unmarshal(rawPlugins, &plugins); err != nil {
 			return id, nil, fmt.Errorf("decode plugins: %w", err)
 		}
-		if encryption.Enabled() {
+		// Consumer validation needs the original standalone values. Explicit
+		// secret references are resolved through consumer-scoped declarations.
+		if encryption.Enabled() && bucket != "consumers" {
 			if err := encryption.EncryptPluginConfigs(plugins); err != nil {
 				return id, nil, fmt.Errorf("encrypt plugin fields: %w", err)
 			}

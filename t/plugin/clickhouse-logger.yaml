@@ -185,11 +185,11 @@ cases:
             - id: clickhouse-response-enabled
               uri: /response-enabled
               plugins:
-                clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, log_format: {case: response-enabled}}
+                clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, log_format: {case: response-enabled, response_body: '$resp_body'}}
               upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
         fixtures:
           - {name: primary, kind: http, expect: [{method: GET, path: {equals: /response-enabled}}], respond: [{status: 200, body: hello-response}]}
-          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-enabled","response":\{"body":"hello-response"\},"route_id":"clickhouse-response-enabled"\}$'}}], respond: [{status: 200}]}
+          - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-enabled","response_body":"hello-response","route_id":"clickhouse-response-enabled"\}$'}}], respond: [{status: 200}]}
         steps:
           - {name: response-body-is-delivered, input: {path: /response-enabled}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
       - name: default-disabled
@@ -211,11 +211,11 @@ cases:
         - id: clickhouse-response-expression
           uri: /response-expression
           plugins:
-            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, include_resp_body_expr: [[arg_foo, '==', bar]], log_format: {case: response-expression}}
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: response_logs, batch_max_size: 1, inactive_timeout: 1, include_resp_body: true, include_resp_body_expr: [[arg_foo, '==', bar]], log_format: {case: response-expression, response_body: '$resp_body'}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: '/response-expression?foo=bar'}}], respond: [{status: 200, body: hello-response}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-expression","response":\{"body":"hello-response"\},"route_id":"clickhouse-response-expression"\}$'}}], respond: [{status: 200}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO response_logs FORMAT JSONEachRow \{"case":"response-expression","response_body":"hello-response","route_id":"clickhouse-response-expression"\}$'}}], respond: [{status: 200}]}
     steps:
       - {name: expression-captures-response, input: {path: '/response-expression?foo=bar'}, output: {status: 200, body: {equals: hello-response}}, wait: 1s}
   - name: response-body-expression-skips
@@ -237,11 +237,11 @@ cases:
         - id: clickhouse-request-enabled
           uri: /request-enabled
           plugins:
-            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: request_logs, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, log_format: {case: request-enabled}}
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: request_logs, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, log_format: {case: request-enabled, request_body: '$request_body'}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/request-enabled?foo=bar'}, body: {equals: '{"sample":"hello"}'}}], respond: [{status: 200, body: hello-request}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO request_logs FORMAT JSONEachRow \{"case":"request-enabled","request":\{"body":"\{\\"sample\\":\\"hello\\"\}"\},"route_id":"clickhouse-request-enabled"\}$'}}], respond: [{status: 200}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO request_logs FORMAT JSONEachRow \{"case":"request-enabled","request_body":"\{\\"sample\\":\\"hello\\"\}","route_id":"clickhouse-request-enabled"\}$'}}], respond: [{status: 200}]}
     steps:
       - {name: default-request-body-is-delivered, input: {method: POST, path: '/request-enabled?foo=bar', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
   - name: request-body-expression-matches
@@ -250,11 +250,11 @@ cases:
         - id: clickhouse-request-expression
           uri: /request-expression
           plugins:
-            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: request_logs, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_req_body_expr: [[arg_foo, '==', bar]], log_format: {case: request-expression}}
+            clickhouse-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', user: default, password: a, database: default, logtable: request_logs, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_req_body_expr: [[arg_foo, '==', bar]], log_format: {case: request-expression, request_body: '$request_body'}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/request-expression?foo=bar'}, body: {equals: '{"sample":"hello"}'}}], respond: [{status: 200, body: hello-request}]}
-      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO request_logs FORMAT JSONEachRow \{"case":"request-expression","request":\{"body":"\{\\"sample\\":\\"hello\\"\}"\},"route_id":"clickhouse-request-expression"\}$'}}], respond: [{status: 200}]}
+      - {name: sink, kind: http, expect: [{method: POST, path: {equals: /}, body: {matches: '^INSERT INTO request_logs FORMAT JSONEachRow \{"case":"request-expression","request_body":"\{\\"sample\\":\\"hello\\"\}","route_id":"clickhouse-request-expression"\}$'}}], respond: [{status: 200}]}
     steps:
       - {name: expression-captures-request, input: {method: POST, path: '/request-expression?foo=bar', body: '{"sample":"hello"}'}, output: {status: 200, body: {equals: hello-request}}, wait: 1s}
   - name: request-body-expression-skips

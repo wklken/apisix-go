@@ -24,6 +24,7 @@ It must pass:
 | --- | --- |
 | Source | Lint, build, unit tests, plugin registry contract tests, and plugin harness. |
 | HTTP smoke | Focused real-process authentication, rewrite, proxy-control, and rejection cases. |
+| HTTP integration | The complete real-process plugin integration suite for the candidate source. |
 | Concurrency and dependencies | Focused race tests plus reachable Go and container vulnerability checks. |
 | Container | Linux amd64 build, non-root proxy smoke, graceful shutdown, SBOM, and immutable local image identity. |
 | Stability | Canonical 30-minute concurrency-256 proxy soak using [Proxy Runtime Acceptance](../performance/proxy-runtime-acceptance.md). |

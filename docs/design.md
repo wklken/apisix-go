@@ -282,4 +282,5 @@ qualification state.
 | [0004](architecture/adr/0004-runtime-safety-boundaries.md) | accepted | Bound ambiguous stream routing and embedded Lua execution. |
 | [0005](architecture/adr/0005-credential-log-redaction.md) | accepted | Redact credential material from authentication logs. |
 | [0006](architecture/adr/0006-frontend-tls-cipher-boundary.md) | accepted | Preserve the Go TLS cipher boundary, including unsupported finite-field DHE. |
+| [0007](architecture/adr/0007-kafka-logger-producer-ownership.md) | accepted | Keep Kafka logger producers bound to their configuration and generation instead of a process-wide numeric cluster cache. |
 | [0008](architecture/adr/0008-data-mask-regex-boundary.md) | accepted | Document data-mask expressions unsupported by the Go regular-expression engine. |

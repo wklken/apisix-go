@@ -36,7 +36,7 @@ cases:
                 - {path: /response/headers/x-upstream, value: {equals: default}}
                 - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
-                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /server/version, value: {equals: 3.17.0}}
                 - {path: /service_id, value: {equals: ''}}
                 - {path: /route_id, value: {equals: udp-logger-valid-route}}
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
@@ -169,7 +169,7 @@ cases:
                 - {path: /response/headers/x-upstream, value: {equals: reload}}
                 - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
-                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /server/version, value: {equals: 3.17.0}}
                 - {path: /service_id, value: {equals: ''}}
                 - {path: /route_id, value: {equals: udp-logger-live-update}}
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
@@ -195,7 +195,7 @@ cases:
                 - {path: /response/headers/x-upstream, value: {equals: reload}}
                 - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
-                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /server/version, value: {equals: 3.17.0}}
                 - {path: /service_id, value: {equals: ''}}
                 - {path: /route_id, value: {equals: udp-logger-live-update}}
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
@@ -429,7 +429,7 @@ cases:
                 - {path: /response/headers/x-upstream, value: {equals: request-body}}
                 - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
-                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /server/version, value: {equals: 3.17.0}}
                 - {path: /service_id, value: {equals: ''}}
                 - {path: /route_id, value: {equals: udp-logger-request-body}}
                 - {path: /client_ip, value: {equals: 127.0.0.1}}
@@ -501,7 +501,7 @@ cases:
                 - {path: /response/size, value: {matches: '^[0-9]+$'}}
                 - {path: /response/body, value: {equals: "hello world\n"}}
                 - {path: /server/hostname, value: {matches: '^.+$'}}
-                - {path: /server/version, value: {equals: apisix-go}}
+                - {path: /server/version, value: {equals: 3.17.0}}
                 - {path: /service_id, value: {equals: ''}}
                 - {path: /route_id, value: {equals: udp-logger-response-body}}
                 - {path: /client_ip, value: {equals: 127.0.0.1}}

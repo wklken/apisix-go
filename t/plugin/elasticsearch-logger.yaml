@@ -95,6 +95,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
+          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
           - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"no-auth-rejection-setup","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"missing authentication"}'}]
     steps:
@@ -116,6 +117,7 @@ cases:
       - name: sink
         kind: http
         expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
           - {method: GET, path: {equals: /}, headers: {Authorization: {absent: true}}}
           - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {absent: true}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"no-auth-rejection","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"missing authentication"}'}]
@@ -139,6 +141,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
           - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"bad-auth-rejection-setup","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"bad credentials"}'}]
     steps:
@@ -160,6 +163,7 @@ cases:
       - name: sink
         kind: http
         expect:
+          - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}}
           - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMTExMTE='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"route_id":"bad-auth-rejection","test":"test"\}\n$'}}
         respond: [{status: 401, headers: {X-Elastic-Product: Elasticsearch}, body: '{"error":"bad credentials"}'}]
@@ -355,7 +359,7 @@ cases:
         - id: request-body
           uri: /hello
           plugins:
-            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, log_format: {test: request-body}}
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, log_format: {test: request-body, request_body: '$request_body'}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: POST, path: {equals: /hello}, body: {equals: '{"sample_payload":"hello"}'}}], respond: [{status: 200, body: "hello world\n"}]}
@@ -363,7 +367,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"route_id":"request-body","test":"request-body"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request_body":"\{\\"sample_payload\\":\\"hello\\"\}","route_id":"request-body","test":"request-body"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: request-body-is-preserved-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}
@@ -374,7 +378,7 @@ cases:
         - id: response-body
           uri: /hello
           plugins:
-            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_resp_body: true, log_format: {test: response-body}}
+            elasticsearch-logger: {endpoint_addr: '{{FIXTURE.sink.URL}}', field: {index: services}, auth: {username: elastic, password: '123456'}, batch_max_size: 1, inactive_timeout: 1, include_req_body: true, include_resp_body: true, log_format: {test: response-body, request_body: '$request_body', response_body: '$resp_body'}}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: POST, path: {equals: /hello}, body: {equals: '{"sample_payload":"hello"}'}}], respond: [{status: 200, body: "hello world\n"}]}
@@ -382,7 +386,7 @@ cases:
         kind: http
         expect:
           - {method: GET, path: {equals: /}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}}
-          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request":\{"body":"\{\\"sample_payload\\":\\"hello\\"\}"\},"response":\{"body":"hello world\\n"\},"route_id":"response-body","test":"response-body"\}\n$'}}
+          - {method: POST, path: {matches: '^/_bulk$'}, headers: {Authorization: {equals: 'Basic ZWxhc3RpYzoxMjM0NTY='}}, body: {matches: '^\{"index":\{"_index":"services"\}\}\n\{"request_body":"\{\\"sample_payload\\":\\"hello\\"\}","response_body":"hello world\\n","route_id":"response-body","test":"response-body"\}\n$'}}
         respond: [{status: 200, headers: {X-Elastic-Product: Elasticsearch}, body: '{"version":{"number":"8.10.2"}}'}]
     steps:
       - {name: response-body-is-returned-and-logged, input: {method: POST, path: /hello, body: '{"sample_payload":"hello"}'}, output: {status: 200, body: {equals: "hello world\n"}}, wait: 1s}

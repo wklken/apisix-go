@@ -458,7 +458,7 @@ cases:
               inactive_timeout: 1
               include_req_body: true
               include_req_body_expr: [[arg_bar, '==', bar]]
-              log_format: {case: request-body-match}
+              log_format: {case: request-body-match, request_body: '$request_body'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: POST, path: {equals: '/opentracing?bar=bar'}, body: {equals: body-data}}], respond: [{status: 200, body: opentracing}]}
@@ -506,7 +506,7 @@ cases:
               inactive_timeout: 1
               include_resp_body: true
               include_resp_body_expr: [[arg_bar, '==', bar]]
-              log_format: {case: response-body-match}
+              log_format: {case: response-body-match, response_body: '$resp_body'}
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect: [{method: GET, path: {equals: '/opentracing?bar=bar'}}], respond: [{status: 200, body: opentracing}]}

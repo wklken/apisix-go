@@ -12,6 +12,18 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /metadata-configures-collector-headers-and-request-id-source
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_headers:
+                      foo: bar
+                  request_timeout: 3
+              resource:
+                  service.name: APISIX
+              trace_id_source: x-request-id
       fixtures:
         - expect:
             - method: GET
@@ -77,18 +89,6 @@ cases:
               status: 200
       name: metadata-configures-collector-headers-and-request-id-source
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_headers:
-                        foo: bar
-                    request_timeout: 3
-                resource:
-                    service.name: APISIX
-                trace_id_source: x-request-id
         plugins:
             - opentelemetry
       steps:
@@ -119,6 +119,16 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /propagated-parent-trace-id-is-preserved
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              resource:
+                  service.name: APISIX
+              trace_id_source: random
       fixtures:
         - expect:
             - headers:
@@ -187,16 +197,6 @@ cases:
               status: 200
       name: propagated-parent-trace-id-is-preserved
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                resource:
-                    service.name: APISIX
-                trace_id_source: random
         plugins:
             - opentelemetry
       steps:
@@ -232,6 +232,16 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /consumer-name-span-attribute-has-authenticated-identity
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              resource:
+                  service.name: APISIX
+              trace_id_source: random
       fixtures:
         - expect:
             - method: GET
@@ -298,16 +308,6 @@ cases:
               status: 200
       name: consumer-name-span-attribute-has-authenticated-identity
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                resource:
-                    service.name: APISIX
-                trace_id_source: random
         plugins:
             - opentelemetry
             - key-auth
@@ -338,6 +338,16 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /articles/*
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              resource:
+                  service.name: APISIX
+              trace_id_source: random
       fixtures:
         - expect:
             - method: GET
@@ -398,16 +408,6 @@ cases:
               status: 200
       name: span-http-route-keeps-wildcard-pattern
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                resource:
-                    service.name: APISIX
-                trace_id_source: random
         plugins:
             - opentelemetry
             - proxy-rewrite
@@ -437,6 +437,17 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /two-http2-streams-have-isolated-trace-identifiers
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  batch_timeout: 0.05
+                  max_export_batch_size: 2
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              resource:
+                  service.name: APISIX
+              trace_id_source: random
       fixtures:
         - expect:
             - method: GET
@@ -505,17 +516,6 @@ cases:
         sni: test.com
       name: two-http2-streams-have-isolated-trace-identifiers
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    batch_timeout: 0.05
-                    max_export_batch_size: 2
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                resource:
-                    service.name: APISIX
-                trace_id_source: random
         plugins:
             - opentelemetry
       steps:
@@ -545,6 +545,16 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /auth-rejection-still-exports-route-span
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              resource:
+                  service.name: APISIX
+              trace_id_source: random
       fixtures:
         - expect_requests: 0
           kind: http
@@ -600,16 +610,6 @@ cases:
               status: 200
       name: auth-rejection-still-exports-route-span
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                resource:
-                    service.name: APISIX
-                trace_id_source: random
         plugins:
             - opentelemetry
             - key-auth
@@ -636,6 +636,19 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /partial-batch-exports-on-inactive-poll
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  batch_timeout: 0.05
+                  inactive_timeout: 0.1
+                  max_export_batch_size: 8
+                  max_queue_size: 32
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              resource:
+                  service.name: APISIX
+              trace_id_source: random
       fixtures:
         - expect:
             - method: GET
@@ -680,19 +693,6 @@ cases:
               status: 200
       name: partial-batch-exports-on-inactive-poll
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    batch_timeout: 0.05
-                    inactive_timeout: 0.1
-                    max_export_batch_size: 8
-                    max_queue_size: 32
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                resource:
-                    service.name: APISIX
-                trace_id_source: random
         plugins:
             - opentelemetry
       steps:
@@ -725,6 +725,14 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              trace_id_source: random
       fixtures:
         - expect:
             - method: HEAD
@@ -807,14 +815,6 @@ cases:
               status: 200
       name: service-scope-head-exports-route-service-and-string-numeric-attributes
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                trace_id_source: random
         plugins:
             - opentelemetry
       steps:
@@ -842,6 +842,14 @@ cases:
                 nodes:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              trace_id_source: random
       fixtures:
         - expect:
             - method: GET
@@ -887,14 +895,6 @@ cases:
               status: 200
       name: global-rule-exports-matched-route-attributes
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                trace_id_source: random
         plugins:
             - opentelemetry
       steps:
@@ -926,6 +926,14 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /finalizer-captures-later-plugin-header-prefix
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              trace_id_source: random
       fixtures:
         - expect:
             - headers:
@@ -971,14 +979,6 @@ cases:
               status: 200
       name: finalizer-captures-later-plugin-header-prefix
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                trace_id_source: random
         plugins:
             - opentelemetry
             - serverless-pre-function
@@ -1005,6 +1005,14 @@ cases:
                     '{{FIXTURE.primary.ADDR}}': 1
                 type: roundrobin
               uri: /collector-500-does-not-change-upstream-response
+        plugin_metadata:
+            - id: opentelemetry
+              batch_span_processor:
+                  max_export_batch_size: 1
+              collector:
+                  address: '{{FIXTURE.collector.URL}}/v1/traces'
+                  request_timeout: 3
+              trace_id_source: random
       fixtures:
         - expect:
             - method: GET
@@ -1046,14 +1054,6 @@ cases:
               status: 500
       name: collector-500-does-not-change-upstream-response
       runtime:
-        plugin_attr:
-            opentelemetry:
-                batch_span_processor:
-                    max_export_batch_size: 1
-                collector:
-                    address: '{{FIXTURE.collector.URL}}/v1/traces'
-                    request_timeout: 3
-                trace_id_source: random
         plugins:
             - opentelemetry
       steps:

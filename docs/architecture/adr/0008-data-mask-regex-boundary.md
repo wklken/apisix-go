@@ -20,8 +20,10 @@ Full PCRE/OpenResty execution remains outside the native-runtime parity scope.
 The existing skip-on-regex-error behavior must not be described as equivalent
 masking for valid PCRE expressions that Go cannot compile. Such a rule leaves
 the corresponding log value unchanged; other applicable rules still run.
-This is an unresolved masking difference, not evidence that the rule was
-applied successfully. Forwarded requests remain unchanged by data-mask.
+This is an accepted compatibility exception with an unmasked-log-value risk,
+not evidence that the rule was applied successfully. It does not require a
+full PCRE implementation to close the bounded HTTP acceptance stage.
+Forwarded requests remain unchanged by data-mask.
 
 # Consequences
 

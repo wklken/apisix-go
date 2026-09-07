@@ -29,6 +29,9 @@ func CompileSchema(schema string) (*CompiledSchema, error) {
 // allowing referenced documents to be loaded from the filesystem or network.
 func CompileSchemaWithoutExternalReferences(schema string) (*CompiledSchema, error) {
 	compiler := jsonschema.NewCompiler()
+	// APISIX request-validation treats formats as constraints even when an
+	// explicit draft would otherwise make them annotations.
+	compiler.AssertFormat = true
 	compiler.LoadURL = func(string) (io.ReadCloser, error) {
 		return nil, errors.New("external schema references are unavailable")
 	}

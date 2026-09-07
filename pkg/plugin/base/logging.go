@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,6 +175,18 @@ func matchCondition(r *http.Request, condition any, status int) bool {
 	actual := RequestVar(r, left, status)
 
 	switch op {
+	case "in":
+		switch values := parts[2].(type) {
+		case []any:
+			for _, value := range values {
+				if actual == exprOperandString(value) {
+					return true
+				}
+			}
+		case []string:
+			return slices.Contains(values, actual)
+		}
+		return false
 	case "==":
 		return actual == right
 	case "!=":

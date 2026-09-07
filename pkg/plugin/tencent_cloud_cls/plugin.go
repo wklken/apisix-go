@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -402,13 +403,13 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	}
 	fields := base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
 	base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
-	if p.config.IncludeReqBody &&
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
 		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody &&
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
 		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
@@ -518,7 +519,16 @@ func (p *Plugin) sendPayloadLocked(ctx context.Context, payload []byte) error {
 				endpoint, err,
 			)
 		}
-		if resp.StatusCode() >= 300 {
+		switch resp.StatusCode() {
+		case http.StatusOK:
+			return nil
+		case http.StatusUnauthorized,
+			http.StatusForbidden,
+			http.StatusNotFound,
+			http.StatusRequestEntityTooLarge:
+			logger.Errorf("tencent Cloud CLS dropped a non-retryable log batch: HTTP %d", resp.StatusCode())
+			return nil
+		default:
 			return fmt.Errorf(
 				"tencent Cloud CLS endpoint returned status code [%d] uri [%s], body [%s]",
 				resp.StatusCode(),
@@ -526,7 +536,6 @@ func (p *Plugin) sendPayloadLocked(ctx context.Context, payload []byte) error {
 				resp.String(),
 			)
 		}
-		return nil
 	})
 	if err != nil {
 		if errors.Is(err, secret.ErrCredentialUnavailable) {
@@ -698,10 +707,15 @@ type clsContent struct {
 }
 
 func normalizeLog(log map[string]any, globalTag map[string]string) ([]clsContent, int, int) {
+	merged := make(map[string]any, len(log)+len(globalTag))
+	maps.Copy(merged, log)
+	for key, value := range globalTag {
+		merged[key] = value
+	}
 	contents := make([]clsContent, 0, len(log)+len(globalTag))
 	size := 4
 	truncated := 0
-	for key, value := range log {
+	for key, value := range merged {
 		normalized := normalizeValue(value)
 		if len(normalized) > maxSingleValueSize {
 			normalized = normalized[:maxSingleValueSize]
@@ -709,10 +723,6 @@ func normalizeLog(log map[string]any, globalTag map[string]string) ([]clsContent
 		}
 		contents = append(contents, clsContent{key: key, value: normalized})
 		size += len(key) + len(normalized)
-	}
-	for key, value := range globalTag {
-		contents = append(contents, clsContent{key: key, value: value})
-		size += len(key) + len(value)
 	}
 	return contents, size, truncated
 }

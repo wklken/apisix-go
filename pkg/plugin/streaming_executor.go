@@ -680,6 +680,12 @@ func (e *StreamingResponseExecutor) wrapStreamingHeaderFilters(
 	w http.ResponseWriter,
 	r *http.Request,
 ) http.ResponseWriter {
+	return e.wrapStreamingHeaderFiltersWithRequest(w, r, func() *http.Request { return r })
+}
+
+func (e *StreamingResponseExecutor) wrapStreamingHeaderFiltersWithRequest(
+	w http.ResponseWriter, r *http.Request, currentRequest func() *http.Request,
+) http.ResponseWriter {
 	if !e.hasStreamingHeaderFilter(r) {
 		return w
 	}
@@ -688,13 +694,17 @@ func (e *StreamingResponseExecutor) wrapStreamingHeaderFilters(
 		if status >= 100 && status <= 199 && status != http.StatusSwitchingProtocols {
 			return
 		}
+		request := currentRequest()
+		if request == nil {
+			return
+		}
 		if !applied.CompareAndSwap(false, true) {
 			return
 		}
 		state := base.StreamingResponseState{
 			Status: status, Header: w.Header().Clone(), Trailer: make(http.Header),
 		}
-		if err := e.runHeaderFilters(r, &state); err != nil {
+		if err := e.runHeaderFilters(request, &state); err != nil {
 			panic(streamingSetupError{err: err})
 		}
 		copyHeader(w.Header(), state.Header)

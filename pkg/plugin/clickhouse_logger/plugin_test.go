@@ -691,26 +691,22 @@ func TestRunLogPhaseBatchesClickHouseRows(t *testing.T) {
 	}
 }
 
-func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseCustomFormatDoesNotInjectBodies(t *testing.T) {
 	tests := []struct {
-		name             string
-		requestBody      string
-		responseBody     string
-		header           string
-		requestExpr      [][]any
-		responseExpr     [][]any
-		wantRequestBody  string
-		wantResponseBody string
+		name         string
+		requestBody  string
+		responseBody string
+		header       string
+		requestExpr  [][]any
+		responseExpr [][]any
 	}{
 		{
-			name: "unconditional and bounded", requestBody: `{"order":1}`, responseBody: `{"ok":true}`,
-			wantRequestBody: `{"order"`, wantResponseBody: `{"ok":`,
+			name: "capture enabled without expressions", requestBody: `{"order":1}`, responseBody: `{"ok":true}`,
 		},
 		{
 			name: "expressions match", requestBody: `{"order":2}`, responseBody: `{"created":true}`,
 			header: "yes", requestExpr: [][]any{{"http_x_log_body", "==", "yes"}},
-			responseExpr:    [][]any{{"status", "==", "201"}},
-			wantRequestBody: `{"order"`, wantResponseBody: `{"crea`,
+			responseExpr: [][]any{{"status", "==", "201"}},
 		},
 		{
 			name: "expressions miss", requestBody: `{"order":3}`, responseBody: `{"created":false}`,
@@ -740,6 +736,7 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 				IncludeReqBody: true, IncludeReqBodyExpr: test.requestExpr,
 				IncludeRespBody: true, IncludeRespBodyExpr: test.responseExpr,
 				MaxReqBodyBytes: 8, MaxRespBodyBytes: 6, BatchMaxSize: 1,
+				LogFormat: map[string]string{"marker": "configured"},
 			})
 			t.Cleanup(p.Stop)
 
@@ -765,23 +762,10 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 				if err := json.Unmarshal([]byte(payload), &logEntry); err != nil {
 					t.Fatalf("unmarshal clickhouse payload %q: %v", payload, err)
 				}
-				if test.wantRequestBody != "" || test.wantResponseBody != "" {
-					request, requestOK := logEntry["request"].(map[string]any)
-					response, responseOK := logEntry["response"].(map[string]any)
-					if !requestOK || !responseOK || request["body"] != test.wantRequestBody ||
-						response["body"] != test.wantResponseBody {
-						t.Fatalf(
-							"logged bodies = %#v/%#v, want %q/%q",
-							logEntry["request"],
-							logEntry["response"],
-							test.wantRequestBody,
-							test.wantResponseBody,
-						)
-					}
-				} else if _, requestOK := logEntry["request"]; requestOK {
-					t.Fatalf("payload request = %#v, want omitted", logEntry["request"])
-				} else if _, responseOK := logEntry["response"]; responseOK {
-					t.Fatalf("payload response = %#v, want omitted", logEntry["response"])
+				// APISIX custom formats emit configured fields; include-body settings
+				// do not append the default request/response payloads.
+				if len(logEntry) != 1 || logEntry["marker"] != "configured" {
+					t.Fatalf("custom payload = %#v, want only configured marker", logEntry)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("timed out waiting for ClickHouse body")

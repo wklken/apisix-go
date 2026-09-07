@@ -974,7 +974,7 @@ func TestRunLogPhaseSendsFormattedRequestLog(t *testing.T) {
 	}
 }
 
-func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
+func TestRunLogPhaseCustomFormatDoesNotInjectBodies(t *testing.T) {
 	tests := []struct {
 		name         string
 		requestBody  string
@@ -982,9 +982,8 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 		header       string
 		requestExpr  [][]any
 		responseExpr [][]any
-		wantBodies   bool
 	}{
-		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`, wantBodies: true},
+		{name: "unconditional", requestBody: `{"order":1}`, responseBody: `{"ok":true}`},
 		{
 			name:         "expressions match",
 			requestBody:  `{"order":2}`,
@@ -994,7 +993,6 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 				{"http_x_log_body", "==", "yes"},
 			},
 			responseExpr: [][]any{{"status", "==", "201"}},
-			wantBodies:   true,
 		},
 		{
 			name: "expressions miss", requestBody: `{"order":3}`, responseBody: `{"created":false}`, header: "no",
@@ -1042,22 +1040,10 @@ func TestRunLogPhaseBodyCaptureMatrix(t *testing.T) {
 			if len(logs) != 1 {
 				t.Fatalf("logs = %d, want 1", len(logs))
 			}
-			if !test.wantBodies {
-				if _, ok := logs[0]["request"]; ok {
-					t.Fatalf("request field = %q, want omitted", logs[0]["request"])
+			for _, key := range []string{"request", "response"} {
+				if _, ok := logs[0][key]; ok {
+					t.Fatalf("custom format unexpectedly contains %s", key)
 				}
-				if _, ok := logs[0]["response"]; ok {
-					t.Fatalf("response field = %q, want omitted", logs[0]["response"])
-				}
-				return
-			}
-			request := decodeJSONStringField(t, logs[0]["request"])
-			if request["body"] != test.requestBody {
-				t.Fatalf("request body = %#v, want %q", request["body"], test.requestBody)
-			}
-			response := decodeJSONStringField(t, logs[0]["response"])
-			if response["body"] != test.responseBody {
-				t.Fatalf("response body = %#v, want %q", response["body"], test.responseBody)
 			}
 		})
 	}
@@ -1232,16 +1218,6 @@ func TestRunLogPhaseBatchesCLSLogs(t *testing.T) {
 	if logs[0]["path"] != "/first" || logs[1]["path"] != "/second" {
 		t.Fatalf("paths = %q, %q; want /first, /second", logs[0]["path"], logs[1]["path"])
 	}
-}
-
-func decodeJSONStringField(t *testing.T, value string) map[string]any {
-	t.Helper()
-
-	var out map[string]any
-	if err := json.Unmarshal([]byte(value), &out); err != nil {
-		t.Fatalf("unmarshal JSON string field %q: %v", value, err)
-	}
-	return out
 }
 
 func waitRequest(t *testing.T, requests <-chan *http.Request) *http.Request {

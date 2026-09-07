@@ -344,10 +344,7 @@ func snapshotInt64(snapshot base.LogSnapshot, key string) (int64, bool) {
 }
 
 func snapshotPath(snapshot base.LogSnapshot) string {
-	if path := snapshotString(snapshot, "$matched_uri"); path != "" {
-		return path
-	}
-	return snapshot.Request.URI
+	return snapshotString(snapshot, "$matched_uri")
 }
 
 func (p *Plugin) QuiesceGenerationTasks() { p.Stop() }

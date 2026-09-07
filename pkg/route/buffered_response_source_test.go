@@ -66,6 +66,7 @@ func TestErrorAndRequestBodyHandlersSetAPISIXBeforeJSON(t *testing.T) {
 		time.Unix(0, 0),
 	)
 	bodyRequest = proxy_control.WithRequestBuffering(bodyRequest, true)
+	bodyRequest.Body = http.MaxBytesReader(httptest.NewRecorder(), bodyRequest.Body, 16)
 	writer := &sourceObservingWriter{lifecycle: bodyLifecycle, header: make(http.Header)}
 	handler.ServeHTTP(writer, bodyRequest)
 	if bodyLifecycle.ResponseSource() != apisixctx.ResponseSourceAPISIX ||

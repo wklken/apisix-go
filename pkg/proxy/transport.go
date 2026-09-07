@@ -35,7 +35,9 @@ type TransportOption struct {
 	maxIdleConnections        int
 	maxIdleConnectionsPerHost int
 	maxConnectionsPerHost     int
+	maxRequestsPerConnection  int
 	insecureSkipVerify        bool
+	http2                     bool
 	tlsClientCertificate      tls.Certificate
 	dialTimeout               time.Duration
 	responseHeaderTimeout     time.Duration
@@ -43,7 +45,8 @@ type TransportOption struct {
 }
 
 type TransportOptionBuilder struct {
-	opt TransportOption
+	opt                TransportOption
+	idleConnTimeoutSet bool
 }
 
 func (ob *TransportOptionBuilder) Build() TransportOption {
@@ -64,7 +67,7 @@ func (ob *TransportOptionBuilder) Build() TransportOption {
 		ob.opt.maxConnectionsPerHost = DefaultMaxConnsPerHost
 	}
 
-	if ob.opt.idleConnTimeout == 0 {
+	if !ob.idleConnTimeoutSet && ob.opt.idleConnTimeout == 0 {
 		ob.opt.idleConnTimeout = DefaultIdleConnTimeout
 	}
 
@@ -74,6 +77,12 @@ func (ob *TransportOptionBuilder) Build() TransportOption {
 // WithInsecureSkipVerify sets tls config insecure skip verify
 func (ob *TransportOptionBuilder) WithInsecureSkipVerify(value bool) *TransportOptionBuilder {
 	ob.opt.insecureSkipVerify = value
+	return ob
+}
+
+// WithHTTP2 enables TLS HTTP/2 for gRPC upstreams.
+func (ob *TransportOptionBuilder) WithHTTP2(enabled bool) *TransportOptionBuilder {
+	ob.opt.http2 = enabled
 	return ob
 }
 
@@ -102,6 +111,7 @@ func (ob *TransportOptionBuilder) WithResponseHeaderTimeout(d time.Duration) *Tr
 // itself.
 func (ob *TransportOptionBuilder) WithIdleConnTimeout(d time.Duration) *TransportOptionBuilder {
 	ob.opt.idleConnTimeout = d
+	ob.idleConnTimeoutSet = true
 	return ob
 }
 
@@ -129,6 +139,12 @@ func (ob *TransportOptionBuilder) WithMaxConnectionsPerHost(value int) *Transpor
 	return ob
 }
 
+// WithMaxRequestsPerConnection sets the HTTP/1 cluster reuse limit. Zero is unlimited.
+func (ob *TransportOptionBuilder) WithMaxRequestsPerConnection(value int) *TransportOptionBuilder {
+	ob.opt.maxRequestsPerConnection = value
+	return ob
+}
+
 // transportKeyIdentity is the deterministic, complete serialization of every
 // effective value that changes transport behavior. It feeds upstream cluster
 // identity so a cluster is only reused for byte-identical effective config.
@@ -136,7 +152,9 @@ type transportKeyIdentity struct {
 	MaxIdleConns                    int
 	MaxIdleConnsPerHost             int
 	MaxConnsPerHost                 int
+	MaxRequestsPerConnection        int
 	InsecureSkipVerify              bool
+	HTTP2                           bool
 	TLSClientCertificateFingerprint [sha256.Size]byte
 	DialTimeout                     time.Duration
 	ResponseHeaderTimeout           time.Duration
@@ -148,7 +166,9 @@ func (t TransportOption) keyIdentity() transportKeyIdentity {
 		MaxIdleConns:                    t.maxIdleConnections,
 		MaxIdleConnsPerHost:             t.maxIdleConnectionsPerHost,
 		MaxConnsPerHost:                 t.maxConnectionsPerHost,
+		MaxRequestsPerConnection:        t.maxRequestsPerConnection,
 		InsecureSkipVerify:              t.insecureSkipVerify,
+		HTTP2:                           t.http2,
 		TLSClientCertificateFingerprint: tlsClientCertificateFingerprint(t.tlsClientCertificate),
 		DialTimeout:                     t.dialTimeout,
 		ResponseHeaderTimeout:           t.responseHeaderTimeout,
@@ -226,7 +246,7 @@ func NewTransport(t TransportOption) *http.Transport {
 			DualStack: true,
 		}).DialContext,
 		IdleConnTimeout:       t.idleConnTimeout,
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   t.dialTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: t.responseHeaderTimeout,
 		MaxIdleConns:          t.maxIdleConnections,
@@ -235,8 +255,18 @@ func NewTransport(t TransportOption) *http.Transport {
 		TLSClientConfig:       tlsConfig,
 	}
 
-	if err := http2.ConfigureTransport(tr); err != nil {
-		logger.Errorf("configure HTTP/2 transport fail, upstream requests fall back to HTTP/1.1: %s", err)
+	if t.maxRequestsPerConnection > 0 && !t.http2 {
+		installKeepaliveCounter(tr)
+	}
+
+	if t.http2 {
+		if err := http2.ConfigureTransport(tr); err != nil {
+			logger.Errorf("configure HTTP/2 transport fail, upstream requests fall back to HTTP/1.1: %s", err)
+		}
+	} else {
+		// HTTP proxying uses HTTP/1.1; TLS gRPC opts into HTTP/2 explicitly.
+		tr.Protocols = new(http.Protocols)
+		tr.Protocols.SetHTTP1(true)
 	}
 
 	return tr

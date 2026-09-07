@@ -165,6 +165,7 @@ type Plugin struct {
 	config Config
 
 	metadata       Metadata
+	disabled       bool
 	tracerProvider *sdktrace.TracerProvider
 	batchProcessor *apisixBatchSpanProcessor
 	route          resource.Route
@@ -244,7 +245,7 @@ func (p *Plugin) PostInit() error {
 	if p.config.Sampler.Options.Root.Name == "" {
 		p.config.Sampler.Options.Root.Name = "always_off"
 	}
-	metadata, configured, err := loadMetadata(p.MetadataView(), effective.Config.PluginAttr)
+	metadata, configured, err := loadMetadata(p.MetadataView())
 	if err != nil {
 		return err
 	}
@@ -252,6 +253,7 @@ func (p *Plugin) PostInit() error {
 		logger.Warn("Using opentelemetry collector.address with no TLS is a security risk")
 	}
 	p.metadata = metadata
+	p.disabled = !configured
 
 	p.tracerProvider, p.batchProcessor, err = newTracerProviderWithProcessor(
 		p.config.Sampler, metadata, configured, p.TaskOwner(),
@@ -269,6 +271,9 @@ func (p *Plugin) QuiesceGenerationTasks() {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
+	if p.disabled {
+		return next
+	}
 	wrappedNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if apisixctx.GetApisixVars(r) == nil {
 			r = apisixctx.WithApisixVars(r, nil)
@@ -550,7 +555,7 @@ type spanState struct {
 // invokes this method once; the dynamic end callback is registered on the
 // inherited lifecycle so it observes final request/source/outcome values.
 func (p *Plugin) RunRequestPhase(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
-	if r == nil {
+	if r == nil || p.disabled {
 		return base.ContinueRequest(r)
 	}
 	if r.URL.Path == "/healthz" {
@@ -644,7 +649,11 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 		}
 		outcome := lifecycle.Outcome()
 		if outcome.Status >= http.StatusInternalServerError {
-			state.span.SetStatus(codes.Error, http.StatusText(outcome.Status))
+			source := lifecycle.ResponseSource()
+			if source == apisixctx.ResponseSourceUnknown {
+				source = apisixctx.ResponseSourceAPISIX
+			}
+			state.span.SetStatus(codes.Error, fmt.Sprintf("%s error: %d", source, outcome.Status))
 		}
 		if request != nil {
 			requestTime := finished.Sub(state.started).Seconds()

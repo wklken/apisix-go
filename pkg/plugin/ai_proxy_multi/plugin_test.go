@@ -315,8 +315,8 @@ func TestHandlerPreservesPassthroughRouting(t *testing.T) {
 		t.Fatalf("response status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 	got := <-captured
-	if got.method != http.MethodPut {
-		t.Fatalf("provider method = %q, want PUT", got.method)
+	if got.method != http.MethodPost {
+		t.Fatalf("provider method = %q, want POST", got.method)
 	}
 	wantURI := "/v1/images/generations?akey=secret&ckey=cval&ekey=eval&name=fromclient"
 	if got.uri != wantURI {
@@ -597,6 +597,9 @@ func TestHandlerEnforcesStreamDurationForSelectedInstance(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {}\n\n"))
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
 	}))
@@ -1784,7 +1787,7 @@ func TestHandlerConvertsSelectedVertexEmbeddingsInstance(t *testing.T) {
 	if response["object"] != "list" || response["model"] != "text-embedding-005" {
 		t.Fatalf("OpenAI embeddings response = %#v", response)
 	}
-	assertLLMRequestVar(t, req, "$request_type", "ai_embeddings")
+	assertLLMRequestVar(t, req, "$request_type", "ai_chat")
 	if got := apisixctx.GetRequestVar(req, "$request_llm_model"); got != nil {
 		t.Fatalf("$request_llm_model = %#v, want unset when the client omits model", got)
 	}

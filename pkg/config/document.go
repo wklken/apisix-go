@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,14 +15,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"go.yaml.in/yaml/v3"
-)
-
-type forbiddenYAMLKind uint8
-
-const (
-	forbiddenMerge forbiddenYAMLKind = iota
-	forbiddenAlias
-	forbiddenAnchor
 )
 
 type expandedTemplate struct {
@@ -54,8 +47,13 @@ func parseDocument(data []byte, pathBase string, env map[string]string) (*valueN
 		return nil, fmt.Errorf("decode YAML document: invalid document root")
 	}
 	root := document.Content[0]
-	if err := rejectForbiddenYAML(root); err != nil {
-		return nil, err
+	if containsYAMLReferences(root) {
+		// Let the YAML decoder enforce cyclic/excessive-alias limits before
+		// converting nodes with our exact-number and redacted-error handling.
+		var checked any
+		if err := root.Decode(&checked); err != nil {
+			return nil, fmt.Errorf("decode YAML references: invalid YAML")
+		}
 	}
 	return convertYAMLNode(root, "", pathBase, env)
 }
@@ -72,71 +70,11 @@ func readConfigDocument(path string, env map[string]string) (*valueNode, error) 
 	return document, nil
 }
 
-func rejectForbiddenYAML(root *yaml.Node) error {
-	for _, kind := range []forbiddenYAMLKind{forbiddenMerge, forbiddenAlias, forbiddenAnchor} {
-		if path, found := findForbiddenYAML(root, "", kind); found {
-			location := displayFieldPath(path)
-			switch kind {
-			case forbiddenMerge:
-				return fmt.Errorf("YAML merge key at %s is not supported", location)
-			case forbiddenAlias:
-				return fmt.Errorf("YAML alias at %s is not supported", location)
-			case forbiddenAnchor:
-				return fmt.Errorf("YAML anchor at %s is not supported", location)
-			}
-		}
+func containsYAMLReferences(node *yaml.Node) bool {
+	if node.Kind == yaml.AliasNode || node.ShortTag() == "!!merge" {
+		return true
 	}
-	return nil
-}
-
-func findForbiddenYAML(node *yaml.Node, path string, kind forbiddenYAMLKind) (string, bool) {
-	if node == nil {
-		return "", false
-	}
-	if kind == forbiddenAlias && node.Kind == yaml.AliasNode {
-		return path, true
-	}
-	if kind == forbiddenAnchor && node.Anchor != "" {
-		return path, true
-	}
-
-	switch node.Kind {
-	case yaml.DocumentNode:
-		for _, child := range node.Content {
-			if foundPath, found := findForbiddenYAML(child, path, kind); found {
-				return foundPath, true
-			}
-		}
-	case yaml.MappingNode:
-		for index := 0; index+1 < len(node.Content); index += 2 {
-			key := node.Content[index]
-			value := node.Content[index+1]
-			if kind == forbiddenMerge && key.ShortTag() == "!!merge" {
-				return path, true
-			}
-			keyPath := yamlKeyPath(path, key)
-			if foundPath, found := findForbiddenYAML(key, keyPath, kind); found {
-				return foundPath, true
-			}
-			if foundPath, found := findForbiddenYAML(value, keyPath, kind); found {
-				return foundPath, true
-			}
-		}
-	case yaml.SequenceNode:
-		for index, child := range node.Content {
-			if foundPath, found := findForbiddenYAML(child, sequenceFieldPath(path, index), kind); found {
-				return foundPath, true
-			}
-		}
-	}
-	return "", false
-}
-
-func yamlKeyPath(parent string, key *yaml.Node) string {
-	if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" || strings.Contains(key.Value, "${{") {
-		return parent
-	}
-	return joinFieldPath(parent, key.Value)
+	return slices.ContainsFunc(node.Content, containsYAMLReferences)
 }
 
 func convertYAMLNode(
@@ -146,6 +84,8 @@ func convertYAMLNode(
 	env map[string]string,
 ) (*valueNode, error) {
 	switch node.Kind {
+	case yaml.AliasNode:
+		return convertYAMLNode(node.Alias, path, pathBase, env)
 	case yaml.MappingNode:
 		return convertYAMLMapping(node, path, pathBase, env)
 	case yaml.SequenceNode:
@@ -182,7 +122,7 @@ func convertYAMLMapping(
 	literalKeys := make(map[string]struct{}, len(node.Content)/2)
 	for index := 0; index < len(node.Content); index += 2 {
 		key := node.Content[index]
-		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!str" {
+		if key.Kind != yaml.ScalarNode || (key.ShortTag() != "!!str" && key.ShortTag() != "!!merge") {
 			return nil, fmt.Errorf("mapping key at %s must be a scalar string", displayFieldPath(path))
 		}
 		if _, exists := literalKeys[key.Value]; exists {
@@ -199,9 +139,14 @@ func convertYAMLMapping(
 		mapping: make(map[string]*valueNode, len(node.Content)/2),
 	}
 	keySources := make(map[string][]string, len(node.Content)/2)
+	var merge *yaml.Node
 	for index := 0; index < len(node.Content); index += 2 {
 		key := node.Content[index]
 		value := node.Content[index+1]
+		if key.ShortTag() == "!!merge" {
+			merge = value
+			continue
+		}
 		expandedKey, err := expandAPISIXTemplates(key.Value, displayFieldPath(path), env)
 		if err != nil {
 			return nil, err
@@ -224,6 +169,26 @@ func convertYAMLMapping(
 			return nil, err
 		}
 		converted.mapping[expandedKey.value] = child
+	}
+	if merge != nil {
+		merged, err := convertYAMLNode(merge, path, pathBase, env)
+		if err != nil {
+			return nil, err
+		}
+		sources := []*valueNode{merged}
+		if merged.kind == nodeSequence {
+			sources = merged.sequence
+		}
+		for _, source := range sources {
+			if source.kind != nodeMapping {
+				return nil, fmt.Errorf("YAML merge at %s must contain mappings", displayFieldPath(path))
+			}
+			for key, value := range source.mapping {
+				if _, exists := converted.mapping[key]; !exists {
+					converted.mapping[key] = value
+				}
+			}
+		}
 	}
 	return converted, nil
 }

@@ -198,3 +198,21 @@ func TestResolveVarsSupportsAPISIX317Expressions(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveVarsWithLookupDistinguishesEmptyAndMissing(t *testing.T) {
+	lookup := func(name string) (string, bool) { return "", name == "empty" }
+	for _, tt := range []struct {
+		input, want string
+		count       int
+	}{
+		{"prefix-$empty", "prefix-", 1},
+		{"${empty ?? fallback}", "", 1},
+		{"${missing ?? fallback}", "fallback", 1},
+		{"$missing", "", 0},
+	} {
+		got, count := ResolveVarsWithLookup(tt.input, lookup)
+		if got != tt.want || count != tt.count {
+			t.Errorf("%q => %q/%d want %q/%d", tt.input, got, count, tt.want, tt.count)
+		}
+	}
+}

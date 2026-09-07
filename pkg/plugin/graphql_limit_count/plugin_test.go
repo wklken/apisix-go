@@ -324,8 +324,8 @@ func TestHandlerUsesRedisLimiterDepthCost(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
-	if redisLimiter.key != "192.0.2.10" {
-		t.Fatalf("redis key = %q, want 192.0.2.10", redisLimiter.key)
+	if !strings.HasPrefix(redisLimiter.key, "route:unknown:") || !strings.HasSuffix(redisLimiter.key, ":192.0.2.10") {
+		t.Fatalf("redis key = %q, want scoped client key", redisLimiter.key)
 	}
 	if redisLimiter.cost != 4 {
 		t.Fatalf("redis cost = %d, want query depth 4", redisLimiter.cost)
@@ -393,9 +393,9 @@ func TestGraphQLDepthHandlesAliasesArgumentsAndDirectives(t *testing.T) {
 	}
 }
 
-func TestGraphQLDepthRejectsUndefinedFragment(t *testing.T) {
-	if _, err := queryDepth(`query { viewer { ...MissingFields } }`); err == nil {
-		t.Fatal("queryDepth() error = nil, want undefined fragment rejection")
+func TestGraphQLDepthIgnoresUndefinedFragment(t *testing.T) {
+	if depth, err := queryDepth(`query { viewer { ...MissingFields } }`); err != nil || depth != 1 {
+		t.Fatalf("queryDepth() = %d, %v; want parent field depth 1", depth, err)
 	}
 }
 
@@ -921,17 +921,17 @@ func (f *scriptedRedisClient) Eval(_ context.Context, _ string, keys []string, a
 
 func TestRedisCountLimiterDecodesAtomicAdmissionResponse(t *testing.T) {
 	client := &scriptedRedisClient{result: []any{int64(1), "7", uint64(30)}}
-	limiter := &redisCountLimiter{client: client, namespace: "route-a"}
+	limiter := &redisCountLimiter{client: client}
 	req := httptest.NewRequest(http.MethodPost, "/graphql", nil)
 
-	remaining, reset, allowed, err := limiter.incoming(req, "client-a", 3, 10, 60)
+	remaining, reset, allowed, err := limiter.incoming(req, "/routes/route-a:123:client-a", 3, 10, 60)
 	if err != nil {
 		t.Fatalf("incoming() error = %v", err)
 	}
 	if remaining != 7 || reset != 30 || !allowed {
 		t.Fatalf("incoming() = remaining %d, reset %d, allowed %t", remaining, reset, allowed)
 	}
-	if len(client.keys) != 1 || client.keys[0] != "plugin-graphql-limit-count:route-a:client-a" {
+	if len(client.keys) != 1 || client.keys[0] != "plugin-graphql-limit-count/routes/route-a:123:client-a" {
 		t.Fatalf("Eval keys = %#v", client.keys)
 	}
 	wantArgs := []any{int64(3), int64(10), int64(60)}

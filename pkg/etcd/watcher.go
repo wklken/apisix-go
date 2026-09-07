@@ -332,6 +332,8 @@ func (c *ConfigClient) managedKey(key []byte) (string, string, bool) {
 		if bucket == "secrets" {
 			return "", "", false
 		}
+	case len(parts) == 4 && parts[0] == "consumers" && parts[2] == "credentials":
+		bucket, id = "consumers", strings.Join(parts[1:], "/")
 	case len(parts) == 3 && parts[0] == "secrets":
 		bucket, id = "secrets", parts[1]+"/"+parts[2]
 	default:

@@ -211,9 +211,18 @@ func TestPluginPhaseClosureBuildsAuthCORSResponseRewriteAndLogger(t *testing.T) 
 		if !ok || responseFields["status"] != float64(http.StatusUnauthorized) {
 			t.Fatalf("logger payload = %#v", payload)
 		}
-		if payload["request_id"] != "phase-request-1" || payload["response_source"] != "early_stop" ||
-			payload["outcome"] != "completed" {
-			t.Fatalf("logger correlation fields = %#v", payload)
+		requestFields, ok := payload["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("logger request fields = %#v", payload)
+		}
+		headers, ok := requestFields["headers"].(map[string]any)
+		if !ok || headers["x-request-id"] != "phase-request-1" {
+			t.Fatalf("logger request headers = %#v", headers)
+		}
+		for _, field := range []string{"request_id", "response_source", "outcome"} {
+			if _, exists := payload[field]; exists {
+				t.Fatalf("unexpected default field %s", field)
+			}
 		}
 	case <-time.After(time.Second):
 		t.Fatal("auth rejection did not execute detached logger exactly once")
@@ -412,7 +421,8 @@ func TestDataMaskRoutePreservesUpstreamAndSanitizesDetachedLogger(t *testing.T) 
 		if parseErr != nil {
 			t.Fatalf("parse sanitized logger uri %q: %v", maskedURI, parseErr)
 		}
-		if payload["request_id"] != "masked-id" || !strings.Contains(text, `\"token\":\"***\"`) ||
+		headers, ok := requestPayload["headers"].(map[string]any)
+		if !ok || headers["x-request-id"] != "masked-id" || !strings.Contains(text, `\"token\":\"***\"`) ||
 			parsedURI.Query().Get("token") != "***" {
 			t.Fatalf("logger payload is not fully sanitized: %#v", payload)
 		}
@@ -443,7 +453,7 @@ func (p *metadataLogContractPlugin) LogCapturePolicy() base.LogCapturePolicy {
 	return base.LogCapturePolicy{RequestBodyBytes: 7, ResponseBodyBytes: 9}
 }
 
-func TestMetadataRequestOnlyPluginOwnsOnlyRequestPhase(t *testing.T) {
+func TestMetadataRequestIDPreservesRequestPhaseWithoutLogOwnership(t *testing.T) {
 	target := &metadataLogContractPlugin{metadataResponseContractPlugin: metadataResponseContractPlugin{
 		name: "request-id",
 	}}
@@ -492,7 +502,7 @@ func TestMetadataSnapshotFilterPreservesRequestValueSemantics(t *testing.T) {
 	}}
 	for name, condition := range map[string][]any{
 		"uri":             {[]any{"uri", "==", "/orders"}},
-		"repeated_header": {[]any{"http_x_role", "==", "admin,operator"}},
+		"repeated_header": {[]any{"http_x_role", "==", "admin, operator"}},
 	} {
 		filter, err := pluginexpr.Compile(condition)
 		if err != nil {

@@ -2,8 +2,10 @@ package public_api
 
 import (
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
+	"strconv"
 	"sync"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
@@ -196,7 +198,15 @@ func (p *Plugin) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	handler := p.registry.Lookup(r.Method, uri)
 	if handler == nil {
+		const body = "<html>\r\n<head><title>404 Not Found</title></head>\r\n" +
+			"<body>\r\n<center><h1>404 Not Found</h1></center>\r\n" +
+			"<hr><center>openresty</center>\r\n" +
+			"<p><em>Powered by <a href=\"https://apisix.apache.org/\">APISIX</a>.</em></p>" +
+			"</body>\r\n</html>\r\n"
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, body)
 		return
 	}
 

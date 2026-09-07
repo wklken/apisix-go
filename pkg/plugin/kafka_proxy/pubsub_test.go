@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-
-	"github.com/segmentio/kafka-go"
 )
 
 func TestPubSubRequestRoundTrip(t *testing.T) {
@@ -209,57 +207,6 @@ func TestDispatchPubSubRequest(t *testing.T) {
 			t.Fatalf("dispatchPubSubRequest() error = %v, want propagated broker error", err)
 		}
 	})
-}
-
-type timeoutError struct{}
-
-func (timeoutError) Error() string   { return "operation timed out" }
-func (timeoutError) Timeout() bool   { return true }
-func (timeoutError) Temporary() bool { return true }
-
-func TestPubSubErrorCode(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want int32
-	}{
-		{name: "deadline exceeded", err: context.DeadlineExceeded, want: 504},
-		{name: "timeout net error", err: timeoutError{}, want: 504},
-		{name: "ordinary error", err: errors.New("boom"), want: 502},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := pubSubErrorCode(test.err); got != test.want {
-				t.Fatalf("pubSubErrorCode() = %d, want %d", got, test.want)
-			}
-		})
-	}
-}
-
-func TestPubSubErrorMessage(t *testing.T) {
-	tests := []struct {
-		name    string
-		command PubSubCommand
-		err     error
-		want    string
-	}{
-		{
-			name:    "auth",
-			command: CmdKafkaFetch,
-			err:     kafka.SASLAuthenticationFailed,
-			want:    "Kafka authentication failed",
-		},
-		{name: "list offset", command: CmdKafkaListOffset, err: errors.New("boom"), want: "Kafka list offset failed"},
-		{name: "fetch", command: CmdKafkaFetch, err: errors.New("boom"), want: "Kafka fetch failed"},
-		{name: "default", command: CmdPing, err: errors.New("boom"), want: "Kafka PubSub command failed"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := pubSubErrorMessage(test.command, test.err); got != test.want {
-				t.Fatalf("pubSubErrorMessage() = %q, want %q", got, test.want)
-			}
-		})
-	}
 }
 
 func TestPubSubCodecRejectsMalformedWire(t *testing.T) {

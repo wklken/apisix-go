@@ -137,7 +137,9 @@ func decodeHTTPResourceSet(
 				}
 			}
 		case "consumers":
-			result.consumerIDs = append(result.consumerIDs, key.ID)
+			if normalized.view.credentialID == "" {
+				result.consumerIDs = append(result.consumerIDs, key.ID)
+			}
 		case "consumer_groups":
 			result.consumerGroupIDs = append(result.consumerGroupIDs, key.ID)
 		}

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/felixge/httpsnoop"
 	"github.com/gofrs/uuid"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/oxtoacart/bpool"
@@ -136,11 +137,51 @@ func (p *Plugin) PostInit() error {
 	return nil
 }
 
+// Handler preserves header-filter timing for callers outside the production executor.
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	return base.AdaptRequestPhase(p, next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		currentRequest := r
+		committed := false
+		apply := func() {
+			if committed {
+				return
+			}
+			committed = true
+			_ = p.RunStreamingHeaderFilter(currentRequest, &base.StreamingResponseState{Header: w.Header()})
+		}
+		wrapped := httpsnoop.Wrap(w, httpsnoop.Hooks{
+			WriteHeader: func(next httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+				return func(code int) {
+					if code >= 200 || code == 101 {
+						apply()
+					}
+					next(code)
+				}
+			},
+			Write: func(next httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+				return func(b []byte) (int, error) { apply(); return next(b) }
+			},
+			WriteString: func(next httpsnoop.WriteStringFunc) httpsnoop.WriteStringFunc {
+				return func(s string) (int, error) { apply(); return next(s) }
+			},
+			ReadFrom: func(next httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+				return func(reader io.Reader) (int64, error) { apply(); return next(reader) }
+			},
+			Flush: func(next httpsnoop.FlushFunc) httpsnoop.FlushFunc { return func() { apply(); next() } },
+			FlushError: func(next httpsnoop.FlushErrorFunc) httpsnoop.FlushErrorFunc {
+				return func() error { apply(); return next() }
+			},
+		})
+		base.AdaptRequestPhase(p, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			currentRequest = request
+			next.ServeHTTP(w, request)
+		})).ServeHTTP(wrapped, r)
+		apply()
+	})
 }
 
 func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	r = apisixctx.WithRequestVars(r)
 	requestID := r.Header.Get(p.config.HeaderName)
 	if requestID == "" {
 		var err error
@@ -163,15 +204,29 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 
 	r.Header.Set(p.config.HeaderName, requestID)
-	apisixctx.RegisterApisixVar(r, "$request_id", requestID)
-	apisixctx.RegisterRequestVar(r, "$request_id", requestID)
+	apisixctx.RegisterApisixVar(r, "$apisix_request_id", requestID)
+	apisixctx.RegisterRequestVar(r, "$apisix_request_id", requestID)
 
-	if *p.config.IncludeInResponse {
-		w.Header().Set(p.config.HeaderName, requestID)
-	}
-
-	requestContext := context.WithValue(r.Context(), apisixctx.RequestIDKey, requestID)
+	requestContext := context.WithValue(r.Context(), responseIDKey{p.config.HeaderName}, requestID)
+	requestContext = context.WithValue(requestContext, apisixctx.RequestIDKey, requestID)
 	return base.ContinueRequest(r.WithContext(requestContext))
+}
+
+type responseIDKey struct{ header string }
+
+func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, state *base.StreamingResponseState) error {
+	if state == nil || !*p.config.IncludeInResponse || state.Header.Get(p.config.HeaderName) != "" {
+		return nil
+	}
+	requestID, _ := r.Context().Value(responseIDKey{p.config.HeaderName}).(string)
+	if requestID == "" {
+		return nil
+	}
+	if state.Header == nil {
+		state.Header = make(http.Header)
+	}
+	state.Header.Set(p.config.HeaderName, requestID)
+	return nil
 }
 
 func (p *Plugin) rangeID(charSet string, length int) string {

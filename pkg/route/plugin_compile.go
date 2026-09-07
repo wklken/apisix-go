@@ -728,6 +728,9 @@ func newMetadataPluginWithDescriptor(
 		return metadataProtocolPlugin{metadataStreamingPlugin: streaming}, nil
 	}
 	if capability.HeaderFilter || capability.StreamingBodyFilter || capability.CompressionOffer {
+		if request, ok := wrapped.(base.RequestPhasePlugin); ok {
+			return metadataRequestStreamingPlugin{metadataStreamingPlugin: streaming, request: request}, nil
+		}
 		return streaming, nil
 	}
 	return wrapped, nil
@@ -800,9 +803,11 @@ func (t routeKafkaTerminal) RunExclusiveProtocol(
 }
 
 type routeDubboTerminal struct {
-	lb      pxy.LoadBalancer
-	targets map[string]compiledUpstreamTarget
-	retries int
+	lb           pxy.LoadBalancer
+	targets      map[string]compiledUpstreamTarget
+	retries      int
+	timeouts     upstreamTimeouts
+	routeTimeout resource.Timeout
 }
 
 func (t routeHTTPDubboTerminal) RunExclusiveProtocol(
@@ -825,6 +830,14 @@ func (t routeDubboTerminal) RunExclusiveProtocol(
 	r *http.Request,
 	next http.Handler,
 ) (base.ProtocolDisposition, *http.Request, ctx.ResponseSource, error) {
+	if cfg, ok := dubbo_proxy.GetConfig(r); ok {
+		timeouts := t.timeouts
+		if override := traffic_split.GetOverride(r); override != nil {
+			timeouts = resolveUpstreamTimeouts(t.routeTimeout, override.Timeout)
+		}
+		cfg.ConnectTimeout, cfg.SendTimeout, cfg.ReadTimeout = timeouts.connect, timeouts.send, timeouts.read
+		r = dubbo_proxy.WithConfig(r, cfg)
+	}
 	ctx.SetRequestResponseSource(r, ctx.ResponseSourceUpstream)
 	if (t.lb == nil && traffic_split.GetOverride(r) == nil) ||
 		!serveDubboIfConfiguredCompiled(w, r, t.lb, t.targets, t.retries) {
@@ -929,9 +942,7 @@ func (p metadataRequestPlugin) RunRequestPhase(
 	w http.ResponseWriter,
 	r *http.Request,
 ) base.RequestPhaseResult {
-	if p.filter != nil && !p.filter.Eval(func(name string) any {
-		return pluginexpr.RequestValue(r, name)
-	}) {
+	if !metadataFilterMatches(p.filter, r) {
 		return base.ContinueRequest(r)
 	}
 	if p.errorResponse == nil {
@@ -1209,6 +1220,31 @@ func (p metadataStreamingPlugin) WrapCompression(
 	return offer.WrapCompression(w, r, state, decision)
 }
 
+// Preserve the request callback already wrapped with metadata filtering when
+// the same plugin also owns streaming response callbacks.
+type metadataRequestStreamingPlugin struct {
+	metadataStreamingPlugin
+	request base.RequestPhasePlugin
+}
+
+type metadataFilterDecisionKey struct{ filter *pluginexpr.Expression }
+
+func (p metadataRequestStreamingPlugin) RunRequestPhase(
+	w http.ResponseWriter,
+	r *http.Request,
+) base.RequestPhaseResult {
+	if p.filter != nil {
+		// APISIX caches the first metadata filter decision across phases, even
+		// when the request callback changes a variable used by that filter.
+		matched := metadataFilterMatches(p.filter, r)
+		r = r.WithContext(context.WithValue(r.Context(), metadataFilterDecisionKey{p.filter}, matched))
+		if !matched {
+			return base.ContinueRequest(r)
+		}
+	}
+	return p.request.RunRequestPhase(w, r)
+}
+
 type metadataProtocolPlugin struct{ metadataStreamingPlugin }
 
 func (p metadataProtocolPlugin) RunExclusiveProtocol(
@@ -1249,6 +1285,11 @@ func (p metadataRequestStorePlugin) AppliesToResponseSource(
 }
 
 func metadataFilterMatches(filter *pluginexpr.Expression, r *http.Request) bool {
+	if filter != nil {
+		if matched, ok := r.Context().Value(metadataFilterDecisionKey{filter}).(bool); ok {
+			return matched
+		}
+	}
 	return filter == nil || filter.Eval(func(name string) any {
 		return pluginexpr.RequestValue(r, name)
 	})
@@ -1499,6 +1540,8 @@ func serveDubboIfConfiguredCompiled(
 		return false
 	}
 
+	r, finishBalancing := pxy.WithProtocolBalancing(r)
+	defer finishBalancing()
 	retryCount := dubboRetryCount(r, retries...)
 	nextTarget := nextDubboTarget(r, lb, targets)
 	dubbo_proxy.ServeDubboWithRetries(w, r, nextTarget, cfg, retryCount)
@@ -1517,6 +1560,8 @@ func serveHTTPDubboIfConfiguredCompiled(
 		return false
 	}
 
+	r, finishBalancing := pxy.WithProtocolBalancing(r)
+	defer finishBalancing()
 	retryCount := dubboRetryCount(r, retries...)
 	nextTarget := nextDubboTarget(r, lb, targets)
 	http_dubbo.ServeDubboWithRetries(w, r, nextTarget, cfg, retryCount)

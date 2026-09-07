@@ -262,10 +262,13 @@ func (p *Plugin) PostInit() error {
 	p.client = value.(*resty.Client)
 	p.clientRelease = release
 
-	if len(p.config.LogFormat) > 0 {
+	if p.config.LogFormat != nil {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.LogFormat = nil
+		}
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -312,12 +315,14 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	if serviceID := fmt.Sprint(base.SnapshotValue(snapshot, "$service_id")); serviceID != "" {
 		fields["service_id"] = serviceID
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}

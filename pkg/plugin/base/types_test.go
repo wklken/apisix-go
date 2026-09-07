@@ -327,8 +327,7 @@ func TestBaseLoggerRunLogPhaseBuildsDetachedNestedPayload(t *testing.T) {
 	select {
 	case fields := <-delivered:
 		request := fields["request"].(map[string]any)
-		response := fields["response"].(map[string]any)
-		if request["method"] != http.MethodPost || request["body"] != "requ" || response["body"] != "respo" ||
+		if request["method"] != http.MethodPost || request["body"] != nil || fields["response"] != nil ||
 			fields["source"] != "upstream" {
 			t.Fatalf("detached fields = %#v", fields)
 		}
@@ -464,5 +463,20 @@ func TestBaseLoggerConfigurationDefaultsAndHandlerPassthrough(t *testing.T) {
 
 	if err := EnqueueLog(nil, map[string]any{}); !errors.Is(err, ErrLogQueueUnavailable) {
 		t.Fatalf("EnqueueLog(nil) error = %v", err)
+	}
+}
+
+func TestSnapshotExpressionInMatchesDetachedValues(t *testing.T) {
+	snapshot := LogSnapshot{
+		Request: apisixlog.RequestLogSnapshot{Header: http.Header{"Content-Type": {"application/json"}}},
+	}
+	if !SnapshotExpressionMatches(
+		snapshot,
+		[]any{[]any{"http_content_type", "in", []any{"application/xml", "application/json"}}},
+	) {
+		t.Fatal("in did not match detached content-type")
+	}
+	if SnapshotExpressionMatches(snapshot, []any{[]any{"http_content_type", "in", []any{"text/plain"}}}) {
+		t.Fatal("in matched an absent value")
 	}
 }

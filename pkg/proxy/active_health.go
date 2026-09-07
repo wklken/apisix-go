@@ -99,7 +99,7 @@ func ParseActiveHealthConfig(checks map[string]any) (ActiveHealthConfig, bool, e
 		}
 		config.Type = strings.ToLower(value)
 	}
-	if config.Type != "http" && config.Type != "https" {
+	if config.Type != "http" && config.Type != "https" && config.Type != "tcp" {
 		return ActiveHealthConfig{}, false, fmt.Errorf("checks.active.type %q is unsupported", config.Type)
 	}
 	config.HTTPSVerifyCertificate = config.Type == "https"
@@ -441,7 +441,37 @@ func (c *activeHealthChecker) probeResult(ctx context.Context, target string) ac
 	if ctx.Err() != nil {
 		return activeProbeCanceled
 	}
+	if c.config.Type == "tcp" {
+		return c.probeTCP(ctx, target)
+	}
 	return c.probeHTTP(ctx, target)
+}
+
+func (c *activeHealthChecker) probeTCP(ctx context.Context, target string) activeProbeResult {
+	targetURL, err := url.Parse(target)
+	if err != nil || targetURL.Host == "" {
+		return activeProbeTCPFailure
+	}
+	dial := (&net.Dialer{}).DialContext
+	if transport, ok := c.transport.(*http.Transport); ok && transport.DialContext != nil {
+		dial = transport.DialContext
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+	defer cancel()
+	conn, err := dial(probeCtx, "tcp", targetURL.Host)
+	if err != nil {
+		if ctx.Err() != nil {
+			return activeProbeCanceled
+		}
+		var networkError net.Error
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) ||
+			errors.As(err, &networkError) && networkError.Timeout() {
+			return activeProbeTimeout
+		}
+		return activeProbeTCPFailure
+	}
+	_ = conn.Close()
+	return activeProbeSuccess
 }
 
 func (c *activeHealthChecker) probeHTTP(ctx context.Context, target string) activeProbeResult {

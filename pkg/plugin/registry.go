@@ -152,6 +152,7 @@ type registration struct {
 	scopes              scopeMask
 	instanceScope       InstanceScope
 	preAuthentication   bool
+	preferRoute         bool
 	conditionalTerminal bool
 	domain              Domain
 }
@@ -164,6 +165,7 @@ type Definition struct {
 	Scopes              []Scope
 	InstanceScope       InstanceScope
 	PreAuthentication   bool
+	PreferRoute         bool
 	ConditionalTerminal bool
 }
 
@@ -195,6 +197,7 @@ func DefinitionForFactory(factory string) (Definition, bool) {
 		Scopes:              registered.scopes.values(),
 		InstanceScope:       registered.instanceScope,
 		PreAuthentication:   registered.preAuthentication,
+		PreferRoute:         registered.preferRoute,
 		ConditionalTerminal: registered.conditionalTerminal,
 	}, true
 }
@@ -796,7 +799,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"request-id": {
 		create:              func() Plugin { return &request_id.Plugin{} },
-		phases:              phaseRewrite,
+		phases:              phaseRewrite | phaseHeaderFilter,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,
@@ -836,13 +839,14 @@ var pluginRegistry = map[string]registration{
 	},
 	"zipkin": {
 		create:              func() Plugin { return &zipkin.Plugin{} },
-		phases:              phaseRewrite | phaseFinalizer,
+		phases:              phaseRewrite | phaseBeforeProxy | phaseHeaderFilter | phaseFinalizer,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: false,
 		domain:              DomainHTTP,
 	},
 	"skywalking": {
+		preferRoute:         true,
 		create:              func() Plugin { return &skywalking.Plugin{} },
 		phases:              phaseRewrite | phaseFinalizer,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
@@ -861,6 +865,7 @@ var pluginRegistry = map[string]registration{
 		domain:              DomainHTTP,
 	},
 	"prometheus": {
+		preferRoute:         true,
 		create:              func() Plugin { return &prometheus.Plugin{} },
 		phases:              phaseLog,
 		scopes:              scopeSystem | scopeGlobal | scopeRoute | scopeConsumer,
@@ -1046,7 +1051,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"ai-aws-content-moderation": {
 		create:              func() Plugin { return &ai_aws_content_moderation.Plugin{} },
-		phases:              phaseAccess,
+		phases:              phaseRewrite,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,
@@ -1054,7 +1059,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"ai-rag": {
 		create:              func() Plugin { return &ai_rag.Plugin{} },
-		phases:              phaseRewrite,
+		phases:              phaseAccess,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,
@@ -1086,7 +1091,7 @@ var pluginRegistry = map[string]registration{
 	},
 	"ai-request-rewrite": {
 		create:              func() Plugin { return &ai_request_rewrite.Plugin{} },
-		phases:              phaseRewrite,
+		phases:              phaseAccess,
 		scopes:              scopeGlobal | scopeRoute | scopeConsumer,
 		instanceScope:       InstanceEffectiveConfig,
 		conditionalTerminal: true,

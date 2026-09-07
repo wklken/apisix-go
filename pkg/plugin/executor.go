@@ -164,6 +164,28 @@ func (p requestPhaseWithExecutorState) RunRequestPhase(
 	return result
 }
 
+// APISIX filters global prefer_route plugins before running their rewrite phase.
+// The input is an owned slice; disabled route plugins have no binding here.
+func filterPreferRouteBindings(bindings []Binding) []Binding {
+	routeFactories := make(map[string]struct{})
+	for _, binding := range bindings {
+		if binding.Plugin != nil && binding.Descriptor.preferRoute && binding.Scope != ScopeSystem &&
+			binding.Scope != ScopeGlobal {
+			routeFactories[binding.Descriptor.Factory] = struct{}{}
+		}
+	}
+	if len(routeFactories) == 0 {
+		return bindings
+	}
+	return slices.DeleteFunc(bindings, func(binding Binding) bool {
+		if binding.Scope != ScopeSystem && binding.Scope != ScopeGlobal {
+			return false
+		}
+		_, preferred := routeFactories[binding.Descriptor.Factory]
+		return preferred
+	})
+}
+
 func NewRequestPipeline(bindings []Binding, resolve ConsumerBindingResolver) RequestPipeline {
 	return RequestPipeline{bindings: cloneBindings(bindings), resolve: resolve}
 }
@@ -293,7 +315,7 @@ func chainPostResolutionHooks(first, second PostResolutionHook) PostResolutionHo
 func (p RequestPipeline) wrapStaticRewrite(next http.Handler) http.Handler {
 	bindings := make([]Binding, 0)
 	corsBindings := make([]Binding, 0)
-	for _, binding := range p.bindings {
+	for _, binding := range filterPreferRouteBindings(cloneBindings(p.bindings)) {
 		if binding.Scope != ScopeSystem && binding.Scope != ScopeGlobal && binding.Scope != ScopeRoute {
 			continue
 		}
@@ -308,7 +330,35 @@ func (p RequestPipeline) wrapStaticRewrite(next http.Handler) http.Handler {
 			bindings = append(bindings, binding)
 		}
 	}
-	return wrapAuthenticationWithStaticCORS(next, bindings, corsBindings)
+	return p.wrapEarlyRequestStage(next, func(next http.Handler) http.Handler {
+		return wrapAuthenticationWithStaticCORS(next, bindings, corsBindings)
+	})
+}
+
+// Request stages can commit a response before the terminal installs streaming
+// filters. Stop the provisional filter at the continuation so the final response
+// owner still invokes each callback exactly once.
+func (p RequestPipeline) wrapEarlyRequestStage(next http.Handler, build func(http.Handler) http.Handler) http.Handler {
+	if p.streamingExecutor == nil {
+		return build(next)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		continued := false
+		writer := p.streamingExecutor.wrapStreamingHeaderFiltersWithRequest(w, r, func() *http.Request {
+			if continued {
+				return nil
+			}
+			if execution, ok := r.Context().Value(responseExecutionKey{}).(*responseExecution); ok &&
+				execution != nil && len(execution.plan) > 0 && execution.mode != responseModeTransparent {
+				return nil
+			}
+			return finalLifecycleRequest(r)
+		})
+		build(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			continued = true
+			next.ServeHTTP(w, r)
+		})).ServeHTTP(writer, r)
+	})
 }
 
 func isStaticPreAuthenticationBinding(binding Binding) bool {
@@ -320,12 +370,23 @@ func isStaticPreAuthenticationBinding(binding Binding) bool {
 
 func (p RequestPipeline) postAuthenticationBindings(bindings []Binding) []Binding {
 	preAuthenticationFactories := make(map[string]struct{})
+	routeFactories := make(map[string]struct{})
 	for _, binding := range p.bindings {
+		if binding.Scope == ScopeRoute && binding.Plugin != nil {
+			routeFactories[binding.Descriptor.Factory] = struct{}{}
+		}
 		if isStaticPreAuthenticationBinding(binding) {
 			preAuthenticationFactories[binding.Descriptor.Factory] = struct{}{}
 		}
 	}
 	return slices.DeleteFunc(bindings, func(binding Binding) bool {
+		if binding.fromConsumer && binding.Descriptor.requestStage == RequestStageRewrite &&
+			binding.Descriptor.Factory != "cors" {
+			if _, existed := routeFactories[binding.Descriptor.Factory]; existed ||
+				binding.Descriptor.authenticatesConsumer {
+				return true
+			}
+		}
 		if !binding.fromConsumer && binding.Scope != ScopeConsumer &&
 			binding.Descriptor.requestStage == RequestStageRewrite && binding.Descriptor.Factory != "cors" {
 			return true
@@ -667,20 +728,22 @@ func (p RequestPipeline) buildPostResolutionHandler(
 		}
 		terminalHandler(terminal).ServeHTTP(w, r)
 	})
-	handler := http.Handler(boundary)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageBeforeProxy, ScopeRoute)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageBeforeProxy, ScopeConsumer)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageBeforeProxy, ScopeGlobal)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeRoute)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeConsumer)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeGlobal)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeSystem)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageConsumerRewrite, ScopeConsumer)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageConsumerRewrite, ScopeRoute)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageConsumerRewrite, ScopeGlobal)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageRewrite, ScopeConsumer)
-	handler = wrapScopedRequestStage(handler, bindings, RequestStageRewrite, ScopeRoute)
-	return handler
+	return p.wrapEarlyRequestStage(boundary, func(next http.Handler) http.Handler {
+		handler := next
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageBeforeProxy, ScopeRoute)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageBeforeProxy, ScopeConsumer)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageBeforeProxy, ScopeGlobal)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeRoute)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeConsumer)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeGlobal)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageAccess, ScopeSystem)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageConsumerRewrite, ScopeConsumer)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageConsumerRewrite, ScopeRoute)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageConsumerRewrite, ScopeGlobal)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageRewrite, ScopeConsumer)
+		handler = wrapScopedRequestStage(handler, bindings, RequestStageRewrite, ScopeRoute)
+		return handler
+	})
 }
 
 func finalLifecycleRequest(fallback *http.Request) *http.Request {

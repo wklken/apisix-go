@@ -33,14 +33,16 @@ type normalizedResource struct {
 }
 
 type structuralView struct {
-	embeddedID        string
-	hasEmbeddedID     bool
-	serviceID         string
-	upstreamID        string
-	pluginConfigID    string
-	consumerGroupID   string
-	hasInlineUpstream bool
-	plugins           map[string]any
+	embeddedID           string
+	hasEmbeddedID        bool
+	serviceID            string
+	upstreamID           string
+	pluginConfigID       string
+	consumerGroupID      string
+	credentialConsumerID string
+	credentialID         string
+	hasInlineUpstream    bool
+	plugins              map[string]any
 }
 
 func newNormalizedInput(revision uint64) normalizedInput {

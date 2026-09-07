@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/wklken/apisix-go/pkg/logger"
 )
 
 func extractB3(r *http.Request) (b3Context, error) {
@@ -22,7 +24,8 @@ func extractB3(r *http.Request) (b3Context, error) {
 		ctx.Debug = true
 	}
 	if err := validateB3IDs(ctx); err != nil {
-		return b3Context{}, err
+		logger.Warn("invalid multi-header B3 context; ignoring trace identifiers")
+		return b3Context{Sampled: ctx.Sampled, Debug: ctx.Debug}, nil
 	}
 	return ctx, nil
 }

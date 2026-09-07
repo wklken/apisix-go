@@ -76,10 +76,13 @@ func TestBuildAccessLogFromSnapshotPreservesFullDefaultShape(t *testing.T) {
 	if fields["consumer"].(map[string]any)["username"] != "alice" {
 		t.Fatalf("consumer = %#v", fields["consumer"])
 	}
-	if fields["request_id"] != "request-1" || fields["node_id"] != "node-1" ||
-		fields["response_source"] != "upstream" || fields["outcome"] != "completed" ||
-		fields["upstream_status"] != 201 || fields["retry_count"] != 2 {
-		t.Fatalf("correlation fields = %#v", fields)
+	for _, key := range []string{"request_id", "node_id", "response_source", "outcome", "upstream_status", "retry_count"} {
+		if _, ok := fields[key]; ok {
+			t.Fatalf("unexpected default field %s", key)
+		}
+	}
+	if fields["server"].(map[string]any)["version"] != "3.17.0" {
+		t.Fatalf("server version = %#v", fields["server"])
 	}
 }
 

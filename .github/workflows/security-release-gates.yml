@@ -162,6 +162,8 @@ jobs:
         env:
           APISIX_IMAGE: ${{ steps.metadata.outputs.tags }}
           APISIX_SKIP_BUILD: "1"
+          APISIX_EXPECTED_VERSION: ${{ steps.source.outputs.version }}
+          APISIX_EXPECTED_COMMIT: ${{ steps.source.outputs.commit }}
         run: bash scripts/container_smoke.sh
 
       - name: Generate CycloneDX SBOM

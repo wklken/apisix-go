@@ -47,7 +47,8 @@ func RequestValue(r *http.Request, name string) any {
 		_, port, _ := net.SplitHostPort(r.RemoteAddr)
 		return port
 	case strings.HasPrefix(name, "arg_"):
-		return r.URL.Query().Get(strings.TrimPrefix(name, "arg_"))
+		value, _ := QueryArgument(r.URL.RawQuery, strings.TrimPrefix(name, "arg_"))
+		return value
 	case strings.HasPrefix(name, "cookie_"):
 		cookie, err := r.Cookie(strings.TrimPrefix(name, "cookie_"))
 		if err == nil {
@@ -56,7 +57,7 @@ func RequestValue(r *http.Request, name string) any {
 		return ""
 	case strings.HasPrefix(name, "http_"):
 		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return HeaderValue(r.Header, header)
+		return requestHeaderVariable(r.Header, header)
 	}
 
 	key := "$" + name
@@ -109,7 +110,8 @@ func SnapshotValue(snapshot base.LogSnapshot, name string) any {
 		_, port, _ := net.SplitHostPort(snapshot.Request.RemoteAddr)
 		return port
 	case strings.HasPrefix(name, "arg_"):
-		return snapshot.Request.Query.Get(strings.TrimPrefix(name, "arg_"))
+		value, _ := QueryArgument(snapshotQuery(snapshot), strings.TrimPrefix(name, "arg_"))
+		return value
 	case strings.HasPrefix(name, "cookie_"):
 		request := &http.Request{Header: snapshot.Request.Header}
 		cookie, err := request.Cookie(strings.TrimPrefix(name, "cookie_"))
@@ -119,7 +121,7 @@ func SnapshotValue(snapshot base.LogSnapshot, name string) any {
 		return ""
 	case strings.HasPrefix(name, "http_"):
 		header := strings.ReplaceAll(strings.TrimPrefix(name, "http_"), "_", "-")
-		return HeaderValue(snapshot.Request.Header, header)
+		return requestHeaderVariable(snapshot.Request.Header, header)
 	}
 	key := "$" + name
 	if value := base.LogSnapshotValue(snapshot, key); value != nil && fmt.Sprint(value) != "" {
@@ -158,4 +160,24 @@ func HeaderValue(header http.Header, name string) any {
 		return values[0]
 	}
 	return values
+}
+
+// QueryArgument implements nginx $arg_name: the first case-insensitive name=
+// pair, without percent decoding or treating a semicolon as a separator.
+func QueryArgument(raw, name string) (string, bool) {
+	for pair := range strings.SplitSeq(raw, "&") {
+		key, value, found := strings.Cut(pair, "=")
+		if found && strings.EqualFold(key, name) {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func requestHeaderVariable(header http.Header, name string) string {
+	separator := ", "
+	if strings.EqualFold(name, "Cookie") {
+		separator = "; "
+	}
+	return strings.Join(header.Values(name), separator)
 }

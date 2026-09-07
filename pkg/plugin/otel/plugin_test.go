@@ -454,11 +454,11 @@ func TestRequestIDGeneratorUsesXRequestIDAsTraceID(t *testing.T) {
 	}
 }
 
-func TestLoadMetadataUsesOfficialPluginAttributes(t *testing.T) {
+func TestLoadMetadataUsesOfficialPluginMetadata(t *testing.T) {
 	view := mustOpenTelemetryMetadataView(t, map[string]string{
 		name: `{"trace_id_source":"x-request-id","resource":{"service.name":"gateway"},"collector":{"address":"collector.example.com:4318","request_timeout":7}}`,
 	})
-	metadata, configured, err := loadMetadata(view, nil)
+	metadata, configured, err := loadMetadata(view)
 	if err != nil {
 		t.Fatalf("loadMetadata() error = %v", err)
 	}
@@ -540,7 +540,7 @@ func TestLoadMetadataRetainsRuntimeJSONNumbersInResourceAttributes(t *testing.T)
 	view := mustOpenTelemetryMetadataView(t, map[string]string{
 		name: `{"resource":{"positive_int":7,"negative_int":-3,"fraction":1.25,"negative_fraction":-0.5}}`,
 	})
-	metadata, configured, err := loadMetadata(view, nil)
+	metadata, configured, err := loadMetadata(view)
 	if err != nil {
 		t.Fatalf("loadMetadata() error = %v", err)
 	}
@@ -592,146 +592,29 @@ func TestLoadMetadataRetainsRuntimeJSONNumbersInResourceAttributes(t *testing.T)
 	}
 }
 
-func TestLoadMetadataPrecedence(t *testing.T) {
-	attr := func(traceSource, address string) map[string]any {
-		return map[string]any{
-			"trace_id_source": traceSource,
-			"resource":        map[string]any{"service.name": traceSource},
-			"collector": map[string]any{
-				"address":         address,
-				"request_timeout": 7,
-				"request_headers": map[string]any{"Authorization": traceSource},
-			},
-		}
-	}
-	metadataDocument := func(traceSource, address string) string {
-		return fmt.Sprintf(
-			`{"trace_id_source":%q,"resource":{"service.name":%q},"collector":{"address":%q,"request_timeout":9,"request_headers":{"Authorization":%q}}}`,
-			traceSource,
-			traceSource,
-			address,
-			traceSource,
-		)
-	}
-	tests := []struct {
-		name           string
-		view           map[string]string
-		pluginAttr     map[string]map[string]any
-		wantSource     string
-		wantAddress    string
-		wantTimeout    int
-		wantConfigured bool
-		wantResource   string
-		wantHeader     string
-	}{
-		{
-			name:           "defaults",
-			wantSource:     "random",
-			wantAddress:    "127.0.0.1:4318",
-			wantTimeout:    3,
-			wantConfigured: false,
-		},
-		{
-			name:           "canonical attr",
-			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
-			wantSource:     "attr-canonical",
-			wantAddress:    "attr-canonical:4318",
-			wantTimeout:    7,
-			wantConfigured: true,
-			wantResource:   "attr-canonical",
-			wantHeader:     "attr-canonical",
-		},
-		{
-			name:           "canonical metadata wins over canonical attr",
-			view:           map[string]string{name: metadataDocument("metadata-canonical", "metadata-canonical:4318")},
-			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
-			wantSource:     "metadata-canonical",
-			wantAddress:    "metadata-canonical:4318",
-			wantTimeout:    9,
-			wantConfigured: true,
-			wantResource:   "metadata-canonical",
-			wantHeader:     "metadata-canonical",
-		},
-		{
-			name: "metadata replaces rather than merges attrs",
-			view: map[string]string{
-				name: `{"trace_id_source":"metadata-only"}`,
-			},
-			pluginAttr:     map[string]map[string]any{name: attr("attr-canonical", "attr-canonical:4318")},
-			wantSource:     "metadata-only",
-			wantAddress:    "127.0.0.1:4318",
-			wantTimeout:    3,
-			wantConfigured: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			view := mustOpenTelemetryMetadataView(t, tt.view)
-			metadata, configured, err := loadMetadata(view, tt.pluginAttr)
-			if err != nil {
-				t.Fatalf("loadMetadata() error = %v", err)
-			}
-			if configured != tt.wantConfigured {
-				t.Fatalf("configured = %v, want %v", configured, tt.wantConfigured)
-			}
-			if metadata.TraceIDSource != tt.wantSource || metadata.Collector.Address != tt.wantAddress ||
-				metadata.Collector.RequestTimeout != tt.wantTimeout {
-				t.Fatalf(
-					"metadata source/address/timeout = %q/%q/%d, want %q/%q/%d",
-					metadata.TraceIDSource,
-					metadata.Collector.Address,
-					metadata.Collector.RequestTimeout,
-					tt.wantSource,
-					tt.wantAddress,
-					tt.wantTimeout,
-				)
-			}
-			if tt.wantResource != "" && metadata.Resource["service.name"] != tt.wantResource {
-				t.Fatalf("resource service.name = %q, want %q", metadata.Resource["service.name"], tt.wantResource)
-			}
-			if tt.wantHeader != "" && metadata.Collector.RequestHeaders["Authorization"] != tt.wantHeader {
-				t.Fatalf(
-					"authorization header = %v, want %q",
-					metadata.Collector.RequestHeaders["Authorization"],
-					tt.wantHeader,
-				)
-			}
-		})
-	}
-
-	canonicalInvalid := mustOpenTelemetryMetadataView(
-		t,
-		map[string]string{name: `{"collector":{"request_timeout":"invalid"}}`},
-	)
-	if _, _, err := loadMetadata(
-		canonicalInvalid,
-		map[string]map[string]any{name: attr("fallback", "fallback:4318")},
-	); err == nil {
-		t.Fatal("loadMetadata() error = nil for invalid canonical metadata")
-	}
-
-	for _, tt := range []struct {
+func TestLoadMetadataDefaultsAndPresence(t *testing.T) {
+	for _, test := range []struct {
 		name       string
-		pluginAttr map[string]map[string]any
+		view       map[string]string
+		configured bool
+		source     string
 	}{
-		{
-			name:       "canonical nil blocks defaults",
-			pluginAttr: map[string]map[string]any{name: nil},
-		},
+		{name: "missing", source: "random"},
+		{name: "empty metadata", view: map[string]string{name: `{}`}, configured: true, source: "random"},
+		{name: "metadata values", view: map[string]string{name: `{"trace_id_source":"x-request-id"}`}, configured: true, source: "x-request-id"},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			metadata, configured, err := loadMetadata(runtime.MetadataView{}, tt.pluginAttr)
-			if err == nil {
-				t.Fatal("loadMetadata() error = nil for nil plugin attribute")
-			}
-			if configured || metadata.TraceIDSource != "" || metadata.Resource != nil ||
-				metadata.Collector.Address != "" || metadata.Collector.RequestTimeout != 0 ||
-				metadata.Collector.RequestHeaders != nil || metadata.SetNgxVar ||
-				metadata.BatchSpanProcessor != (BatchSpanProcessorConfig{}) {
-				t.Fatalf("loadMetadata() = (%#v, %v, %v), want fail-closed zero metadata", metadata, configured, err)
+		t.Run(test.name, func(t *testing.T) {
+			metadata, configured, err := loadMetadata(mustOpenTelemetryMetadataView(t, test.view))
+			if err != nil || configured != test.configured || metadata.TraceIDSource != test.source ||
+				metadata.Collector.Address != "127.0.0.1:4318" ||
+				metadata.Collector.RequestTimeout != 3 {
+				t.Fatalf("metadata=%#v configured=%v error=%v", metadata, configured, err)
 			}
 		})
+	}
+	invalid := mustOpenTelemetryMetadataView(t, map[string]string{name: `{"collector":{"request_timeout":"invalid"}}`})
+	if _, _, err := loadMetadata(invalid); err == nil {
+		t.Fatal("invalid metadata accepted")
 	}
 }
 
@@ -986,16 +869,18 @@ func TestTracerProviderExportsOTLPHTTPWithConfiguredHeaders(t *testing.T) {
 }
 
 func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
-	effective := &config.EffectiveConfig{Config: config.Config{
-		PluginAttr: map[string]map[string]any{
-			name: {
-				"collector": map[string]any{"address": "://invalid"},
-			},
-		},
-	}}
+	effective := &config.EffectiveConfig{}
 
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Config: effective})
+	p.SetDependencies(
+		base.Dependencies{
+			Config: effective,
+			Metadata: mustOpenTelemetryMetadataView(
+				t,
+				map[string]string{name: `{"collector":{"address":"://invalid"}}`},
+			),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -1009,14 +894,18 @@ func TestPostInitKeepsFallbackProviderWhenCollectorIsInvalid(t *testing.T) {
 }
 
 func TestPostInitRejectsNegativeInactiveTimeout(t *testing.T) {
-	effective := &config.EffectiveConfig{Config: config.Config{
-		PluginAttr: map[string]map[string]any{name: {
-			"batch_span_processor": map[string]any{"inactive_timeout": -1.0},
-		}},
-	}}
+	effective := &config.EffectiveConfig{}
 
 	p := &Plugin{}
-	p.SetDependencies(base.Dependencies{Config: effective})
+	p.SetDependencies(
+		base.Dependencies{
+			Config: effective,
+			Metadata: mustOpenTelemetryMetadataView(
+				t,
+				map[string]string{name: `{"batch_span_processor":{"inactive_timeout":-1.0}}`},
+			),
+		},
+	)
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

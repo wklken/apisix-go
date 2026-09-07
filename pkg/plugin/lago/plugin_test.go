@@ -568,7 +568,7 @@ func TestRunLogPhasePreservesLagoTemplateFieldsAndBodies(t *testing.T) {
 	delivered := make(chan map[string]any, 1)
 	p := &Plugin{config: Config{
 		IncludeReqBody: true, IncludeRespBody: true, MaxReqBodyBytes: 64, MaxRespBodyBytes: 64,
-		EventTransactionID: "${request_method}-${status}", EventProperties: map[string]string{"route": "${route_id}"},
+		EventTransactionID: "$request_method-${status}", EventProperties: map[string]string{"route": "$route_id"},
 	}}
 	p.BatchProcessor = newOwnedBatchProcessorForTest(t, logger_batch.Config{
 		BatchMaxSize: 1, MaxPendingEntries: 1, InactiveTimeout: time.Hour,

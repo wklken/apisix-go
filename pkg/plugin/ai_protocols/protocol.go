@@ -29,12 +29,12 @@ var (
 	}
 	OpenAIResponses = Protocol{
 		OverrideKey: "openai-responses",
-		RequestType: "ai_responses",
+		RequestType: "ai_chat",
 		Endpoint:    "/v1/responses",
 	}
 	OpenAIEmbeddings = Protocol{
 		OverrideKey: "openai-embeddings",
-		RequestType: "ai_embeddings",
+		RequestType: "ai_chat",
 		Endpoint:    "/v1/embeddings",
 	}
 	AnthropicMessages = Protocol{

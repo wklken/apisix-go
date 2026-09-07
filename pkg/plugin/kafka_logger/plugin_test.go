@@ -400,8 +400,9 @@ func TestKafkaWritersAndPasswordsAreAttemptOwned(t *testing.T) {
 	first, closeFirst := newScoped("generation-first")
 	second, closeSecond := newScoped("generation-second")
 	defer closeSecond()
-	firstSender := first.sender.(*kafkaGoSender)
-	secondSender := second.sender.(*kafkaGoSender)
+	firstSender := first.sender.(*asyncKafkaSender).writer.(*kafkaGoSender)
+	secondQueue := second.sender.(*asyncKafkaSender)
+	secondSender := secondQueue.writer.(*kafkaGoSender)
 	if firstSender.writer == secondSender.writer {
 		t.Fatal("two attempts shared a credential-bearing Kafka writer")
 	}
@@ -415,7 +416,7 @@ func TestKafkaWritersAndPasswordsAreAttemptOwned(t *testing.T) {
 		t.Fatal("private password escaped into public broker config")
 	}
 	closeFirst()
-	if second.sender != secondSender || second.stopped.Load() {
+	if second.sender != secondQueue || second.stopped.Load() {
 		t.Fatal("stopping first attempt changed the second writer")
 	}
 }

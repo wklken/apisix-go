@@ -102,8 +102,9 @@ cases:
         input: {path: /concurrent}
         output: {status: 200, body: {equals: ok}}
     after_shutdown:
-      - path: {equals: '{{WORK_DIR}}/logs/access.log'}
-        body: {matches: '^(?:\{[^\n]*"path":"/concurrent"[^\n]*\}\n){8}$'}
+      - path: {equals: '{{WORK_DIR}}/logs/*access.log'}
+        concat_glob: true
+        body: {matches: '^before concurrent rotation\n(?:\{[^\n]*"path":"/concurrent"[^\n]*\}\n){9}$'}
       - path: {equals: '{{WORK_DIR}}/logs/error.log'}
         body: {equals: ""}
 

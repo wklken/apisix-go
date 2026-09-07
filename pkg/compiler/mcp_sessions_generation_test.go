@@ -104,8 +104,8 @@ func TestParityCompilerSuccessorReachesActiveMCPSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = result.Body.Close()
-	if result.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("closed session still accepts messages: %d", result.StatusCode)
+	if result.StatusCode != http.StatusAccepted {
+		t.Fatalf("closed session message acknowledgement=%d, want 202", result.StatusCode)
 	}
 	if err := second.Close(context.Background()); err != nil {
 		t.Fatal(err)

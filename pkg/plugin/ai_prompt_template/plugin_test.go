@@ -40,8 +40,8 @@ func TestHandlerRendersSelectedPromptTemplate(t *testing.T) {
 			{
 				Name: "QnA with complexity",
 				Template: Template{
-					Model: "gpt-4",
-					Messages: []Message{
+					"model": "gpt-4",
+					"messages": []Message{
 						{Role: "system", Content: "Answer in {{complexity}}."},
 						{Role: "user", Content: "Explain {{prompt}}."},
 					},
@@ -50,8 +50,8 @@ func TestHandlerRendersSelectedPromptTemplate(t *testing.T) {
 			{
 				Name: "echo",
 				Template: Template{
-					Model: "gpt-4",
-					Messages: []Message{
+					"model": "gpt-4",
+					"messages": []Message{
 						{Role: "user", Content: "Echo {{prompt}}."},
 					},
 				},
@@ -67,7 +67,7 @@ func TestHandlerRendersSelectedPromptTemplate(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var got Template
+		var got renderedTemplate
 		if err := json.Unmarshal(readTestBody(t, r), &got); err != nil {
 			t.Fatalf("decode rendered template: %v", err)
 		}
@@ -92,7 +92,7 @@ func TestHandlerRendersSelectedPromptTemplate(t *testing.T) {
 func TestHandlerRendersNestedAndIndexedJSONValues(t *testing.T) {
 	p := newTestPlugin(t, Config{Templates: []NamedTemplate{{
 		Name: "nested",
-		Template: Template{Messages: []Message{{
+		Template: Template{"messages": []Message{{
 			Role:    "user",
 			Content: "Hello {{user.profile.name}}, your second item is {{items[1].name}}.",
 		}}},
@@ -104,7 +104,7 @@ func TestHandlerRendersNestedAndIndexedJSONValues(t *testing.T) {
     }`))
 	rr := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var got Template
+		var got renderedTemplate
 		if err := json.Unmarshal(readTestBody(t, r), &got); err != nil {
 			t.Fatalf("decode rendered template: %v", err)
 		}
@@ -172,7 +172,7 @@ func TestRenderStringExpandsPlaceholdersAndPreservesUnknownKeys(t *testing.T) {
 func TestHandlerRejectsMissingTemplateName(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Templates: []NamedTemplate{
-			{Name: "echo", Template: Template{Messages: []Message{{Role: "user", Content: "Echo"}}}},
+			{Name: "echo", Template: Template{"messages": []Message{{Role: "user", Content: "Echo"}}}},
 		},
 	})
 
@@ -194,7 +194,7 @@ func TestHandlerRejectsMissingTemplateName(t *testing.T) {
 func TestHandlerRejectsUnknownTemplateName(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Templates: []NamedTemplate{
-			{Name: "echo", Template: Template{Messages: []Message{{Role: "user", Content: "Echo"}}}},
+			{Name: "echo", Template: Template{"messages": []Message{{Role: "user", Content: "Echo"}}}},
 		},
 	})
 
@@ -216,7 +216,7 @@ func TestHandlerRejectsUnknownTemplateName(t *testing.T) {
 func TestHandlerRejectsInvalidJSONBody(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Templates: []NamedTemplate{
-			{Name: "echo", Template: Template{Messages: []Message{{Role: "user", Content: "Echo"}}}},
+			{Name: "echo", Template: Template{"messages": []Message{{Role: "user", Content: "Echo"}}}},
 		},
 	})
 
@@ -255,4 +255,14 @@ func messagesEqual(got []Message, want []Message) bool {
 		}
 	}
 	return true
+}
+
+// Typed projections keep the assertions on rendered chat fields readable.
+type renderedTemplate struct {
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+}
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }

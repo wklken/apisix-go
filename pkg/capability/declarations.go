@@ -1,6 +1,10 @@
 package capability
 
 var secretDeclarations = []SecretDeclaration{
+	{Factory: SSLResourceFactory, Source: SecretSSLConfig, Field: "cert"},
+	{Factory: SSLResourceFactory, Source: SecretSSLConfig, Field: "key"},
+	{Factory: SSLResourceFactory, Source: SecretSSLConfig, Field: "certs"},
+	{Factory: SSLResourceFactory, Source: SecretSSLConfig, Field: "keys"},
 	{Factory: "azure-functions", Source: SecretPluginConfig, Field: "authorization.apikey"},
 	{Factory: "azure-functions", Source: SecretPluginMetadata, Field: "master_apikey"},
 	{Factory: "openfunction", Source: SecretPluginConfig, Field: "authorization.service_token"},

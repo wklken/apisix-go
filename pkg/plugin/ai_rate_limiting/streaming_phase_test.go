@@ -13,7 +13,7 @@ import (
 func TestStreamingWrapperFinalizationChargesExactlyOnce(t *testing.T) {
 	now := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
 	p := newTestPlugin(t, Config{Limit: 2, TimeWindow: 60}, func() time.Time { return now })
-	r := apisixctx.WithRequestVars(httptest.NewRequest(http.MethodPost, "/", nil))
+	r := apisixctx.WithRequestVars(newSelectedAIRequest(http.MethodPost, "/", nil))
 	r = apisixctx.WithRequestLifecycle(r, apisixctx.NewRequestLifecycle(now))
 	result := p.RunRequestPhase(httptest.NewRecorder(), r)
 	if result.Decision != base.RequestContinue {

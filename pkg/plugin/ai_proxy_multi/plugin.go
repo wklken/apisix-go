@@ -99,7 +99,6 @@ type preparedInstanceRequest struct {
 	providerProtocol    ai_protocols.Protocol
 	toolNameMap         map[string]string
 	anthropicConversion bool
-	cancel              context.CancelFunc
 	upstreamStarted     time.Time
 }
 
@@ -823,8 +822,10 @@ func (p *Plugin) executeInstanceRequest(
 		index := target.index
 		tried[index] = true
 		instance := p.config.Instances[index]
-		if err := validateBedrockInstanceRequest(instance, document, protocol); err != nil {
-			base.WriteJSONMessage(w, http.StatusBadRequest, err.Error())
+		if err := validateInstanceRequest(instance, document, protocol); err != nil {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, err.Error())
 			p.registerLogging(r, protocol, body)
 			return
 		}
@@ -836,9 +837,6 @@ func (p *Plugin) executeInstanceRequest(
 		resp, prepared, err := p.requestInstance(r, body, document, protocol, target)
 		if err != nil {
 			doneMetric()
-			if prepared.cancel != nil {
-				prepared.cancel()
-			}
 			ai_runtime.MarkLLMRequestDone(r, started)
 			if p.canRetry(http.StatusServiceUnavailable, time.Since(start), retries) {
 				retries++
@@ -863,9 +861,6 @@ func (p *Plugin) executeInstanceRequest(
 				retries++
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
-				if prepared.cancel != nil {
-					prepared.cancel()
-				}
 				var ok bool
 				target, ok, _ = p.pickExecutionTarget(r, tried)
 				if !ok {
@@ -881,9 +876,6 @@ func (p *Plugin) executeInstanceRequest(
 				ai_runtime.MarkLLMRequestDone(r, started)
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
-				if prepared.cancel != nil {
-					prepared.cancel()
-				}
 				base.WriteJSONMessage(w, http.StatusBadGateway, "failed to pick AI instance")
 				p.registerLogging(r, protocol, body)
 				return
@@ -901,25 +893,22 @@ func (p *Plugin) executeInstanceRequest(
 			responseBody.bytesRead,
 		)
 		doneMetric()
-		if prepared.cancel != nil {
-			prepared.cancel()
-		}
 		ai_runtime.MarkLLMRequestDone(r, started)
 		p.registerLogging(r, protocol, body)
 		return
 	}
 }
 
-func validateBedrockInstanceRequest(
+func validateInstanceRequest(
 	instance Instance,
 	document ai_protocols.Document,
 	protocol ai_protocols.Protocol,
 ) error {
-	if instance.Provider != "bedrock" {
-		return nil
+	if err := ai_protocols.ValidateProviderProtocol(instance.Provider, protocol); err != nil {
+		return err
 	}
-	if protocol != ai_protocols.BedrockConverse {
-		return fmt.Errorf("bedrock provider does not support %s protocol", protocol.OverrideKey)
+	if instance.Provider != "bedrock" || protocol == ai_protocols.Passthrough {
+		return nil
 	}
 	if instanceModelDocument(instance, document) == "" {
 		return fmt.Errorf("could not resolve upstream path: bedrock requires options.model or request body model")
@@ -1032,11 +1021,12 @@ func (p *Plugin) requestInstance(
 		requestClient = target.node.client
 	}
 
-	method := http.MethodPost
-	if protocol == ai_protocols.Passthrough {
-		method = r.Method
-	}
-	req, err := http.NewRequestWithContext(r.Context(), method, endpoint, bytes.NewReader(prepared.providerBody))
+	req, err := http.NewRequestWithContext(
+		r.Context(),
+		http.MethodPost,
+		endpoint,
+		bytes.NewReader(prepared.providerBody),
+	)
 	if err != nil {
 		return nil, prepared, fmt.Errorf("failed to create LLM request: %w", err)
 	}
@@ -1090,14 +1080,6 @@ func (p *Plugin) requestInstance(
 	}
 	if prepared.anthropicConversion {
 		ai_protocols.ConvertAnthropicHeadersToOpenAI(req.Header)
-	}
-	if prepared.clientDocument.IsStreaming(prepared.clientProtocol) && p.config.MaxStreamDurationMS > 0 {
-		deadlineContext, cancel := context.WithTimeout(
-			req.Context(),
-			time.Duration(p.config.MaxStreamDurationMS)*time.Millisecond,
-		)
-		prepared.cancel = cancel
-		req = req.WithContext(deadlineContext)
 	}
 
 	prepared.upstreamStarted = time.Now()
@@ -1453,23 +1435,25 @@ func (p *Plugin) writeProviderResponse(
 		})
 		defer ai_stream.ClosePreservingPanic(streamWriter)
 		streamWriter.WriteHeader(resp.StatusCode)
+		bodyReader := ai_stream.LimitDuration(resp.Body, started,
+			time.Duration(p.config.MaxStreamDurationMS)*time.Millisecond)
 		var usage ai_stream.Usage
 		var err error
 		transport := ai_stream.StreamTransportSSE
 		if prepared.providerProtocol == ai_protocols.BedrockConverse {
 			transport = ai_stream.StreamTransportAWSEventStream
-			usage, err = ai_stream.ForwardAWSEventStream(streamWriter, resp.Body, p.config.MaxResponseBytes)
+			usage, err = ai_stream.ForwardAWSEventStream(streamWriter, bodyReader, p.config.MaxResponseBytes)
 		} else if prepared.anthropicConversion {
 			usage, err = ai_stream.ForwardOpenAIAsAnthropicSSE(
 				streamWriter,
-				resp.Body,
+				bodyReader,
 				p.config.MaxResponseBytes,
 				prepared.toolNameMap,
 			)
 		} else {
 			usage, err = ai_stream.ForwardSSE(
 				streamWriter,
-				resp.Body,
+				bodyReader,
 				prepared.providerProtocol,
 				p.config.MaxResponseBytes,
 			)
@@ -1477,6 +1461,15 @@ func (p *Plugin) writeProviderResponse(
 		outcome := ai_stream.RecordStreamOutcome(r, transport, err)
 		if p.streamOutcomeRecorded != nil {
 			p.streamOutcomeRecorded()
+		}
+		if errors.Is(err, ai_stream.ErrMaxStreamDuration) {
+			logger.Warnf("aborting AI stream: max_stream_duration_ms exceeded")
+			registerStreamingLLMRequestVars(r, prepared.clientDocument, usage)
+			if !streamWriter.Wrote() {
+				clear(w.Header())
+				http.Error(w, ai_stream.ErrMaxStreamDuration.Error(), http.StatusGatewayTimeout)
+			}
+			return
 		}
 		if err != nil {
 			wrote := streamWriter.Wrote()

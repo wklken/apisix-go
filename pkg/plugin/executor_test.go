@@ -330,7 +330,7 @@ func TestRequestPipelineStaticHookPerRequest(t *testing.T) {
 	}
 }
 
-func TestRequestPipelineRunsOriginalRewriteBeforeConsumerOverride(t *testing.T) {
+func TestRequestPipelineSkipsRepeatedRewriteAfterConsumerOverride(t *testing.T) {
 	order := []string{}
 	route := newExecutorRequestPlugin(
 		"route",
@@ -364,7 +364,7 @@ func TestRequestPipelineRunsOriginalRewriteBeforeConsumerOverride(t *testing.T) 
 		httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodGet, "/", nil),
 	)
-	if got, want := order, []string{"route", "consumer", "terminal"}; !reflect.DeepEqual(got, want) {
+	if got, want := order, []string{"route", "terminal"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("consumer override order = %v, want %v", got, want)
 	}
 }
@@ -769,7 +769,6 @@ func TestPostResolutionHookRunsAfterWinnerMergeBeforeAnyLaterStage(t *testing.T)
 		"route-original",
 		"resolver",
 		"hook",
-		"consumer-rewrite",
 		"access",
 		"before-proxy",
 		"terminal",
@@ -1309,5 +1308,48 @@ func TestRequestPipelineCORSDoesNotApplyConsumerBindingBeforeAuthentication(t *t
 	}
 	if resolverCalls != 0 {
 		t.Fatalf("resolver calls = %d, want 0 before authentication succeeds", resolverCalls)
+	}
+}
+
+func TestRequestPipelinePreferRouteSkipsGlobalRewrite(t *testing.T) {
+	for _, tc := range []struct {
+		name, factory string
+		route         bool
+		want          []string
+	}{
+		{"skywalking-route", "skywalking", true, []string{"route", "terminal"}},
+		{"skywalking-global-only", "skywalking", false, []string{"global", "terminal"}},
+		{"normal-both-scopes", "proxy-rewrite", true, []string{"global", "route", "terminal"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			binding := func(scope Scope, name string) Binding {
+				return pipelineBinding(
+					tc.factory,
+					newExecutorRequestPlugin(
+						name,
+						1,
+						func(_ http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+							calls = append(calls, name)
+							return base.ContinueRequest(r)
+						},
+					),
+					scope,
+					1,
+				)
+			}
+			bindings := []Binding{binding(ScopeGlobal, "global")}
+			if tc.route {
+				bindings = append(bindings, binding(ScopeRoute, "route"))
+			}
+			NewRequestPipeline(
+				bindings,
+				nil,
+			).Then(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls = append(calls, "terminal") })).
+				ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+			if !reflect.DeepEqual(calls, tc.want) {
+				t.Fatalf("calls=%v want=%v", calls, tc.want)
+			}
+		})
 	}
 }

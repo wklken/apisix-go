@@ -13,19 +13,22 @@ import (
 var jsonNumberPattern = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
 
 func mergeNodes(lower, upper *valueNode) *valueNode {
-	if lower == nil {
-		return cloneNode(upper)
-	}
 	if upper == nil {
 		return cloneNode(lower)
 	}
-	if lower.kind != nodeMapping || upper.kind != nodeMapping {
+	if upper.kind != nodeMapping {
 		return cloneNode(upper)
 	}
-
-	merged := cloneNode(lower)
+	merged := &valueNode{kind: nodeMapping, mapping: make(map[string]*valueNode)}
+	if lower != nil && lower.kind == nodeMapping {
+		merged = cloneNode(lower)
+	}
 	merged.pathBase = upper.pathBase
 	for key, incoming := range upper.mapping {
+		if incoming.kind == nodeNull {
+			delete(merged.mapping, key)
+			continue
+		}
 		merged.mapping[key] = mergeNodes(merged.mapping[key], incoming)
 	}
 	return merged

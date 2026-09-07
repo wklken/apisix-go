@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -278,8 +277,6 @@ func (p *Plugin) PostInit() error {
 	if _, err := p.MetadataView().Decode(name, &metadata); err != nil {
 		return fmt.Errorf("%s metadata decode failed: %w", name, err)
 	}
-	p.config.IncludeReqBodyExpr = normalizeBodyExpression(p.config.IncludeReqBodyExpr)
-	p.config.IncludeRespBodyExpr = normalizeBodyExpression(p.config.IncludeRespBodyExpr)
 	if err := base.PrepareExprRegexps(
 		p.config.IncludeReqBodyExpr, p.config.IncludeRespBodyExpr,
 	); err != nil {
@@ -346,8 +343,11 @@ func (p *Plugin) PostInit() error {
 	}
 	sharedClient := value.(*resty.Client)
 
-	if len(p.config.LogFormat) == 0 {
+	if p.config.LogFormat == nil {
 		p.logFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.logFormat = nil
+		}
 	} else {
 		p.logFormat = p.config.LogFormat
 	}
@@ -423,32 +423,6 @@ func (p *Plugin) Stop() {
 	}
 }
 
-func normalizeBodyExpression(expression []any) []any {
-	normalized := make([]any, len(expression))
-	for index, item := range expression {
-		condition, ok := item.([]any)
-		if !ok || len(condition) != 3 || fmt.Sprint(condition[1]) != "in" {
-			normalized[index] = item
-			continue
-		}
-		values, ok := condition[2].([]any)
-		if !ok {
-			normalized[index] = item
-			continue
-		}
-		alternatives := make([]string, len(values))
-		for valueIndex, value := range values {
-			alternatives[valueIndex] = regexp.QuoteMeta(fmt.Sprint(value))
-		}
-		normalized[index] = []any{
-			condition[0],
-			"~",
-			"^(" + strings.Join(alternatives, "|") + ")$",
-		}
-	}
-	return normalized
-}
-
 func validateBodyExpression(name string, expression []any) error {
 	for _, item := range expression {
 		if logical, ok := item.(string); ok {
@@ -463,6 +437,12 @@ func validateBodyExpression(name string, expression []any) error {
 		}
 		operator := fmt.Sprint(condition[1])
 		switch operator {
+		case "in":
+			switch condition[2].(type) {
+			case []any, []string:
+			default:
+				return fmt.Errorf("%s in operand must be an array", name)
+			}
 		case "==", "!=", ">", ">=", "<", "<=", "~", "!~":
 		default:
 			return fmt.Errorf("%s has unsupported operator %q", name, operator)
@@ -482,7 +462,7 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		responseBody = base.SnapshotResponseBody(snapshot, policy.ResponseBodyBytes)
 	}
 	var fields map[string]any
-	if len(p.logFormat) > 0 {
+	if p.logFormat != nil {
 		fields = base.ResolveLogFormat(p.logFormat, func(value string) any {
 			switch value {
 			case "$request_body":
@@ -505,11 +485,13 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	} else {
 		fields = p.defaultSnapshotLogFields(snapshot)
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) &&
+	if p.logFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) &&
 		requestBody != "" {
 		base.NestedLogMap(fields, "request")["body"] = requestBody
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) &&
+	if p.logFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) &&
 		responseBody != "" {
 		base.NestedLogMap(fields, "response")["body"] = responseBody
 	}

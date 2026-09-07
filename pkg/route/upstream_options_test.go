@@ -126,16 +126,16 @@ func TestBuildClusterConfigDoesNotInventAdmissionCapacity(t *testing.T) {
 			}
 			transport := proxy.NewTransport(config.Transport)
 			t.Cleanup(transport.CloseIdleConnections)
-			if transport.MaxIdleConns != proxy.DefaultMaxIdleConns ||
-				transport.MaxIdleConnsPerHost != proxy.DefaultMaxIdleConnsPerHost ||
+			if transport.MaxIdleConns != 320 ||
+				transport.MaxIdleConnsPerHost != 320 ||
 				transport.MaxConnsPerHost != proxy.DefaultMaxConnsPerHost {
 				t.Fatalf(
 					"transport capacities = %d/%d/%d, want %d/%d/%d",
 					transport.MaxIdleConns,
 					transport.MaxIdleConnsPerHost,
 					transport.MaxConnsPerHost,
-					proxy.DefaultMaxIdleConns,
-					proxy.DefaultMaxIdleConnsPerHost,
+					320,
+					320,
 					proxy.DefaultMaxConnsPerHost,
 				)
 			}

@@ -20,6 +20,10 @@ func newPriorityGroups(servers map[string]int, priorities map[string]int) []prio
 
 	weights := make(map[int]map[string]int)
 	for target, weight := range servers {
+		// APISIX directly selects a sole node, even when its weight is zero.
+		if len(servers) == 1 && weight == 0 {
+			weight = 1
+		}
 		if weight <= 0 {
 			continue
 		}

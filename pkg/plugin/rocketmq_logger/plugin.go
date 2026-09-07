@@ -329,10 +329,13 @@ func (p *Plugin) PostInit() error {
 
 	p.applyDefaults()
 
-	if len(p.config.LogFormat) > 0 {
+	if p.config.LogFormat != nil {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.LogFormat = nil
+		}
 	}
 	if p.config.MaxPendingEntries == 0 {
 		p.config.MaxPendingEntries = metadata.MaxPendingEntries
@@ -486,18 +489,20 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 		return p.enqueueRocketMQLogIfRunning(map[string]any{originLogKey: rocketSnapshotOrigin(snapshot, body)})
 	}
 	var fields map[string]any
-	if len(p.LogFormat) > 0 {
+	if p.LogFormat != nil {
 		fields = base.GetFieldsFromSnapshot(snapshot, p.LogFormat)
 		base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
 	} else {
 		fields = rocketSnapshotDefaultFields(p, snapshot)
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}

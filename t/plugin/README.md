@@ -63,6 +63,11 @@ An HTTP case contains:
 - optional `upstream`: HTTP/HTTPS fixture expectations and response;
 - `output`: expected status plus optional header, body, and log assertions.
 
+Runtime plugins are derived from declared resources and explicit `runtime.plugins`.
+The harness does not inject Prometheus or override its export topology. Cases that
+scrape through `public-api` set
+`runtime.plugin_attr.prometheus.enable_export_server: false` explicitly.
+
 Configuration-rejection cases send their declared request to the rejected route;
 they require an `output.status` assertion and an `output.logs` matcher proving
 the intended route/plugin initialization failure. This keeps invalid
@@ -121,3 +126,17 @@ headers, and fixture bodies. `absent` is valid only for headers.
 
 The upstream expectation is authoritative. Do not weaken an assertion to match
 an incompatible current implementation.
+
+File assertions may set `concat_glob: true` with `path.equals` containing a
+work-directory glob (for example `{{WORK_DIR}}/logs/*access.log`). The runner
+concatenates matching files in filename order before applying `body` or
+`json_lines`. This checks record conservation across uncompressed log rotation;
+no matches or unreadable files fail the assertion. It cannot be combined with
+`absent` and does not decompress archives.
+
+SSE cases may declare `output.chunks` and `output.first_chunk_less_than`. The
+first-frame deadline starts before the client request, including response-header
+wait time, so a fully buffered response cannot satisfy it by arriving all at
+once. Pair it with `elapsed_at_least` and delayed fixture chunks to verify that
+the first frame arrives before the complete response. Each subsequent frame
+retains the harness 500 ms arrival deadline.

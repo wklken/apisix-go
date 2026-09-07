@@ -411,7 +411,7 @@ func googleSnapshotDefaultLogFields(snapshot base.LogSnapshot) map[string]any {
 		defaultRemoteIPField:      remoteIP,
 		defaultServerIPField:      base.SnapshotUpstreamAddress(snapshot),
 		defaultLatencyField:       latencyString(latency),
-		defaultInsertIDField:      snapshot.Request.Header.Get("X-Request-ID"),
+		defaultInsertIDField:      base.SnapshotValue(snapshot, "$request_id"),
 	}
 	if routeID := stringFromAny(base.SnapshotValue(snapshot, "$route_id")); routeID != "" {
 		fields["route_id"] = routeID
@@ -788,7 +788,7 @@ func (p *Plugin) buildEntryForProject(log map[string]any, projectID string) goog
 		Labels: map[string]string{
 			"source": "apache-apisix-google-cloud-logging",
 		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Timestamp: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 		Resource:  p.config.Resource,
 		LogName:   "projects/" + projectID + "/logs/" + p.config.LogID,
 	}

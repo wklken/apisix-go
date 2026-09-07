@@ -138,73 +138,73 @@ func (p *Plugin) Config() any {
 }
 
 func (p *Plugin) Handler(next http.Handler) http.Handler {
-	fn := func(w http.ResponseWriter, r *http.Request) {
-		if p.config.HeaderSchema != nil {
-			if err := p.validateSchema(
-				"header_schema", p.config.HeaderSchema, p.headerSecrets,
-				p.config.headerSchema, requestHeaders(r),
-			); err != nil {
-				message := schemaValidationDiagnostic(err, p.headerSensitive)
-				logger.Error("req schema validation failed: " + message)
-				writeSchemaRejection(
-					w,
-					p.schemaRejectedMessage(err, p.headerSensitive),
-					p.config.RejectedCode,
-				)
-				return
-			}
+	return base.AdaptRequestPhase(p, next)
+}
+
+func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.RequestPhaseResult {
+	if p.config.HeaderSchema != nil {
+		if err := p.validateSchema(
+			"header_schema", p.config.HeaderSchema, p.headerSecrets,
+			p.config.headerSchema, requestHeaders(r),
+		); err != nil {
+			message := schemaValidationDiagnostic(err, p.headerSensitive)
+			logger.Error("req schema validation failed: " + message)
+			writeSchemaRejection(
+				w,
+				p.schemaRejectedMessage(err, p.headerSensitive),
+				p.config.RejectedCode,
+			)
+			return base.StopRequest(r)
+		}
+	}
+
+	if p.config.BodySchema != nil {
+		body, err := ctx.ReadRequestBody(r)
+		if err != nil {
+			err = fmt.Errorf("failed to read request body: %w", err)
+			logger.Error(err.Error())
+			http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
+			return base.StopRequest(r)
+		}
+		if len(body) == 0 {
+			err = fmt.Errorf("request body is required")
+			logger.Error(err.Error())
+			writeBodyRejection(w, p.config.RejectedMsg, p.config.RejectedCode)
+			return base.StopRequest(r)
 		}
 
-		if p.config.BodySchema != nil {
-			body, err := ctx.ReadRequestBody(r)
-			if err != nil {
-				err = fmt.Errorf("failed to read request body: %w", err)
+		bodyData, bodyIsJSON, err := parseRequestBody(r, body)
+		if err != nil {
+			logger.Errorf("failed to parse request body: %v", err)
+			writeBodyRejection(w, p.rejectedMessage(err), p.config.RejectedCode)
+			return base.StopRequest(r)
+		}
+
+		err = p.validateSchema(
+			"body_schema", p.config.BodySchema, p.bodySecrets,
+			p.config.bodySchema, bodyData,
+		)
+		if err != nil {
+			message := schemaValidationDiagnostic(err, p.bodySensitive)
+			logger.Error("req schema validation failed: " + message)
+			writeSchemaRejection(
+				w,
+				p.schemaRejectedMessage(err, p.bodySensitive),
+				p.config.RejectedCode,
+			)
+			return base.StopRequest(r)
+		}
+		if bodyIsJSON {
+			if err := normalizeJSONBody(r, bodyData); err != nil {
+				err = fmt.Errorf("failed to normalize request body: %w", err)
 				logger.Error(err.Error())
 				http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
-				return
+				return base.StopRequest(r)
 			}
-			if len(body) == 0 {
-				err = fmt.Errorf("request body is required")
-				logger.Error(err.Error())
-				writeBodyRejection(w, p.config.RejectedMsg, p.config.RejectedCode)
-				return
-			}
-
-			bodyData, bodyIsJSON, err := parseRequestBody(r, body)
-			if err != nil {
-				logger.Errorf("failed to parse request body: %v", err)
-				writeBodyRejection(w, p.rejectedMessage(err), p.config.RejectedCode)
-				return
-			}
-
-			err = p.validateSchema(
-				"body_schema", p.config.BodySchema, p.bodySecrets,
-				p.config.bodySchema, bodyData,
-			)
-			if err != nil {
-				message := schemaValidationDiagnostic(err, p.bodySensitive)
-				logger.Error("req schema validation failed: " + message)
-				writeSchemaRejection(
-					w,
-					p.schemaRejectedMessage(err, p.bodySensitive),
-					p.config.RejectedCode,
-				)
-				return
-			}
-			if bodyIsJSON {
-				if err := normalizeJSONBody(r, bodyData); err != nil {
-					err = fmt.Errorf("failed to normalize request body: %w", err)
-					logger.Error(err.Error())
-					http.Error(w, p.rejectedMessage(err), p.config.RejectedCode)
-					return
-				}
-			}
-
 		}
 
-		next.ServeHTTP(w, r)
 	}
-	return http.HandlerFunc(fn)
+	return base.ContinueRequest(r)
 }
 
 func (p *Plugin) validateSchema(

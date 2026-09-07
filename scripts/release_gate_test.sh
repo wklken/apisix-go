@@ -115,6 +115,8 @@ require_job_fixed "$workflow" container-evidence 'docker/build-push-action@v7.3.
 require_job_fixed "$workflow" container-evidence 'platforms: linux/amd64'
 require_job_fixed "$workflow" container-evidence 'push: false'
 require_job_fixed "$workflow" container-evidence 'bash scripts/container_smoke.sh'
+require_job_fixed "$workflow" container-evidence 'APISIX_EXPECTED_VERSION: ${{ steps.source.outputs.version }}'
+require_job_fixed "$workflow" container-evidence 'APISIX_EXPECTED_COMMIT: ${{ steps.source.outputs.commit }}'
 require_job_fixed "$workflow" container-evidence 'anchore/sbom-action@v0.24.0'
 require_job_fixed "$workflow" container-evidence 'aquasecurity/trivy-action@v0.36.0'
 require_job_fixed "$workflow" container-evidence 'docker save "$APISIX_IMAGE" | gzip --best'

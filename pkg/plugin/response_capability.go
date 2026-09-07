@@ -67,6 +67,7 @@ var responseCapabilityRegistry = map[string]ResponseCapability{
 	"azure-functions":  {},
 	"brotli":           {HeaderFilter: true, StreamingBodyFilter: true, CompressionOffer: true},
 	"cors":             {HeaderFilter: true},
+	"zipkin":           {HeaderFilter: true},
 	"chaitin-waf":      {HeaderFilter: true},
 	"dubbo-proxy":      {ExclusiveProtocol: ProtocolDubbo, SeparateSubsystem: true},
 	"fault-injection":  {},
@@ -83,6 +84,7 @@ var responseCapabilityRegistry = map[string]ResponseCapability{
 	"proxy-buffering":  {StreamingBodyFilter: true},
 	"public-api":       {SeparateSubsystem: true},
 	"redirect":         {},
+	"request-id":       {HeaderFilter: true},
 }
 
 func ResponseCapabilityFor(factory string) (ResponseCapability, bool) {
@@ -479,7 +481,7 @@ func compatibleBoundedAdapter(binding Binding, capability ResponseCapability) bo
 		return false
 	}
 	switch binding.Descriptor.Factory {
-	case "gzip", "brotli", "cors", "csrf", "response-rewrite":
+	case "gzip", "brotli", "cors", "csrf", "response-rewrite", "request-id", "zipkin":
 		return true
 	default:
 		return false

@@ -538,7 +538,7 @@ func TestMirrorPreservesRequestHeadersExceptHopByHop(t *testing.T) {
 	}
 }
 
-func TestBeforeProxyRejectsOversizedMirrorBodyBeforePrimaryUpstream(t *testing.T) {
+func TestBeforeProxySkipsOversizedMirrorWithoutTruncatingPrimary(t *testing.T) {
 	p := newTestPlugin(t, Config{Host: "http://mirror.example.com"})
 	p.maxBodySize = 5
 	req, lifecycle := withMirrorLifecycle(httptest.NewRequest(
@@ -554,15 +554,15 @@ func TestBeforeProxyRejectsOversizedMirrorBodyBeforePrimaryUpstream(t *testing.T
 		hookErr = apisixctx.RunBeforeProxyHooks(r)
 	})).ServeHTTP(httptest.NewRecorder(), req)
 
-	if !base.IsBodyTooLarge(hookErr) {
-		t.Fatalf("before-proxy error = %v, want body-too-large", hookErr)
+	if hookErr != nil {
+		t.Fatalf("mirror size limit failed primary: %v", hookErr)
 	}
 	restored, err := io.ReadAll(forwarded.Body)
 	if err != nil {
 		t.Fatalf("read restored body: %v", err)
 	}
-	if got := string(restored); got != "123456" {
-		t.Fatalf("retained body = %q, want limit+1 bytes", got)
+	if got := string(restored); got != "123456789" {
+		t.Fatalf("primary body = %q, want all original bytes", got)
 	}
 }
 
@@ -1307,15 +1307,20 @@ func TestStopDoesNotOwnRequestTasks(t *testing.T) {
 	}
 }
 
-func TestPostInitConfiguresHTTP2Transport(t *testing.T) {
-	p := newTestPlugin(t, Config{Host: "https://mirror.example.com"})
-
-	transport, ok := p.client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("client transport = %T, want *http.Transport", p.client.Transport)
-	}
-	if len(transport.TLSNextProto) == 0 {
-		t.Fatal("client transport has no configured HTTP/2 protocol")
+func TestPostInitSelectsMirrorHTTPProtocol(t *testing.T) {
+	for _, test := range []struct {
+		host  string
+		http2 bool
+	}{{"https://mirror.example.com", false}, {"grpcs://mirror.example.com", true}} {
+		p := newTestPlugin(t, Config{Host: test.host})
+		transport, ok := p.client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("transport=%T", p.client.Transport)
+		}
+		_, enabled := transport.TLSNextProto["h2"]
+		if enabled != test.http2 {
+			t.Errorf("host=%s HTTP2=%t want=%t", test.host, enabled, test.http2)
+		}
 	}
 }
 
@@ -1491,5 +1496,38 @@ func waitForMirror(t *testing.T, seen <-chan mirrorRequest) mirrorRequest {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for mirrored request")
 		return mirrorRequest{}
+	}
+}
+
+func TestClientCancellationStopsInFlightMirror(t *testing.T) {
+	started, canceled := make(chan struct{}), make(chan struct{})
+	mirror := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+		close(canceled)
+	}))
+	defer mirror.Close()
+	p := newTestPlugin(t, Config{Host: mirror.URL})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, lifecycle := withMirrorLifecycle(
+		httptest.NewRequest(http.MethodGet, "http://example.com/", nil).WithContext(ctx),
+	)
+	if err := p.mirrorFinalizedRequest(req); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mirror did not start")
+	}
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("client cancellation did not cancel mirror")
+	}
+	if result := lifecycle.FinalizeResult(); len(result.Failures) != 0 || result.FatalPanic != nil {
+		t.Fatalf("finalization failed: %+v", result)
 	}
 }

@@ -1,6 +1,7 @@
 package route
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -127,13 +128,13 @@ func TestProxyFaultHandling(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 	tests := []struct {
-		name         string
-		method       string
-		idempotency  string
-		mode         upstreamFaultMode
-		wantStatus   int
-		wantAttempts int
-		wantAborted  bool
+		name          string
+		method        string
+		idempotency   string
+		mode          upstreamFaultMode
+		wantStatus    int
+		wantAttempts  int
+		wantTruncated bool
 	}{
 		{
 			name:         "GET retries the only node after reset",
@@ -165,12 +166,12 @@ func TestProxyFaultHandling(t *testing.T) {
 			wantAttempts: 2,
 		},
 		{
-			name:         "body inactivity terminates copy",
-			method:       http.MethodGet,
-			mode:         faultBodyStall,
-			wantStatus:   http.StatusOK,
-			wantAttempts: 1,
-			wantAborted:  true,
+			name:          "body inactivity terminates copy",
+			method:        http.MethodGet,
+			mode:          faultBodyStall,
+			wantStatus:    http.StatusOK,
+			wantAttempts:  1,
+			wantTruncated: true,
 		},
 	}
 	for _, test := range tests {
@@ -185,32 +186,25 @@ func TestProxyFaultHandling(t *testing.T) {
 			if test.idempotency != "" {
 				request.Header.Set("Idempotency-Key", test.idempotency)
 			}
-			if test.wantAborted {
-				// The upstream committed 200 but stalled the body. Go's
-				// ReverseProxy aborts the connection on a body-copy error
-				// (ErrAbortHandler), so the client observes a transport error
-				// rather than a truncated response; the committed status is
-				// never rewritten to 504 and the copy terminates within the
-				// read timeout.
-				done := make(chan error, 1)
-				go func() {
-					response, doErr := client.Do(request)
-					if response != nil {
-						_, _ = io.Copy(io.Discard, response.Body)
-						_ = response.Body.Close()
-					}
-					done <- doErr
-				}()
-				select {
-				case doErr := <-done:
-					if doErr == nil {
-						t.Fatal("client.Do() error = nil, want an aborted connection")
-					}
-				case <-time.After(3 * time.Second):
-					t.Fatal("body-stall request did not terminate within the read timeout")
+			if test.wantTruncated {
+				response, err := client.Do(request)
+				if err != nil {
+					t.Fatalf("committed upstream status was lost: %v", err)
+				}
+				body, readErr := io.ReadAll(response.Body)
+				_ = response.Body.Close()
+				if response.StatusCode != http.StatusOK || response.ContentLength != 8 || len(body) != 0 ||
+					!errors.Is(readErr, io.ErrUnexpectedEOF) {
+					t.Fatalf(
+						"response=%d length=%d body=%q error=%v; want truncated committed 200",
+						response.StatusCode,
+						response.ContentLength,
+						body,
+						readErr,
+					)
 				}
 				if got := int(fixture.attempts.Load()); got != test.wantAttempts {
-					t.Fatalf("upstream attempts = %d, want %d", got, test.wantAttempts)
+					t.Fatalf("upstream attempts=%d want=%d", got, test.wantAttempts)
 				}
 				return
 			}

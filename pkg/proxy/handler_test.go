@@ -3,11 +3,11 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
-	"net/http/httputil"
 	"strings"
 	"testing"
 	"time"
@@ -25,9 +25,9 @@ func TestNewProxyHandlerWithFlushInterval(t *testing.T) {
 		-1*time.Second,
 	)
 
-	rp, ok := handler.(*httputil.ReverseProxy)
+	rp, ok := handler.(*proxyHandler)
 	if !ok {
-		t.Fatalf("handler type = %T, want *httputil.ReverseProxy", handler)
+		t.Fatalf("handler type = %T, want *proxyHandler", handler)
 	}
 	if rp.FlushInterval != -1*time.Second {
 		t.Fatalf("FlushInterval = %s, want -1s", rp.FlushInterval)
@@ -416,4 +416,29 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestProxyPreservesUncommittedPanicsWithoutFlushing(t *testing.T) {
+	for _, value := range []any{http.ErrAbortHandler, "unrelated transport panic"} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler := NewProxyHandler(
+				roundTripperFunc(func(*http.Request) (*http.Response, error) { panic(value) }),
+				func(*http.Request) {},
+				nil,
+				nil,
+			)
+			var caught any
+			func() {
+				defer func() { caught = recover() }()
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://upstream.test/", nil))
+			}()
+			if caught != value {
+				t.Fatalf("panic=%v want exact %v", caught, value)
+			}
+			if response.Flushed {
+				t.Fatal("uncommitted panic flushed a response")
+			}
+		})
+	}
 }

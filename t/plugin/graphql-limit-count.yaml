@@ -207,7 +207,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect_requests: 1, expect: [{method: POST, path: {equals: /hello}}], respond: [{status: 200, body: graphql upstream}]}
-      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count:route:graphql-limit-count-test-14:127\.0\.0\.1$': "1"}}}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count/routes/graphql-limit-count-test-14:[0-9]+:127\.0\.0\.1$': "1"}}}
     steps:
       - name: configured-redis-route-is-runnable
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
@@ -223,7 +223,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect_requests: 1, expect: [{method: POST, path: {equals: /hello}}], respond: [{status: 200, body: graphql upstream}]}
-      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count:route:graphql-limit-count-test-15:127\.0\.0\.1$': "4"}}}
+      - {name: redis, kind: redis, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count/routes/graphql-limit-count-test-15:[0-9]+:127\.0\.0\.1$': "4"}}}
     steps:
       - name: redis-depth-four-query-leaves-one
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"query":"query awesomeGraphqlQuery { foo { bar, baz { boo, bee, baa { bar_id, lol } } } }"}'}
@@ -239,7 +239,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect_requests: 1, expect: [{method: POST, path: {equals: /hello}}], respond: [{status: 200, body: graphql upstream}]}
-      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count:route:graphql-limit-count-test-16:127\.0\.0\.1$': "1"}}}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count/routes/graphql-limit-count-test-16:[0-9]+:127\.0\.0\.1$': "1"}}}
     steps:
       - name: configured-redis-cluster-route-is-runnable
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"query":"{ hello }"}'}
@@ -255,7 +255,7 @@ cases:
           upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
     fixtures:
       - {name: primary, kind: http, expect_requests: 1, expect: [{method: POST, path: {equals: /hello}}], respond: [{status: 200, body: graphql upstream}]}
-      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count:route:graphql-limit-count-test-17:127\.0\.0\.1$': "4"}}}
+      - {name: redis, kind: redis-cluster, redis: {ignore_negotiation: true, allow_unasserted_commands: true, value_matches: {'^plugin-graphql-limit-count/routes/graphql-limit-count-test-17:[0-9]+:127\.0\.0\.1$': "4"}}}
     steps:
       - name: redis-cluster-depth-four-query-leaves-one
         input: {method: POST, path: /hello, headers: {Content-Type: application/json}, body: '{"query":"query awesomeGraphqlQuery { foo { bar, baz { boo, bee, baa { bar_id, lol } } } }"}'}

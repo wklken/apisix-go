@@ -2,7 +2,6 @@ package ai_rate_limiting
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +46,7 @@ func TestAPISIX317AIRouteQuotaIsSharedByAuthenticatedConsumers(t *testing.T) {
 	}
 	requestFor := func(username string) *http.Request {
 		request := apisixctx.WithApisixVars(
-			httptest.NewRequest(http.MethodPost, "http://gateway.test/ai", nil),
+			newSelectedAIRequest(http.MethodPost, "http://gateway.test/ai", nil),
 			nil,
 		)
 		apisixctx.AttachConsumer(request, resource.Consumer{Username: username})

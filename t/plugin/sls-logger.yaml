@@ -510,7 +510,7 @@ cases:
               access_key_secret: integration
               include_req_body: true
               batch_max_size: 1
-              log_format: {case: request-body}
+              log_format: {case: request-body, request_body: '$request_body'}
           upstream:
             type: roundrobin
             nodes: {'{{FIXTURE.primary.ADDR}}': 1}
@@ -525,7 +525,7 @@ cases:
       - name: sink
         kind: tls-tcp
         network_expect:
-          - payload: {matches: '"case":"request-body".*"body":"\{\\"sample_payload\\":\\"hello\\"\}".*"route_id":"sls-request-body"'}
+          - payload: {matches: '"case":"request-body".*"request_body":"\{\\"sample_payload\\":\\"hello\\"\}".*"route_id":"sls-request-body"'}
         network_respond: [{payload: ''}]
     steps:
       - name: request-body-reaches-upstream-and-log
@@ -548,7 +548,7 @@ cases:
               access_key_secret: integration
               include_resp_body: true
               batch_max_size: 1
-              log_format: {case: response-body}
+              log_format: {case: response-body, response_body: '$resp_body'}
           upstream:
             type: roundrobin
             nodes: {'{{FIXTURE.primary.ADDR}}': 1}
@@ -563,7 +563,7 @@ cases:
       - name: sink
         kind: tls-tcp
         network_expect:
-          - payload: {matches: '"case":"response-body".*"body":"hello world\\n".*"route_id":"sls-response-body"'}
+          - payload: {matches: '"case":"response-body".*"response_body":"hello world\\n".*"route_id":"sls-response-body"'}
         network_respond: [{payload: ''}]
     steps:
       - name: response-body-reaches-client-and-log

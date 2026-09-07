@@ -84,7 +84,7 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 		if err := validateRouteCompatibility(supplied.Route); err != nil {
 			return nil, fmt.Errorf("compile HTTP route %q: %w", supplied.Route.ID, err)
 		}
-		vars, err := compileRouteVars(supplied.Route.Vars)
+		vars, err := compileRouteConditions(supplied.Route)
 		if err != nil {
 			return nil, fmt.Errorf("compile HTTP route %q vars: %w", supplied.Route.ID, err)
 		}
@@ -145,7 +145,7 @@ func CompileHTTP(ctx context.Context, input CompileInput) (*Snapshot, error) {
 				uri,
 				hosts,
 				prepared.Handler,
-				prepared.vars,
+				routeRegistrationOptions{vars: prepared.vars, priority: prepared.Route.Priority},
 			); err != nil {
 				return nil, fmt.Errorf("compile HTTP route %q URI %q: %w", prepared.Route.ID, uri, err)
 			}
@@ -195,6 +195,10 @@ func cloneCompileUpstream(source resource.Upstream) resource.Upstream {
 	cloned := source
 	cloned.Nodes = slices.Clone(source.Nodes)
 	cloned.Checks = cloneCompileAnyMap(source.Checks)
+	if source.KeepalivePool != nil {
+		pool := *source.KeepalivePool
+		cloned.KeepalivePool = &pool
+	}
 	if source.TLS != nil {
 		tlsConfig := *source.TLS
 		cloned.TLS = &tlsConfig
@@ -277,9 +281,6 @@ func validateRouteSemantics(routeResource resource.Route) error {
 			return fmt.Errorf("route %q host %q is invalid: %w", routeResource.ID, host, err)
 		}
 	}
-	if routeResource.RemoteAddrConfigured() {
-		return fmt.Errorf("route %q remote_addr is unsupported by the Go data plane", routeResource.ID)
-	}
 	if scriptID := bytes.TrimSpace(
 		routeResource.ScriptID,
 	); len(scriptID) > 0 &&
@@ -292,14 +293,10 @@ func validateRouteSemantics(routeResource resource.Route) error {
 	if strings.TrimSpace(routeResource.FilterFunc) != "" {
 		return fmt.Errorf("route %q filter_func is unsupported by the Go data plane", routeResource.ID)
 	}
-	if _, err := compileRouteVars(routeResource.Vars); err != nil {
+	if _, err := compileRouteConditions(routeResource); err != nil {
 		return fmt.Errorf("route %q vars: %w", routeResource.ID, err)
 	}
-	for _, addr := range routeResource.RemoteAddrs {
-		if strings.TrimSpace(addr) != "" {
-			return fmt.Errorf("route %q remote_addrs is unsupported by the Go data plane", routeResource.ID)
-		}
-	}
+
 	if routeResource.StatusConfigured() && routeResource.Status != 0 && routeResource.Status != 1 {
 		return fmt.Errorf(
 			"route %q status %d is unsupported by the Go data plane",

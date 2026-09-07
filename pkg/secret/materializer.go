@@ -226,6 +226,13 @@ func (secrets GenerationSecrets) Materialize(
 			return Value{}, ErrCredentialUnavailable
 		}
 	}
+	if scope.Source == capability.SecretSSLConfig {
+		// A secret backend may return the encrypted private key itself.
+		resolved, err = secrets.state.encryption.ResolveDeclared(scope.Plugin, scope.Source, scope.Field, resolved)
+		if err != nil {
+			return Value{}, ErrCredentialUnavailable
+		}
+	}
 	return newValue(resolved), nil
 }
 
@@ -297,8 +304,12 @@ func validateScope(scope Scope) error {
 		(scope.Domain != generation.DomainHTTP && scope.Domain != generation.DomainStream) ||
 		scope.Plugin == "" || scope.Resource.Kind == "" || scope.Resource.ID == "" ||
 		(scope.Source != capability.SecretPluginConfig && scope.Source != capability.SecretPluginMetadata &&
-			scope.Source != capability.SecretConsumerConfig) ||
+			scope.Source != capability.SecretConsumerConfig && scope.Source != capability.SecretSSLConfig) ||
 		scope.Field == "" {
+		return ErrInvalidScope
+	}
+	if scope.Source == capability.SecretSSLConfig && (scope.Domain != generation.DomainHTTP ||
+		scope.Resource.Kind != "ssls" || scope.Plugin != capability.SSLResourceFactory) {
 		return ErrInvalidScope
 	}
 	return nil

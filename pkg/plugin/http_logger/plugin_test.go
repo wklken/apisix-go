@@ -969,7 +969,7 @@ func TestConfigPreservesExplicitZeroRetryDelay(t *testing.T) {
 	}
 }
 
-func TestPostInitNormalizesOfficialInBodyExpression(t *testing.T) {
+func TestPostInitAcceptsOfficialInBodyExpression(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		URI: "http://127.0.0.1/logs",
 		IncludeRespBodyExpr: []any{
@@ -982,12 +982,15 @@ func TestPostInitNormalizesOfficialInBodyExpression(t *testing.T) {
 		},
 	})
 
-	second := p.config.IncludeRespBodyExpr[1].([]any)
-	if second[1] != "~" {
-		t.Fatalf("normalized operator = %#v, want regex match", second[1])
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Header: http.Header{"Content-Type": {"application/json"}, "Content-Length": {"512"}},
+	}}
+	if !base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		t.Fatal("official body expression did not match request headers")
 	}
-	if second[2] != `^(application/xml|application/json|text/plain|text/xml)$` {
-		t.Fatalf("normalized expression = %#v", second[2])
+	snapshot.Request.Header.Set("Content-Type", "image/png")
+	if base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+		t.Fatal("official body expression matched an excluded content type")
 	}
 }
 

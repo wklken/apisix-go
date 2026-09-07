@@ -9,6 +9,7 @@ import (
 // apisix vars: https://apisix.apache.org/docs/apisix/apisix-variable/
 
 var ApisixVars = map[string]struct{}{
+	"$apisix_request_id": {},
 	"$route_id":          {},
 	"$route_name":        {},
 	"$service_id":        {},

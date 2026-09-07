@@ -21,6 +21,20 @@ var DefaultVarPattern = regexp.MustCompile(`^\$\{\s*([0-9A-Za-z_]+)\s*\?\?\s*([^
 // untouched. The returned count includes only variables that resolved to a
 // value or used a default, matching APISIX core.utils.resolve_var.
 func ResolveVars(tpl string, lookup func(string) string) (string, int) {
+	return resolveVars(
+		tpl,
+		func(name string) (string, bool) { value := lookup(name); return value, value != "" },
+		false,
+	)
+}
+
+// ResolveVarsWithLookup also counts present empty values and applies defaults
+// only to missing values, matching Lua's nil-versus-empty distinction.
+func ResolveVarsWithLookup(tpl string, lookup func(string) (string, bool)) (string, int) {
+	return resolveVars(tpl, lookup, true)
+}
+
+func resolveVars(tpl string, lookup func(string) (string, bool), countEmpty bool) (string, int) {
 	var output strings.Builder
 	resolved := 0
 	for index := 0; index < len(tpl); {
@@ -62,11 +76,11 @@ func ResolveVars(tpl string, lookup func(string) string) (string, int) {
 			fallback = strings.TrimSpace(after)
 			hasFallback = true
 		}
-		value := lookup(name)
-		if value == "" && hasFallback {
-			value = fallback
+		value, found := lookup(name)
+		if !found && hasFallback {
+			value, found = fallback, true
 		}
-		if value != "" {
+		if found && (countEmpty || value != "") {
 			resolved++
 		}
 		output.WriteString(value)

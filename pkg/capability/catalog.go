@@ -163,7 +163,8 @@ func writeCanonicalUint64(encoded *bytes.Buffer, value uint64) {
 }
 
 func validSecretDeclarationSource(source SecretDeclarationSource) bool {
-	return source == SecretPluginConfig || source == SecretPluginMetadata || source == SecretConsumerConfig
+	return source == SecretPluginConfig || source == SecretPluginMetadata ||
+		source == SecretConsumerConfig || source == SecretSSLConfig
 }
 
 func canonicalSecretFieldPath(field string) bool {

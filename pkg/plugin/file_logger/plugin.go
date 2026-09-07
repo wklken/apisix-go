@@ -11,12 +11,13 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
 const (
 	priority          = 399
 	name              = "file-logger"
-	fileLoggerVersion = "apisix-go"
+	fileLoggerVersion = version.APISIXVersion
 )
 
 const schema = `
@@ -172,7 +173,7 @@ func (p *Plugin) PostInit() error {
 	switch {
 	case p.config.LogFormat != nil:
 		p.logFormat = p.config.LogFormat
-	case metadata.LogFormat != nil:
+	case len(metadata.LogFormat) > 0:
 		p.logFormat = metadata.LogFormat
 	default:
 		if p.config.LogFormatExtra != nil {
@@ -303,12 +304,14 @@ func (p *Plugin) buildSnapshotFields(snapshot base.LogSnapshot) map[string]any {
 			}
 		}
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.logFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.logFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
@@ -426,7 +429,7 @@ func (w *appendFileWriteSyncer) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.file == nil {
-		file, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		file, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
 		if err != nil {
 			logger.Error(fmt.Sprintf("failed to open file: %s, error info: %s", w.path, err))
 			return 0, err

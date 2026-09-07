@@ -86,15 +86,11 @@ type NamedTemplate struct {
 	Template Template `json:"template"`
 }
 
-type Template struct {
-	Model    string    `json:"model,omitempty"`
-	Messages []Message `json:"messages,omitempty"`
-}
+type Template map[string]any
 
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
+var templateHTMLEscaper = strings.NewReplacer(
+	"&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&#39;", "/", "&#47;",
+)
 
 var templateExprPattern = regexp.MustCompile(`\{\{\s*([^{}]+?)\s*\}\}`)
 
@@ -131,9 +127,15 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		templateName, isString := bodyTab["template_name"].(string)
-		if !isString {
+		rawName := bodyTab["template_name"]
+		if rawName == nil || rawName == false {
 			base.WriteJSONMessage(w, http.StatusBadRequest, "template name is missing in request.")
+			return
+		}
+
+		templateName, isString := rawName.(string)
+		if !isString {
+			base.WriteJSONMessage(w, http.StatusBadRequest, fmt.Sprintf("template: %v not configured.", rawName))
 			return
 		}
 
@@ -143,8 +145,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		rendered := renderTemplate(template, bodyTab)
-		rewritten, err := json.Marshal(rendered)
+		templateJSON, err := json.Marshal(template)
 		if err != nil {
 			base.WriteJSONMessage(
 				w,
@@ -154,7 +155,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		base.ReplaceRequestBody(r, rewritten)
+		base.ReplaceRequestBody(r, []byte(renderString(string(templateJSON), bodyTab)))
 
 		next.ServeHTTP(w, r)
 	}
@@ -170,20 +171,6 @@ func (p *Plugin) findTemplate(name string) (Template, bool) {
 	return Template{}, false
 }
 
-func renderTemplate(template Template, values map[string]any) Template {
-	rendered := Template{
-		Model:    renderString(template.Model, values),
-		Messages: make([]Message, 0, len(template.Messages)),
-	}
-	for _, msg := range template.Messages {
-		rendered.Messages = append(rendered.Messages, Message{
-			Role:    msg.Role,
-			Content: renderString(msg.Content, values),
-		})
-	}
-	return rendered
-}
-
 func renderString(text string, values map[string]any) string {
 	indexes := templateExprPattern.FindAllStringSubmatchIndex(text, -1)
 	if len(indexes) == 0 {
@@ -194,8 +181,8 @@ func renderString(text string, values map[string]any) string {
 	for _, loc := range indexes {
 		out.WriteString(text[last:loc[0]])
 		key := strings.TrimSpace(text[loc[2]:loc[3]])
-		if value, ok := lookupValue(values, key); ok {
-			fmt.Fprint(&out, value)
+		if value, ok := lookupValue(values, key); ok && value != nil {
+			out.WriteString(templateHTMLEscaper.Replace(fmt.Sprint(value)))
 		}
 		last = loc[1]
 	}

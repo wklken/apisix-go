@@ -98,7 +98,9 @@ func buildStreamPreparationPlan(
 		}
 		seenIDs[planned.route.ID] = struct{}{}
 		if planned.route.ServerAddr != "" || planned.route.ServerPort != 0 {
-			listen := planned.route.ServerAddr + "\x00" + strconv.Itoa(planned.route.ServerPort)
+			listen := planned.route.ServerAddr + "\x00" + strconv.Itoa(
+				planned.route.ServerPort,
+			) + "\x00" + planned.route.RemoteAddr
 			if previous, conflict := seenListens[listen]; conflict {
 				return nil, fmt.Errorf(
 					"conflicting stream listen address %s:%d between %q and %q",
@@ -149,6 +151,11 @@ func planOneStreamRoute(
 			return plannedStreamRoute{}, fmt.Errorf("clone stream service %q: %w", route.ServiceID, err)
 		}
 		for name, config := range service.Plugins {
+			// Services are shared by HTTP and stream. Only HTTP declarations are
+			// omitted here; unsupported stream protocols still fail their own gate.
+			if definition, ok := plugin.DefinitionForFactory(name); ok && definition.Domain == plugin.DomainHTTP {
+				continue
+			}
 			pluginSources[name] = streamPluginSource{
 				config:     config,
 				source:     generation.ResourceKey{Kind: "services", ID: route.ServiceID},

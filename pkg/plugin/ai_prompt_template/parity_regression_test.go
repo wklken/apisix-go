@@ -9,7 +9,7 @@ import (
 
 func TestParityExplicitEmptyTemplateNameMatchesAPISIX317(t *testing.T) {
 	p := newTestPlugin(t, Config{Templates: []NamedTemplate{{
-		Name: "echo", Template: Template{Messages: []Message{{Role: "user", Content: "Echo"}}},
+		Name: "echo", Template: Template{"messages": []Message{{Role: "user", Content: "Echo"}}},
 	}}})
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"template_name":""}`))
 	response := httptest.NewRecorder()

@@ -382,8 +382,8 @@ func TestHandlerRejectsMissingRequestBody(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("response code = %d, want 400", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "missing request body") {
-		t.Fatalf("response body = %q, want missing request body message", rr.Body.String())
+	if rr.Body.Len() != 0 {
+		t.Fatalf("response body = %q, want status-only response", rr.Body.String())
 	}
 	if logMessage != "missing request body" {
 		t.Fatalf("warning log = %q, want missing request body", logMessage)
@@ -424,8 +424,8 @@ func TestHandlerLogsAndRejectsLLMNonOKStatus(t *testing.T) {
 			if rr.Code != http.StatusInternalServerError {
 				t.Fatalf("response code = %d, want 500", rr.Code)
 			}
-			if !strings.Contains(rr.Body.String(), wantMessage) {
-				t.Fatalf("response body = %q, want %q", rr.Body.String(), wantMessage)
+			if rr.Body.Len() != 0 {
+				t.Fatalf("response body = %q, want status-only response", rr.Body.String())
 			}
 			if logMessage != wantMessage {
 				t.Fatalf("error log = %q, want %q", logMessage, wantMessage)

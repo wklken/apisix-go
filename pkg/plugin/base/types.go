@@ -64,12 +64,13 @@ func UseConsumerCredential(
 }
 
 type Dependencies struct {
-	Config            *config.EffectiveConfig
-	Secrets           secret.GenerationSecrets
-	Metadata          runtime.MetadataView
-	Consumers         ConsumerLookup
-	Tasks             *runtime.TaskOwner
-	CompositeChildren CompositeChildPreparer
+	Config              *config.EffectiveConfig
+	Secrets             secret.GenerationSecrets
+	Metadata            runtime.MetadataView
+	Consumers           ConsumerLookup
+	Tasks               *runtime.TaskOwner
+	WithHTTPPublication func(func() error) error
+	CompositeChildren   CompositeChildPreparer
 }
 
 // APISIXPluginContext is the compiler-owned source identity used by plugins
@@ -188,6 +189,15 @@ func (p *BasePlugin) MetadataView() runtime.MetadataView {
 
 func (p *BasePlugin) ConsumerLookup() ConsumerLookup {
 	return p.dependencies.Consumers
+}
+
+// WithHTTPPublication admits process maintenance only while this instance owns
+// the published HTTP domain. Retirement waits for an admitted action to finish.
+func (p *BasePlugin) WithHTTPPublication(action func() error) error {
+	if p.dependencies.WithHTTPPublication == nil {
+		return nil
+	}
+	return p.dependencies.WithHTTPPublication(action)
 }
 
 func (p *BasePlugin) TaskOwner() *runtime.TaskOwner {
@@ -359,12 +369,14 @@ func snapshotFormatContainsString(format map[string]string, expression string) b
 func (p *BaseLoggerPlugin) RunLogPhase(snapshot LogSnapshot) error {
 	fields := p.snapshotFields(snapshot)
 	ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
-	if p.IncludeRequestBody && SnapshotExpressionMatches(snapshot, p.RequestBodyExpr) {
+	if p.SnapshotLogFormat == nil && p.LogFormat == nil && p.IncludeRequestBody &&
+		SnapshotExpressionMatches(snapshot, p.RequestBodyExpr) {
 		if body := SnapshotRequestBody(snapshot, p.LogCapturePolicy().RequestBodyBytes); body != "" {
 			NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.IncludeResponseBody && SnapshotExpressionMatches(snapshot, p.ResponseBodyExpr) {
+	if p.SnapshotLogFormat == nil && p.LogFormat == nil && p.IncludeResponseBody &&
+		SnapshotExpressionMatches(snapshot, p.ResponseBodyExpr) {
 		if body := SnapshotResponseBody(snapshot, p.LogCapturePolicy().ResponseBodyBytes); body != "" {
 			NestedLogMap(fields, "response")["body"] = body
 		}
@@ -373,7 +385,7 @@ func (p *BaseLoggerPlugin) RunLogPhase(snapshot LogSnapshot) error {
 }
 
 func (p *BaseLoggerPlugin) snapshotFields(snapshot LogSnapshot) map[string]any {
-	if len(p.SnapshotLogFormat) > 0 {
+	if p.SnapshotLogFormat != nil {
 		fields := ResolveLogFormat(p.SnapshotLogFormat, func(value string) any {
 			return SnapshotValue(snapshot, value)
 		})

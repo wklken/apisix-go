@@ -171,7 +171,7 @@ func TestBufferedResponsePreservesNonzeroStatusBodyWhenStatusBodyDisabled(t *tes
 		t.Fatalf("RunBufferedBodyFilter() error = %v", err)
 	}
 	if state.Status != http.StatusForbidden ||
-		string(state.Body) != `{"error":{"code":7,"message":"permission denied"}}` {
+		len(state.Body) != 0 {
 		t.Fatalf("transcoded error = status:%d body:%q", state.Status, state.Body)
 	}
 	if state.Trailer.Get("Grpc-Status") != "7" {
@@ -679,7 +679,7 @@ func TestHandlerTranscodesRealGRPCTrailers(t *testing.T) {
 		{name: "success", wantStatus: http.StatusOK, wantBody: `{"msg":"echoed"}`},
 		{
 			name: "nonzero without details body", serverErr: status.Error(codes.PermissionDenied, "denied"),
-			wantStatus: http.StatusForbidden, wantBody: `{"error":{"code":7,"message":"denied"}}`,
+			wantStatus: http.StatusForbidden, wantBody: "",
 		},
 		{
 			name: "nonzero with details", serverErr: detailed.Err(), showStatus: true,
@@ -687,7 +687,7 @@ func TestHandlerTranscodesRealGRPCTrailers(t *testing.T) {
 		},
 		{
 			name: "unknown status", serverErr: status.Error(codes.Code(99), "unknown"),
-			wantStatus: 599, wantBody: `{"error":{"code":99,"message":"unknown"}}`,
+			wantStatus: 599, wantBody: "",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -726,11 +726,20 @@ func TestHandlerTranscodesRealGRPCTrailers(t *testing.T) {
 			} else if response.Body.String() != test.wantBody {
 				t.Fatalf("body = %q, want %q", response.Body.String(), test.wantBody)
 			}
-			if result.Trailer.Get("Grpc-Status") == "" {
-				t.Fatalf("response trailers = %v, want grpc status", result.Trailer)
-			}
-			if _, declared := result.Trailer["Grpc-Message"]; !declared {
-				t.Fatalf("response trailers = %v, want declared grpc message", result.Trailer)
+			if test.serverErr != nil {
+				if result.Header.Get("Grpc-Status") == "" || result.Header.Get("Grpc-Message") == "" {
+					t.Fatalf("error headers = %v, want grpc status and message", result.Header)
+				}
+				if len(result.Trailer) != 0 {
+					t.Fatalf("error metadata moved to trailers: %v", result.Trailer)
+				}
+			} else {
+				if result.Trailer.Get("Grpc-Status") != "0" {
+					t.Fatalf("response trailers = %v, want success grpc status", result.Trailer)
+				}
+				if _, declared := result.Trailer["Grpc-Message"]; !declared {
+					t.Fatalf("response trailers = %v, want declared grpc message", result.Trailer)
+				}
 			}
 		})
 	}
@@ -1134,8 +1143,8 @@ func TestHandlerMapsGRPCStatusToHTTPStatus(t *testing.T) {
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", res.Code)
 	}
-	if got := res.Body.String(); got != `{"error":{"code":7,"message":"permission denied"}}` {
-		t.Fatalf("response body = %q, want normalized error status", got)
+	if got := res.Body.String(); got != "" {
+		t.Fatalf("response body = %q, want empty body with show_status_in_body disabled", got)
 	}
 }
 

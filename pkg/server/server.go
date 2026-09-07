@@ -200,6 +200,7 @@ type serverRuntimeFactories struct {
 		[]config.TcpListen,
 		streamruntime.RouterSource,
 	) (streamRuntimeOwner, error)
+	listenHTTP  func(string, string) (net.Listener, error)
 	startHTTP   func(*Server, context.Context) (<-chan error, error)
 	newProducer func(*Server, context.Context) (configProducer, error)
 }
@@ -213,6 +214,7 @@ func defaultServerRuntimeFactories() serverRuntimeFactories {
 		) (streamRuntimeOwner, error) {
 			return streamruntime.NewRuntime(ctx, listeners, source)
 		},
+		listenHTTP: net.Listen,
 		startHTTP: func(server *Server, ctx context.Context) (<-chan error, error) {
 			return server.startHTTPListenerRuntime(ctx)
 		},
@@ -226,6 +228,9 @@ func (factories serverRuntimeFactories) withDefaults() serverRuntimeFactories {
 	defaults := defaultServerRuntimeFactories()
 	if factories.newStream == nil {
 		factories.newStream = defaults.newStream
+	}
+	if factories.listenHTTP == nil {
+		factories.listenHTTP = defaults.listenHTTP
 	}
 	if factories.startHTTP == nil {
 		factories.startHTTP = defaults.startHTTP
@@ -792,7 +797,8 @@ func newConfiguredHTTPServer(handler http.Handler, cfg *config.Config) *http.Ser
 		protocols.SetUnencryptedHTTP2(true)
 	}
 	server := &http.Server{
-		Handler:           handler,
+		Handler:           tlsconfig.VerifyClientRequests(handler),
+		ConnContext:       tlsconfig.ConnectionContext,
 		Protocols:         protocols,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		IdleTimeout:       defaultHTTPIdleTimeout,
@@ -1712,6 +1718,7 @@ func (s *Server) serveHTTPListenerRuntime(
 	tlsAddrs []string,
 	tlsConfig *tls.Config,
 ) (<-chan error, error) {
+	listen := s.runtimeFactories.withDefaults().listenHTTP
 	addrs := s.addrs
 	controlAddr, controlEnabled := configuredControlAddress(&s.staticConfig.Config)
 	listenerCount := len(addrs) + len(tlsAddrs) + 1
@@ -1722,7 +1729,7 @@ func (s *Server) serveHTTPListenerRuntime(
 	listeners := make([]net.Listener, 0, len(addrs)+len(tlsAddrs))
 	for _, addr := range addrs {
 		logger.Infof("listening on %s", addr)
-		listener, err := net.Listen("tcp", addr)
+		listener, err := listen("tcp", addr)
 		if err != nil {
 			s.closeOwnedListeners()
 			return nil, fmt.Errorf("open listener %s: %w", addr, err)
@@ -1732,7 +1739,7 @@ func (s *Server) serveHTTPListenerRuntime(
 	}
 	for _, addr := range tlsAddrs {
 		logger.Infof("listening with TLS on %s", addr)
-		listener, err := net.Listen("tcp", addr)
+		listener, err := listen("tcp", addr)
 		if err != nil {
 			s.closeOwnedListeners()
 			return nil, fmt.Errorf("open TLS listener %s: %w", addr, err)
@@ -1741,6 +1748,31 @@ func (s *Server) serveHTTPListenerRuntime(
 		s.retainListener(tlsListener)
 		listeners = append(listeners, tlsListener)
 	}
+	statusAddr := configuredStatusAddress(&s.staticConfig.Config)
+	logger.Infof("status API listening on %s", statusAddr)
+	statusListener, err := listen("tcp", statusAddr)
+	if err != nil {
+		s.closeOwnedListeners()
+		return nil, fmt.Errorf("open status listener %s: %w", statusAddr, err)
+	}
+	s.retainListener(statusListener)
+	var controlListener net.Listener
+	if controlEnabled {
+		if s.controlServer == nil {
+			s.closeOwnedListeners()
+			return nil, errors.New("control HTTP server is required when apisix.enable_control is true")
+		}
+		logger.Infof("control API listening on %s", controlAddr)
+		controlListener, err = listen("tcp", controlAddr)
+		if err != nil {
+			s.closeOwnedListeners()
+			return nil, fmt.Errorf("open control listener %s: %w", controlAddr, err)
+		}
+		s.retainListener(controlListener)
+
+	}
+
+	// Do not accept traffic until every HTTP/TLS, status, and control bind succeeds.
 	for _, listener := range listeners {
 		go func(listener net.Listener) {
 			defer s.releaseListener(listener)
@@ -1749,32 +1781,13 @@ func (s *Server) serveHTTPListenerRuntime(
 			}
 		}(listener)
 	}
-	statusAddr := configuredStatusAddress(&s.staticConfig.Config)
-	logger.Infof("status API listening on %s", statusAddr)
-	statusListener, err := net.Listen("tcp", statusAddr)
-	if err != nil {
-		s.closeOwnedListeners()
-		return nil, fmt.Errorf("open status listener %s: %w", statusAddr, err)
-	}
-	s.retainListener(statusListener)
 	go func() {
 		defer s.releaseListener(statusListener)
 		if err := s.statusServer.Serve(statusListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErrors <- err
 		}
 	}()
-	if controlEnabled {
-		if s.controlServer == nil {
-			s.closeOwnedListeners()
-			return nil, errors.New("control HTTP server is required when apisix.enable_control is true")
-		}
-		logger.Infof("control API listening on %s", controlAddr)
-		controlListener, err := net.Listen("tcp", controlAddr)
-		if err != nil {
-			s.closeOwnedListeners()
-			return nil, fmt.Errorf("open control listener %s: %w", controlAddr, err)
-		}
-		s.retainListener(controlListener)
+	if controlListener != nil {
 		go func() {
 			defer s.releaseListener(controlListener)
 			if err := s.controlServer.Serve(controlListener); err != nil && !errors.Is(err, http.ErrServerClosed) {

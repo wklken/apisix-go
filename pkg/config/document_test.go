@@ -367,7 +367,7 @@ func TestParseDocumentErrorsDoNotLeakSecretScalarContent(t *testing.T) {
 		name string
 		yaml string
 	}{
-		{name: "anchored scalar", yaml: "safe: &value " + secret + "\n"},
+		{name: "invalid merge scalar", yaml: "safe: {<<: " + secret + "}\n"},
 		{name: "non string mapping key", yaml: "? [" + secret + "]\n: value\n"},
 	}
 	for _, test := range tests {
@@ -390,40 +390,21 @@ func TestParseDocumentRejectsMultipleDocuments(t *testing.T) {
 	}
 }
 
-func TestParseDocumentRejectsAnchorsAliasesAndMergeKeys(t *testing.T) {
+func TestParseDocumentRejectsCyclicReferencesWithoutLeakingValues(t *testing.T) {
 	const secret = "C2_SENTINEL_YAML_REFERENCE_7CC751"
-	tests := []struct {
-		name     string
-		yaml     string
-		wantPath string
-		wantKind string
-	}{
-		{name: "anchor", yaml: "root:\n  value: &shared " + secret + "\n", wantPath: "root.value", wantKind: "anchor"},
-		{
-			name:     "alias",
-			yaml:     "base: &shared\n  value: " + secret + "\ncopy: *shared\n",
-			wantPath: "copy", wantKind: "alias",
-		},
-		{
-			name:     "merge",
-			yaml:     "base: &shared\n  value: " + secret + "\ncombined:\n  <<: *shared\n",
-			wantPath: "combined", wantKind: "merge",
-		},
+	_, err := parseDocument([]byte("root: &shared ["+secret+", *shared]"), "", nil)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("cyclic reference error = %v", err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := parseDocument([]byte(test.yaml), "", nil)
-			if err == nil {
-				t.Fatal("parseDocument() error = nil")
-			}
-			if !strings.Contains(err.Error(), test.wantPath) ||
-				!strings.Contains(strings.ToLower(err.Error()), test.wantKind) {
-				t.Fatalf("parseDocument() error = %q, want %s at %s", err, test.wantKind, test.wantPath)
-			}
-			if strings.Contains(err.Error(), secret) {
-				t.Fatalf("parseDocument() leaked referenced scalar: %q", err)
-			}
-		})
+}
+
+func TestParseDocumentAliasesPreserveExactNumbers(t *testing.T) {
+	doc, err := parseDocument([]byte("base: &shared {value: 9007199254740993}\ncopy: *shared\n"), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.mapping["copy"].mapping["value"].scalar; got != json.Number("9007199254740993") {
+		t.Fatalf("aliased exact number = %v", got)
 	}
 }
 

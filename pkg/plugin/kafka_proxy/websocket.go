@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/segmentio/kafka-go"
 	"github.com/wklken/apisix-go/pkg/runtime"
 )
 
@@ -261,6 +260,9 @@ func ServePubSubWebSocket(
 			}
 			continue
 		}
+		if request.Command == 0 {
+			continue
+		}
 		response, err := dispatchPubSubRequest(ctx, consumer, request)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -269,8 +271,8 @@ func ServePubSubWebSocket(
 			response = PubSubResponse{
 				Sequence: request.Sequence,
 				Kind:     RespError,
-				Code:     pubSubErrorCode(err),
-				Message:  pubSubErrorMessage(request.Command, err),
+				Code:     0,
+				Message:  err.Error(),
 			}
 		}
 		encoded, err := MarshalPubSubResponse(response)
@@ -332,51 +334,28 @@ func dispatchPubSubRequest(
 	case CmdKafkaListOffset:
 		offset, err := consumer.ListOffset(ctx, request.Topic, request.Partition, request.Position)
 		if err != nil {
-			return PubSubResponse{}, err
+			return PubSubResponse{}, fmt.Errorf(
+				"failed to list offset, topic: %s, partition: %d, err: %w",
+				request.Topic,
+				request.Partition,
+				err,
+			)
 		}
 		return PubSubResponse{Sequence: request.Sequence, Kind: RespKafkaListOffset, Offset: offset}, nil
 	case CmdKafkaFetch:
 		messages, err := consumer.Fetch(ctx, request.Topic, request.Partition, request.Position)
 		if err != nil {
-			return PubSubResponse{}, err
+			return PubSubResponse{}, fmt.Errorf(
+				"failed to fetch message, topic: %s, partition: %d, err: %w",
+				request.Topic,
+				request.Partition,
+				err,
+			)
 		}
 		return PubSubResponse{Sequence: request.Sequence, Kind: RespKafkaFetch, Messages: messages}, nil
-	case CmdEmpty:
-		return PubSubResponse{}, fmt.Errorf("empty Kafka PubSub command is unsupported")
 	default:
-		return PubSubResponse{}, fmt.Errorf("unsupported Kafka PubSub command %d", request.Command)
+		return PubSubResponse{}, fmt.Errorf("unknown command")
 	}
-}
-
-func pubSubErrorCode(err error) int32 {
-	var netErr net.Error
-	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
-		return 504
-	}
-	return 502
-}
-
-func pubSubErrorMessage(command PubSubCommand, err error) string {
-	if isKafkaAuthError(err) {
-		return "Kafka authentication failed"
-	}
-	if command == CmdKafkaListOffset {
-		return "Kafka list offset failed"
-	}
-	if command == CmdKafkaFetch {
-		return "Kafka fetch failed"
-	}
-	return "Kafka PubSub command failed"
-}
-
-func isKafkaAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errors.Is(err, kafka.SASLAuthenticationFailed) ||
-		errors.Is(err, kafka.UnsupportedSASLMechanism) ||
-		errors.Is(err, kafka.IllegalSASLState) ||
-		strings.Contains(strings.ToLower(err.Error()), "sasl authentication")
 }
 
 func upgradeKafkaWebSocket(w http.ResponseWriter, r *http.Request, transport *Transport) (*websocket.Conn, error) {

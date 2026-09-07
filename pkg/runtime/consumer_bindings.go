@@ -31,9 +31,10 @@ type ConsumerGroupRecord struct {
 }
 
 type ConsumerCredentialBinding struct {
-	Plugin     string
-	Key        string
-	ConsumerID string
+	Plugin       string
+	Key          string
+	ConsumerID   string
+	CredentialID string
 }
 
 type consumerCredentialKey struct {
@@ -48,7 +49,7 @@ type ConsumerBindings struct {
 	closed      bool
 	consumers   map[string]resource.Consumer
 	groups      map[string]resource.ConsumerGroup
-	credentials map[consumerCredentialKey]string
+	credentials map[consumerCredentialKey]ConsumerCredentialBinding
 }
 
 func NewConsumerBindings(
@@ -84,15 +85,17 @@ func (bindings *ConsumerBindings) ConsumerByPluginKey(plugin, key string) (resou
 	if bindings.closed {
 		return resource.Consumer{}, false
 	}
-	consumerID, ok := bindings.credentials[consumerCredentialKey{plugin: plugin, key: key}]
+	credential, ok := bindings.credentials[consumerCredentialKey{plugin: plugin, key: key}]
 	if !ok {
 		return resource.Consumer{}, false
 	}
-	consumer, ok := bindings.consumers[consumerID]
+	consumer, ok := bindings.consumers[credential.ConsumerID]
 	if !ok {
 		return resource.Consumer{}, false
 	}
-	return cloneBoundConsumer(consumer), true
+	consumer = cloneBoundConsumer(consumer)
+	consumer.CredentialID = credential.CredentialID
+	return consumer, true
 }
 
 func (bindings *ConsumerBindings) ConsumerByID(id string) (resource.Consumer, bool) {
@@ -180,7 +183,7 @@ func buildConsumerGroupIndex(records []ConsumerGroupRecord) (map[string]resource
 func buildConsumerCredentialIndex(
 	records []ConsumerCredentialBinding,
 	consumers map[string]resource.Consumer,
-) (map[consumerCredentialKey]string, error) {
+) (map[consumerCredentialKey]ConsumerCredentialBinding, error) {
 	ordered := append([]ConsumerCredentialBinding(nil), records...)
 	sort.Slice(ordered, func(left, right int) bool {
 		if ordered[left].Plugin != ordered[right].Plugin {
@@ -191,7 +194,7 @@ func buildConsumerCredentialIndex(
 		}
 		return ordered[left].ConsumerID < ordered[right].ConsumerID
 	})
-	credentials := make(map[consumerCredentialKey]string, len(ordered))
+	credentials := make(map[consumerCredentialKey]ConsumerCredentialBinding, len(ordered))
 	for _, record := range ordered {
 		if record.Plugin == "" {
 			return nil, errCredentialPluginRequired
@@ -206,7 +209,7 @@ func buildConsumerCredentialIndex(
 		if _, exists := consumers[record.ConsumerID]; !exists {
 			return nil, errCredentialConsumerUnknown
 		}
-		credentials[credential] = record.ConsumerID
+		credentials[credential] = record
 	}
 	return credentials, nil
 }

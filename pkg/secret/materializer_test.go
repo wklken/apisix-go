@@ -405,3 +405,69 @@ func valuePlaintext(t *testing.T, value Value) string {
 	}
 	return plaintext
 }
+
+func TestSSLSecretMaterializationEnforcesOwnedScope(t *testing.T) {
+	service, _ := testService(t, false)
+	calls := 0
+	resolver := &testGenerationResolverFactory{
+		resolver: &testGenerationResolver{
+			resolve: func(context.Context, Scope, string) (string, error) { calls++; return "material", nil },
+		},
+	}
+	materializer := NewMaterializer(service, resolver)
+	resource := generation.ResourceKey{Kind: "ssls", ID: "owned"}
+	_, set := testPublication(t, 91, generation.DomainHTTP, resource)
+	owner, err := materializer.PrepareGeneration(context.Background(), set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close(context.Background()) }()
+	secrets := owner.Secrets()
+	valid := testScope(
+		91,
+		generation.DomainHTTP,
+		capability.SSLResourceFactory,
+		resource,
+		capability.SecretSSLConfig,
+		"key",
+	)
+	for _, test := range []struct {
+		name  string
+		alter func(*Scope)
+	}{
+		{"generation", func(s *Scope) { s.Generation++ }},
+		{"domain", func(s *Scope) { s.Domain = generation.DomainStream }},
+		{"kind", func(s *Scope) { s.Resource.Kind = "routes" }},
+		{"resource", func(s *Scope) { s.Resource.ID = "foreign" }},
+		{"factory", func(s *Scope) { s.Plugin = "http-logger" }},
+		{"source", func(s *Scope) { s.Source = capability.SecretPluginConfig }},
+		{"field", func(s *Scope) { s.Field = "client.ca" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scope := valid
+			test.alter(&scope)
+			if _, err := secrets.Materialize(context.Background(), scope, "$ENV://SSL_KEY"); err == nil {
+				t.Fatal("foreign scope accepted")
+			}
+			if calls != 0 {
+				t.Fatal("foreign scope reached backend")
+			}
+		})
+	}
+	value, err := secrets.Materialize(context.Background(), valid, "$ENV://SSL_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valuePlaintext(t, value) != "material" || calls != 1 {
+		t.Fatal("owned scope did not materialize")
+	}
+	if err := owner.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secrets.Materialize(context.Background(), valid, "$ENV://SSL_KEY"); err == nil {
+		t.Fatal("closed generation materialized a key")
+	}
+	if calls != 1 {
+		t.Fatal("closed generation reached backend")
+	}
+}

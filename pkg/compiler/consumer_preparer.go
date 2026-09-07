@@ -105,7 +105,9 @@ func (preparer *consumerBindingPreparer) PrepareConsumers(
 			if prepareErr != nil {
 				return nil, consumerPreparationError(ctx)
 			}
-			consumers = append(consumers, consumerRecord)
+			if normalized.view.credentialID == "" {
+				consumers = append(consumers, consumerRecord)
+			}
 			for _, binding := range bindings {
 				key := staticConsumerCredentialKey{plugin: binding.Plugin, key: binding.Key}
 				if index, exists := credentialIndexes[key]; exists {
@@ -144,6 +146,10 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 	normalized normalizedResource,
 	occurrences map[consumerOccurrenceKey]FactoryOccurrence,
 ) (runtime.ConsumerRecord, []runtime.ConsumerCredentialBinding, []consumerOccurrenceKey, error) {
+	consumerID := normalized.key.ID
+	if normalized.view.credentialID != "" {
+		consumerID = normalized.view.credentialConsumerID
+	}
 	bindings := make([]runtime.ConsumerCredentialBinding, 0, len(normalized.view.plugins))
 	used := make([]consumerOccurrenceKey, 0, len(normalized.view.plugins))
 	for _, factory := range sortedFactories(normalized.view.plugins) {
@@ -187,10 +193,14 @@ func (preparer *consumerBindingPreparer) prepareConsumer(
 			continue
 		}
 		bindings = append(bindings, runtime.ConsumerCredentialBinding{
-			Plugin: factory, Key: lookupKey, ConsumerID: normalized.key.ID,
+			Plugin: factory, Key: lookupKey, ConsumerID: consumerID,
+			CredentialID: normalized.view.credentialID,
 		})
 	}
 
+	if normalized.view.credentialID != "" {
+		return runtime.ConsumerRecord{}, bindings, used, nil
+	}
 	var consumer resource.Consumer
 	if err := util.Parse(typedResourceDocument(normalized), &consumer); err != nil ||
 		consumer.Username != normalized.key.ID {

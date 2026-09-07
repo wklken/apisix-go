@@ -117,4 +117,40 @@ if ! grep -Fq 'required command is unavailable: docker' "$failure_output"; then
     exit 1
 fi
 
+cat >"$test_bin/container" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == run && "$2" == --rm ]]; then
+    printf '%s\n' "$FAKE_BUILD_INFO"
+elif [[ "$1" == network && "$2" == create ]]; then
+    touch "$FAKE_NETWORK_MARKER"
+    exit 42
+fi
+MOCK
+chmod +x "$test_bin/container"
+check_identity() {
+    local name=$1 metadata=$2 expected_version=$3 expected_commit=$4 expected_status=$5
+    local status=0
+    rm -f "$test_bin/network-started"
+    APISIX_SKIP_BUILD=1 APISIX_EXPECTED_VERSION="$expected_version" APISIX_EXPECTED_COMMIT="$expected_commit" \
+        CONTAINER_BIN="$test_bin/container" CONTAINER_SMOKE_PROBE_MODE=host TMPDIR="$test_bin" \
+        FAKE_BUILD_INFO="$metadata" FAKE_NETWORK_MARKER="$test_bin/network-started" \
+        bash "$smoke" >"$failure_output" 2>&1 || status=$?
+    if [[ "$status" != "$expected_status" ]]; then
+        printf 'identity case %s: status %s, want %s\n' "$name" "$status" "$expected_status" >&2
+        cat "$failure_output" >&2
+        exit 1
+    fi
+    if [[ "$expected_status" == 1 && -e "$test_bin/network-started" ]]; then
+        printf 'identity case %s started network before rejecting metadata\n' "$name" >&2
+        exit 1
+    fi
+}
+check_identity matching $'Version: v1\nCommit: abc\nBuild Time: now\nGo Version: go1.26' v1 abc 42
+check_identity wrong-version $'Version: v2\nCommit: abc' v1 abc 1
+check_identity wrong-commit $'Version: v1\nCommit: def' v1 abc 1
+check_identity missing-commit 'Version: v1' v1 abc 1
+check_identity duplicate-version $'Version: v1\nVersion: v1\nCommit: abc' v1 abc 1
+check_identity missing-expectation $'Version: v1\nCommit: abc' '' abc 1
+
 printf 'container candidate contract: PASS\n'

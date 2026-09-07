@@ -12,6 +12,15 @@ cases:
         routes:
             - id: ai-rate-consumer-isolation
               plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer test-key
+                    options:
+                        model: test-model
+                    override:
+                        endpoint: '{{FIXTURE.primary.URL}}/ai'
+                    provider: openai
                 ai-rate-limiting:
                     limit: 30
                     time_window: 60
@@ -77,8 +86,6 @@ cases:
             path: /ai
           name: jack1-fourth-is-rejected
           output:
-            body:
-                matches: Service Unavailable
             status: 503
         - input:
             body: '{"messages":[{"role":"user","content":"hello"}]}'
@@ -89,8 +96,6 @@ cases:
             path: /ai
           name: jack2-first-is-rejected-by-shared-route-quota
           output:
-            body:
-                matches: Service Unavailable
             status: 503
     - config:
         routes:
@@ -175,6 +180,15 @@ cases:
         routes:
             - id: core-custom-total-tokens
               plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer test-key
+                    options:
+                        model: test-model
+                    override:
+                        endpoint: '{{FIXTURE.primary.URL}}/ai'
+                    provider: openai
                 ai-rate-limiting:
                     limit: 30
                     rejected_code: 403
@@ -203,7 +217,7 @@ cases:
       name: custom-total-token-code-and-message
       steps:
         - input:
-            body: '{"messages":[]}'
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
             headers:
                 Content-Type: application/json
             method: POST
@@ -211,15 +225,15 @@ cases:
           name: total-first
           output:
             headers:
-                X-AI-RateLimit-Limit-global:
+                X-AI-RateLimit-Limit-ai-proxy-openai:
                     equals: "30"
-                X-AI-RateLimit-Remaining-global:
+                X-AI-RateLimit-Remaining-ai-proxy-openai:
                     equals: "30"
-                X-AI-RateLimit-Reset-global:
+                X-AI-RateLimit-Reset-ai-proxy-openai:
                     equals: "60"
             status: 200
         - input:
-            body: '{"messages":[]}'
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
             headers:
                 Content-Type: application/json
             method: POST
@@ -227,11 +241,11 @@ cases:
           name: total-second
           output:
             headers:
-                X-AI-RateLimit-Remaining-global:
+                X-AI-RateLimit-Remaining-ai-proxy-openai:
                     equals: "20"
             status: 200
         - input:
-            body: '{"messages":[]}'
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
             headers:
                 Content-Type: application/json
             method: POST
@@ -239,11 +253,11 @@ cases:
           name: total-third
           output:
             headers:
-                X-AI-RateLimit-Remaining-global:
+                X-AI-RateLimit-Remaining-ai-proxy-openai:
                     equals: "10"
             status: 200
         - input:
-            body: '{"messages":[]}'
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
             headers:
                 Content-Type: application/json
             method: POST
@@ -253,13 +267,22 @@ cases:
             body:
                 matches: rate limit exceeded
             headers:
-                X-AI-RateLimit-Remaining-global:
+                X-AI-RateLimit-Remaining-ai-proxy-openai:
                     equals: "0"
             status: 403
     - config:
         routes:
             - id: core-total-independent
               plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer test-key
+                    options:
+                        model: test-model
+                    override:
+                        endpoint: '{{FIXTURE.primary.URL}}/ai'
+                    provider: openai
                 ai-rate-limiting:
                     limit: 30
                     rejected_code: 403
@@ -272,6 +295,15 @@ cases:
               uri: /ai
             - id: core-completion-independent
               plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer test-key
+                    options:
+                        model: test-model
+                    override:
+                        endpoint: '{{FIXTURE.primary.URL}}/ai2'
+                    provider: openai
                 ai-rate-limiting:
                     limit: 20
                     limit_strategy: completion_tokens
@@ -299,54 +331,81 @@ cases:
       name: total-and-completion-routes-have-independent-counters
       steps:
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai
           name: total-independent-first
           output:
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai
           name: total-independent-second
           output:
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai
           name: total-independent-third
           output:
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai
           name: total-independent-fourth-rejected
           output:
             status: 403
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai2
           name: completion-independent-first
           output:
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai2
           name: completion-independent-second
           output:
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai2
           name: completion-independent-third
           output:
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai2
           name: completion-independent-fourth
           output:
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
+            headers:
+                Content-Type: application/json
             method: POST
             path: /ai2
           name: completion-independent-fifth-rejected
@@ -439,6 +498,15 @@ cases:
         routes:
             - id: core-rules-custom-prefix
               plugins:
+                ai-proxy:
+                    auth:
+                        header:
+                            Authorization: Bearer test-key
+                    options:
+                        model: test-model
+                    override:
+                        endpoint: '{{FIXTURE.primary.URL}}/ai'
+                    provider: openai
                 ai-rate-limiting:
                     rejected_code: 429
                     rules:
@@ -473,7 +541,9 @@ cases:
       name: custom-rule-prefix-route-is-available
       steps:
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
             headers:
+                Content-Type: application/json
                 user: jack
             method: POST
             path: /ai
@@ -488,7 +558,9 @@ cases:
                     equals: "10"
             status: 200
         - input:
+            body: '{"messages":[{"role":"user","content":"hello"}]}'
             headers:
+                Content-Type: application/json
                 project: apisix
             method: POST
             path: /ai

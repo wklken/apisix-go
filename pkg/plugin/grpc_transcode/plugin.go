@@ -1046,19 +1046,16 @@ func normalizeHashInt64FieldValue(value any, field protoreflect.FieldDescriptor)
 }
 
 func (p *Plugin) transformResponse(resp *base.ResponseState, binding *methodBinding) error {
-	normalizeGRPCResponseTrailers(resp)
-	grpcStatus := resp.Trailer.Get("Grpc-Status")
+	grpcMetadata := resp.Header
+	grpcStatus := grpcMetadata.Get("Grpc-Status")
+	if grpcStatus == "" {
+		grpcMetadata = resp.Trailer
+		grpcStatus = grpcMetadata.Get("Grpc-Status")
+	}
 	if grpcStatus == "" && resp.Status >= 300 {
 		return nil
 	}
-	if grpcStatus == "" {
-		grpcStatus = "0"
-		resp.Trailer.Set("Grpc-Status", grpcStatus)
-	}
-	if _, declared := resp.Trailer["Grpc-Message"]; !declared {
-		resp.Trailer["Grpc-Message"] = []string{""}
-	}
-	if grpcStatus != "0" {
+	if grpcStatus != "" && grpcStatus != "0" {
 		statusCode, err := strconv.Atoi(grpcStatus)
 		if err != nil || statusCode < 0 {
 			setTranscodeGatewayError(resp)
@@ -1070,10 +1067,13 @@ func (p *Plugin) transformResponse(resp *base.ResponseState, binding *methodBind
 			resp.Status = 599
 		}
 		resp.Header.Del("Content-Length")
-		if encodedStatus := resp.Trailer.Get(
+		resp.Header.Set("Content-Type", jsonContentType)
+		if !p.config.ShowStatusInBody {
+			return nil
+		}
+		if encodedStatus := grpcMetadata.Get(
 			"Grpc-Status-Details-Bin",
-		); p.config.ShowStatusInBody &&
-			encodedStatus != "" {
+		); encodedStatus != "" {
 			body, decodeErr := p.decodeStatusDetails(encodedStatus, binding)
 			if decodeErr != nil {
 				resp.Body = []byte(decodeErr.Error())
@@ -1081,9 +1081,9 @@ func (p *Plugin) transformResponse(resp *base.ResponseState, binding *methodBind
 				resp.Body = body
 			}
 		} else {
-			message, decodeErr := url.PathUnescape(resp.Trailer.Get("Grpc-Message"))
+			message, decodeErr := url.PathUnescape(grpcMetadata.Get("Grpc-Message"))
 			if decodeErr != nil {
-				message = resp.Trailer.Get("Grpc-Message")
+				message = grpcMetadata.Get("Grpc-Message")
 			}
 			resp.Body, err = json.Marshal(map[string]any{
 				"error": map[string]any{"code": statusCode, "message": message},
@@ -1096,6 +1096,13 @@ func (p *Plugin) transformResponse(resp *base.ResponseState, binding *methodBind
 		return nil
 	}
 
+	normalizeGRPCResponseTrailers(resp)
+	if resp.Trailer.Get("Grpc-Status") == "" {
+		resp.Trailer.Set("Grpc-Status", "0")
+	}
+	if _, declared := resp.Trailer["Grpc-Message"]; !declared {
+		resp.Trailer["Grpc-Message"] = []string{""}
+	}
 	if len(resp.Body) == 0 {
 		resp.Header.Set("Content-Type", jsonContentType)
 		resp.Header.Del("Content-Length")

@@ -115,7 +115,7 @@ cases:
         kind: udp
         network_expect:
           - payload:
-              matches: '(?s)^<10>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"apisix_latency":[0-9.]+,"client_ip":"127\.0\.0\.1","latency":[0-9.]+,.*"request":\{.*"method":"GET".*"uri":"/opentracing".*\},.*"response":\{.*"status":200.*\},.*"route_id":"1","server":\{.*"version":"apisix-go".*\},"service_id":"","start_time":[0-9.]+,"upstream":"127\.0\.0\.1:[0-9]+","upstream_latency":[0-9.]+.*\}$'
+              matches: '(?s)^<10>1 [^ ]+ 127\.0\.0\.1 apisix [0-9]+ - \[token-1@41058 tag="apisix"\] \{"apisix_latency":[0-9.]+,"client_ip":"127\.0\.0\.1","latency":[0-9.]+,.*"request":\{.*"method":"GET".*"uri":"/opentracing".*\},.*"response":\{.*"status":200.*\},.*"route_id":"1","server":\{.*"version":"3.17.0".*\},"service_id":"","start_time":[0-9.]+,"upstream":"127\.0\.0\.1:[0-9]+","upstream_latency":[0-9.]+.*\}$'
             forbidden_matches: ['"body":']
         network_respond: [{payload: ''}]
     steps:

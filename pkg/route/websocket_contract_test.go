@@ -17,7 +17,6 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
-	"github.com/wklken/apisix-go/pkg/util"
 )
 
 type websocketBackend struct {
@@ -152,43 +151,50 @@ func dialWebsocket(t *testing.T, serverURL string) (*websocket.Conn, *http.Respo
 	return websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(serverURL, "http"), nil)
 }
 
-func TestWebsocketUpgradeDisabledReturnsStableAPISIXJSON(t *testing.T) {
-	backend := newWebsocketBackend(t)
-	handler := buildWebsocketHandler(t, resource.Route{
-		ID:       "websocket-disabled-route",
-		Upstream: backend.upstream(t),
-	})
+func TestWebsocketUpgradeDisabledForwardsHTTPWithoutUpgradeHeaders(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Seen-Upgrade", r.Header.Get("Upgrade"))
+		w.Header().Set("X-Seen-Connection", r.Header.Get("Connection"))
+		_, _ = io.WriteString(w, "ordinary-http")
+	}))
+	defer backend.Close()
+	handler := buildWebsocketHandler(
+		t,
+		resource.Route{
+			ID:       "websocket-disabled-route",
+			Upstream: resource.Upstream{Scheme: "http", Nodes: []resource.Node{websocketNode(t, backend)}},
+		},
+	)
 	gateway := httptest.NewServer(handler)
-	t.Cleanup(gateway.Close)
-
-	connection, response, err := dialWebsocket(t, gateway.URL)
-	if err == nil {
-		_ = connection.Close()
-		t.Fatal("websocket dial error = nil, want APISIX-owned rejection")
-	}
-	if response == nil {
-		t.Fatalf("websocket dial response = nil, want 400 response: %v", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("websocket dial status = %d, want %d", response.StatusCode, http.StatusBadRequest)
-	}
-	body, readErr := io.ReadAll(response.Body)
-	if readErr != nil {
-		t.Fatalf("read rejection body: %v", readErr)
-	}
-	wantBody := util.BuildMessageResponse(websocketDisabledMessage)
-	if string(body) != wantBody {
-		t.Fatalf("rejection body = %q, want %q", body, wantBody)
-	}
-	if got := backend.upgradeCalls.Load(); got != 0 {
-		t.Fatalf("upstream websocket calls = %d, want 0 before upstream dialing", got)
+	defer gateway.Close()
+	for _, token := range []string{"websocket", "foo"} {
+		request, err := http.NewRequest(http.MethodGet, gateway.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Upgrade", token)
+		request.Header.Set("Connection", "keep-alive, Upgrade")
+		response, err := gateway.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != 200 || string(body) != "ordinary-http" {
+			t.Fatalf("token=%s response=%d/%q", token, response.StatusCode, body)
+		}
+		if response.Header.Get("X-Seen-Upgrade") != "" || response.Header.Get("X-Seen-Connection") != "" {
+			t.Fatalf("forwarded upgrade headers: %v", response.Header)
+		}
 	}
 }
 
-func TestKafkaRouteDisabledWebsocketUpgradeIsRejectedBeforeExclusiveTerminal(t *testing.T) {
+func TestKafkaRouteDisabledWebsocketUpgradeStillReachesExclusiveTerminal(t *testing.T) {
 	handler := buildWebsocketHandler(t, resource.Route{
-		ID:              "websocket-kafka-route-disabled",
+		ID:              "websocket-kafka-route",
 		EnableWebsocket: false,
 		Upstream: resource.Upstream{
 			Scheme: "kafka",
@@ -199,24 +205,15 @@ func TestKafkaRouteDisabledWebsocketUpgradeIsRejectedBeforeExclusiveTerminal(t *
 	t.Cleanup(gateway.Close)
 
 	connection, response, err := dialWebsocket(t, gateway.URL)
-	if err == nil {
-		_ = connection.Close()
-		t.Fatal("Kafka websocket dial error = nil, want APISIX-owned rejection")
+	if err != nil {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		t.Fatalf("Kafka websocket dial: %v", err)
 	}
-	if response == nil {
-		t.Fatalf("Kafka websocket dial response = nil, want 400 response: %v", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("Kafka websocket dial status = %d, want %d", response.StatusCode, http.StatusBadRequest)
-	}
-	body, readErr := io.ReadAll(response.Body)
-	if readErr != nil {
-		t.Fatalf("read Kafka rejection body: %v", readErr)
-	}
-	wantBody := util.BuildMessageResponse(websocketDisabledMessage)
-	if string(body) != wantBody {
-		t.Fatalf("Kafka rejection body = %q, want %q", body, wantBody)
+	t.Cleanup(func() { _ = connection.Close() })
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("Kafka websocket response status = %d, want 101", response.StatusCode)
 	}
 }
 
@@ -312,7 +309,6 @@ func TestTransparentUpgradeSkipsDynamicConsumerHeaderHook(t *testing.T) {
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			t.Fatal("ordinary terminal reached")
 		}),
-		true,
 	)
 	if err != nil {
 		t.Fatalf("buildTransparentUpgradeHandler() error = %v", err)
@@ -584,44 +580,21 @@ func TestOrdinaryHTTPPassesThroughWithWebsocketEnabled(t *testing.T) {
 }
 
 func TestWebsocketUpgradeDetectionRequiresUpgradeTokenAndValue(t *testing.T) {
-	tests := []struct {
-		name        string
+	for _, tc := range []struct {
 		connections []string
 		upgrade     string
-		status      int
+		want        bool
 	}{
-		{
-			name:        "multiple connection values",
-			connections: []string{"keep-alive", " Upgrade "},
-			upgrade:     " WebSocket ",
-			status:      http.StatusBadRequest,
-		},
-		{
-			name:        "comma separated connection value",
-			connections: []string{"keep-alive, uPgRaDe"},
-			upgrade:     "WEBSOCKET",
-			status:      http.StatusBadRequest,
-		},
-		{
-			name:        "ordinary HTTP",
-			connections: []string{"keep-alive, not-upgrade"},
-			upgrade:     "websocket",
-			status:      http.StatusNoContent,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			handler := requireWebsocketEnablement(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusNoContent)
-			}), false)
-			request := httptest.NewRequest(http.MethodGet, "http://gateway.test/", nil)
-			request.Header["Connection"] = append([]string(nil), test.connections...)
-			request.Header.Set("Upgrade", test.upgrade)
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			if response.Code != test.status {
-				t.Fatalf("status = %d, want %d", response.Code, test.status)
-			}
-		})
+		{[]string{"keep-alive", " Upgrade "}, " WebSocket ", true},
+		{[]string{"keep-alive, uPgRaDe"}, "WEBSOCKET", true},
+		{[]string{"keep-alive, not-upgrade"}, "websocket", false},
+		{[]string{"upgrade"}, "", false},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header["Connection"] = tc.connections
+		request.Header.Set("Upgrade", tc.upgrade)
+		if got := isUpgradeRequest(request); got != tc.want {
+			t.Errorf("headers=%v upgrade=%t want=%t", request.Header, got, tc.want)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/capability"
 	consumerregistry "github.com/wklken/apisix-go/pkg/consumer"
+	"github.com/wklken/apisix-go/pkg/generation"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/resource"
 	"github.com/wklken/apisix-go/pkg/runtime"
@@ -14,8 +15,10 @@ import (
 )
 
 type consumerCredentialCandidate struct {
-	consumerID string
-	occurrence FactoryOccurrence
+	consumerID   string
+	credentialID string
+	config       resource.PluginConfig
+	occurrence   FactoryOccurrence
 }
 
 func newConsumerLookupView(
@@ -27,21 +30,50 @@ func newConsumerLookupView(
 		bindings: bindings, preparation: preparation, catalog: catalog,
 		candidates: make(map[string][]consumerCredentialCandidate),
 	}
+	http, _ := preparation.Candidate(generation.DomainHTTP)
 	for _, occurrence := range preparation.Occurrences(capability.SecretConsumerConfig) {
 		if occurrence.Resource().Kind != "consumers" || !consumerregistry.Supports(occurrence.Factory()) {
 			continue
 		}
+		candidate := newConsumerCredentialCandidate(http.Snapshot, occurrence)
 		view.candidates[occurrence.Factory()] = append(
 			view.candidates[occurrence.Factory()],
-			consumerCredentialCandidate{consumerID: occurrence.Resource().ID, occurrence: occurrence},
+			candidate,
 		)
 	}
 	for factory := range view.candidates {
 		sort.Slice(view.candidates[factory], func(left, right int) bool {
-			return view.candidates[factory][left].consumerID < view.candidates[factory][right].consumerID
+			return view.candidates[factory][left].occurrence.Resource().ID < view.candidates[factory][right].occurrence.Resource().ID
 		})
 	}
 	return view
+}
+
+func newConsumerCredentialCandidate(
+	snapshot generation.Snapshot,
+	occurrence FactoryOccurrence,
+) consumerCredentialCandidate {
+	candidate := consumerCredentialCandidate{consumerID: occurrence.Resource().ID, occurrence: occurrence}
+	source, exists := snapshot.Lookup(occurrence.Resource())
+	if !exists {
+		return candidate
+	}
+	document, err := decodeExactDocument(source)
+	if err != nil {
+		return candidate
+	}
+	object, ok := document.(map[string]any)
+	if !ok {
+		return candidate
+	}
+	parent, id := consumerCredentialIdentity(occurrence.Resource().ID)
+	if id != "" {
+		candidate.consumerID, candidate.credentialID = parent, id
+		if plugins, ok := object["plugins"].(map[string]any); ok {
+			candidate.config = plugins[occurrence.Factory()]
+		}
+	}
+	return candidate
 }
 
 func (view consumerLookupView) UseConsumerCredential(
@@ -54,13 +86,16 @@ func (view consumerLookupView) UseConsumerCredential(
 		return false, nil
 	}
 	if consumer, found := view.bindings.ConsumerByPluginKey(plugin, key); found {
-		candidate, ok := view.candidate(plugin, consumer.ID)
+		candidate, ok := view.candidate(plugin, consumer.ID, consumer.CredentialID)
 		if !ok {
 			return true, use(consumer, consumer.Plugins[plugin])
 		}
 		resolved, matches, err := view.resolveCandidate(ctx, plugin, key, consumer, candidate)
 		if err != nil || !matches {
 			return matches, err
+		}
+		if consumer.CredentialID != "" {
+			consumer.AuthConf = resolved
 		}
 		return true, use(consumer, resolved)
 	}
@@ -73,6 +108,7 @@ func (view consumerLookupView) UseConsumerCredential(
 		if !found {
 			continue
 		}
+		consumer.CredentialID = candidate.credentialID
 		resolved, matches, err := view.resolveCandidate(ctx, plugin, key, consumer, candidate)
 		if err != nil {
 			return false, err
@@ -88,14 +124,20 @@ func (view consumerLookupView) UseConsumerCredential(
 		matchedConfig = resolved
 	}
 	if matched {
+		if matchedConsumer.CredentialID != "" {
+			matchedConsumer.AuthConf = matchedConfig
+		}
 		return true, use(matchedConsumer, matchedConfig)
 	}
 	return false, nil
 }
 
-func (view consumerLookupView) candidate(plugin string, consumerID string) (consumerCredentialCandidate, bool) {
+func (view consumerLookupView) candidate(
+	plugin string,
+	consumerID, credentialID string,
+) (consumerCredentialCandidate, bool) {
 	for _, candidate := range view.candidates[plugin] {
-		if candidate.consumerID == consumerID {
+		if candidate.consumerID == consumerID && candidate.credentialID == credentialID {
 			return candidate, true
 		}
 	}
@@ -110,6 +152,9 @@ func (view consumerLookupView) resolveCandidate(
 	candidate consumerCredentialCandidate,
 ) (resource.PluginConfig, bool, error) {
 	raw, exists := consumer.Plugins[plugin]
+	if candidate.credentialID != "" {
+		raw, exists = candidate.config, candidate.config != nil
+	}
 	if !exists {
 		return nil, false, nil
 	}

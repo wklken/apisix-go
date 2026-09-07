@@ -26,7 +26,7 @@ cases:
   - name: default-request-body-config-produces-json
     config:
       routes:
-        - {id: kafka-004, uri: /kafka-004, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false, max_req_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-004, uri: /kafka-004, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false, max_req_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"abcde"'}, forbidden_matches: ['"body":"abcdef"']}], network_respond: [{}]}
@@ -35,7 +35,7 @@ cases:
   - name: default-request-body-hit-includes-payload
     config:
       routes:
-        - {id: kafka-005, uri: /kafka-005, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false, max_req_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-005, uri: /kafka-005, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false, max_req_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"abcde"'}, forbidden_matches: ['"body":"abcdef"']}], network_respond: [{}]}
@@ -44,7 +44,7 @@ cases:
   - name: default-response-body-config-produces-json
     config:
       routes:
-        - {id: kafka-006, uri: /kafka-006, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-006, uri: /kafka-006, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"hello"'}, forbidden_matches: ['"body":"hello world"']}], network_respond: [{}]}
@@ -53,7 +53,7 @@ cases:
   - name: default-response-body-hit-includes-payload
     config:
       routes:
-        - {id: kafka-007, uri: /kafka-007, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-007, uri: /kafka-007, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"body":"hello"'}, forbidden_matches: ['"body":"hello world"']}], network_respond: [{}]}
@@ -80,19 +80,19 @@ cases:
   - name: default-request-and-response-config-is-accepted
     config:
       routes:
-        - {id: kafka-010, uri: /kafka-010, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true, max_req_body_bytes: 5, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-010, uri: /kafka-010, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true, max_req_body_bytes: 5, max_resp_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"request":\{"body":"abcde"\},"response":\{"body":"hello"\}'}, forbidden_matches: ['abcdef', '"hello world"']}], network_respond: [{}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"request":\{"body":"abcde",[^}]*\},"response":\{"body":"hello",'}, forbidden_matches: ['abcdef', '"hello world"']}], network_respond: [{}]}
     steps: [{name: default-request-and-response-config-is-accepted-real-request-produces-asserted-record, input: {method: POST, path: /kafka-010, body: abcdef}, output: {status: 200, body: {equals: "hello world"}}}]
 
   - name: default-request-and-response-hit-includes-both
     config:
       routes:
-        - {id: kafka-011, uri: /kafka-011, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true, max_req_body_bytes: 5, max_resp_body_bytes: 5, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-011, uri: /kafka-011, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true, max_req_body_bytes: 5, max_resp_body_bytes: 5}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "hello world"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"request":\{"body":"abcde"\},"response":\{"body":"hello"\}'}, forbidden_matches: ['abcdef', '"hello world"']}], network_respond: [{}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"request":\{"body":"abcde",[^}]*\},"response":\{"body":"hello",'}, forbidden_matches: ['abcdef', '"hello world"']}], network_respond: [{}]}
     steps: [{name: default-request-and-response-hit-includes-both-real-request-produces-asserted-record, input: {method: POST, path: /kafka-011, body: abcdef}, output: {status: 200, body: {equals: "hello world"}}}]
 
   - name: disabled-request-and-response-body-config-is-accepted
@@ -121,7 +121,7 @@ cases:
   - name: large-request-and-response-config-is-accepted
     config:
       routes:
-        - {id: kafka-014, uri: /kafka-014, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-014, uri: /kafka-014, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*request-body.*response.*response-body"}}], network_respond: [{}]}
@@ -130,7 +130,7 @@ cases:
   - name: large-request-and-response-hit-preserves-bodies
     config:
       routes:
-        - {id: kafka-015, uri: /kafka-015, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-015, uri: /kafka-015, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*request-body.*response.*response-body"}}], network_respond: [{}]}
@@ -139,7 +139,7 @@ cases:
   - name: large-response-body-config-is-accepted
     config:
       routes:
-        - {id: kafka-016, uri: /kafka-016, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-016, uri: /kafka-016, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*response-body"}}], network_respond: [{}]}
@@ -148,7 +148,7 @@ cases:
   - name: large-response-body-hit-is-produced
     config:
       routes:
-        - {id: kafka-017, uri: /kafka-017, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-017, uri: /kafka-017, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "response-body"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*response-body"}}], network_respond: [{}]}
@@ -157,7 +157,7 @@ cases:
   - name: large-request-body-config-is-accepted
     config:
       routes:
-        - {id: kafka-018, uri: /kafka-018, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-018, uri: /kafka-018, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*request-body"}}], network_respond: [{}]}
@@ -166,7 +166,7 @@ cases:
   - name: large-request-body-hit-is-produced
     config:
       routes:
-        - {id: kafka-019, uri: /kafka-019, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-019, uri: /kafka-019, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*request-body"}}], network_respond: [{}]}
@@ -175,7 +175,7 @@ cases:
   - name: response-body-limit-config-is-accepted
     config:
       routes:
-        - {id: kafka-020, uri: /kafka-020, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 256, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-020, uri: /kafka-020, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 256}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*y{256}"}}], network_respond: [{}]}
@@ -184,13 +184,13 @@ cases:
   - name: one-megabyte-response-is-truncated-to-256-bytes
     config:
       routes:
-        - {id: kafka-021, uri: /kafka-021, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 256, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-021, uri: /kafka-021, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, max_resp_body_bytes: 256}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}]}
       - name: sink
         kind: kafka
         network_expect:
-          - payload: {matches: '"response"\s*:\s*\{\s*"body"\s*:\s*"y{256}"\s*\}'}
+          - payload: {matches: '"response"\s*:\s*\{\s*"body"\s*:\s*"y{256}"\s*,'}
             forbidden_matches: ['y{257}']
         network_respond: [{}]
     steps: [{name: one-megabyte-response-is-truncated-to-256-bytes-real-request-produces-asserted-record, input: {method: GET, path: /kafka-021}, output: {status: 200, body: {equals: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}}}]
@@ -198,7 +198,7 @@ cases:
   - name: request-body-limit-config-is-accepted
     config:
       routes:
-        - {id: kafka-022, uri: /kafka-022, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, max_req_body_bytes: 256, include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-022, uri: /kafka-022, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, max_req_body_bytes: 256, include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*x{256}"}}], network_respond: [{}]}
@@ -207,7 +207,7 @@ cases:
   - name: one-megabyte-request-is-truncated-to-256-bytes
     config:
       routes:
-        - {id: kafka-023, uri: /kafka-023, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, max_req_body_bytes: 256, include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-023, uri: /kafka-023, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, max_req_body_bytes: 256, include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*x{256}"}}], network_respond: [{}]}
@@ -216,7 +216,7 @@ cases:
   - name: empty-request-body-config-is-accepted
     config:
       routes:
-        - {id: kafka-024, uri: /kafka-024, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-024, uri: /kafka-024, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-024"}}], network_respond: [{}]}
@@ -225,7 +225,7 @@ cases:
   - name: empty-request-body-remains-empty
     config:
       routes:
-        - {id: kafka-025, uri: /kafka-025, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-025, uri: /kafka-025, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true,  include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-025"}}], network_respond: [{}]}
@@ -522,7 +522,7 @@ cases:
   - name: plain-sasl-config-is-accepted
     config:
       routes:
-        - {id: kafka-055, uri: /kafka-055, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-055, uri: /kafka-055, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: secret}}, network_expect: [{payload: {matches: "/kafka\\-055"}}], network_respond: [{}]}
@@ -531,14 +531,14 @@ cases:
   - name: plain-sasl-record-is-produced
     config:
       routes:
-        - {id: kafka-056, uri: /kafka-056, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-056, uri: /kafka-056, plugins: {kafka-logger: {brokers: [{host: '{{FIXTURE.sink.HOST}}', port: '{{FIXTURE.sink.PORT}}', sasl_config: {mechanism: PLAIN, user: admin, password: secret}}], kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, log_format: {path: '$uri', request_body: '$request_body'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - name: sink
         kind: kafka
         kafka: {topics: [integration], sasl: {mechanism: PLAIN, username: admin, password: secret}}
         network_expect:
-          - payload: {matches: '"path":"/kafka\-056".*"body":"abcdef"'}
+          - payload: {matches: '"path":"/kafka\-056".*"request_body":"abcdef"'}
         network_respond: [{}]
     steps: [{name: plain-sasl-record-is-produced-real-request-produces-asserted-record, input: {method: POST, path: /kafka-056, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
@@ -708,7 +708,7 @@ cases:
   - name: request-body-expression-route-is-accepted
     config:
       routes:
-        - {id: kafka-069, uri: /kafka-069, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-069, uri: /kafka-069, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*matched-request"}}], network_respond: [{}]}
@@ -717,7 +717,7 @@ cases:
   - name: request-body-expression-match-includes-body
     config:
       routes:
-        - {id: kafka-070, uri: /kafka-070, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-070, uri: /kafka-070, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*matched-request"}}], network_respond: [{}]}
@@ -726,7 +726,7 @@ cases:
   - name: request-body-expression-miss-omits-body
     config:
       routes:
-        - {id: kafka-071, uri: /kafka-071, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-071, uri: /kafka-071, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-071"}}], network_respond: [{}]}
@@ -743,7 +743,7 @@ cases:
   - name: gzip-response-body-route-is-accepted
     config:
       routes:
-        - {id: kafka-074, uri: /kafka-074, plugins: {gzip: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-074, uri: /kafka-074, plugins: {gzip: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, headers: {Content-Type: text/html}, body: "gzip hello world\n"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: 'response.*body.*gzip hello world\\n'}}], network_respond: [{}]}
@@ -752,7 +752,7 @@ cases:
   - name: gzip-response-body-is-recorded
     config:
       routes:
-        - {id: kafka-075, uri: /kafka-075, plugins: {gzip: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-075, uri: /kafka-075, plugins: {gzip: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, headers: {Content-Type: text/html}, body: "gzip hello world\n"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: 'response.*body.*gzip hello world\\n'}}], network_respond: [{}]}
@@ -761,7 +761,7 @@ cases:
   - name: brotli-response-body-route-is-accepted
     config:
       routes:
-        - {id: kafka-076, uri: /kafka-076, plugins: {brotli: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-076, uri: /kafka-076, plugins: {brotli: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, headers: {Content-Type: text/html}, body: "brotli hello world\n"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: 'response.*body.*brotli hello world\\n'}}], network_respond: [{}]}
@@ -770,7 +770,7 @@ cases:
   - name: brotli-response-body-is-recorded
     config:
       routes:
-        - {id: kafka-077, uri: /kafka-077, plugins: {brotli: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-077, uri: /kafka-077, plugins: {brotli: {min_length: 1, types: "*"}, kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, headers: {Content-Type: text/html}, body: "brotli hello world\n"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: 'response.*body.*brotli hello world\\n'}}], network_respond: [{}]}
@@ -779,7 +779,7 @@ cases:
   - name: response-body-expression-route-is-accepted
     config:
       routes:
-        - {id: kafka-078, uri: /kafka-078, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 200]], log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-078, uri: /kafka-078, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 200]]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "matched-response"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*matched-response"}}], network_respond: [{}]}
@@ -788,7 +788,7 @@ cases:
   - name: response-body-expression-match-includes-body
     config:
       routes:
-        - {id: kafka-079, uri: /kafka-079, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 200]], log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-079, uri: /kafka-079, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 200]]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "matched-response"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*matched-response"}}], network_respond: [{}]}
@@ -797,7 +797,7 @@ cases:
   - name: response-body-expression-miss-omits-body
     config:
       routes:
-        - {id: kafka-080, uri: /kafka-080, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 201]], log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-080, uri: /kafka-080, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 201]]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "omitted-response"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-080"}}], network_respond: [{}]}
@@ -806,7 +806,7 @@ cases:
   - name: nested-request-and-response-expressions-are-accepted
     config:
       routes:
-        - {id: kafka-081, uri: /kafka-081, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: true, include_resp_body_expr: [["status", "==", 200]], log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-081, uri: /kafka-081, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: true, include_resp_body_expr: [["status", "==", 200]]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "nested-response"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*nested-request.*response.*nested-response"}}], network_respond: [{}]}
@@ -815,7 +815,7 @@ cases:
   - name: both-expression-matches-include-both-bodies
     config:
       routes:
-        - {id: kafka-082, uri: /kafka-082, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: true, include_resp_body_expr: [["status", "==", 200]], log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-082, uri: /kafka-082, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: true, include_resp_body_expr: [["status", "==", 200]]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "nested-response"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*nested-request.*response.*nested-response"}}], network_respond: [{}]}
@@ -824,7 +824,7 @@ cases:
   - name: request-match-response-miss-includes-only-request
     config:
       routes:
-        - {id: kafka-083, uri: /kafka-083, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-083, uri: /kafka-083, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*matched-request"}}], network_respond: [{}]}
@@ -833,7 +833,7 @@ cases:
   - name: request-miss-response-match-includes-only-response
     config:
       routes:
-        - {id: kafka-084, uri: /kafka-084, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 200]], log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-084, uri: /kafka-084, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: false,  include_resp_body: true, include_resp_body_expr: [["status", "==", 200]]}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "matched-response"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "response.*body.*matched-response"}}], network_respond: [{}]}
@@ -842,7 +842,7 @@ cases:
   - name: request-match-response-miss-remains-stable
     config:
       routes:
-        - {id: kafka-085, uri: /kafka-085, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-085, uri: /kafka-085, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "/kafka\\-085"}, forbidden_matches: ['"body":"matched-request"', '"body":"upstream-ok"']}], network_respond: [{}]}
@@ -851,7 +851,7 @@ cases:
   - name: updated-request-expression-route-is-applied
     config:
       routes:
-        - {id: kafka-086, uri: /kafka-086, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-086, uri: /kafka-086, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*matched-request"}}], network_respond: [{}]}
@@ -860,7 +860,7 @@ cases:
   - name: updated-request-expression-match-includes-body
     config:
       routes:
-        - {id: kafka-087, uri: /kafka-087, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false,  log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-087, uri: /kafka-087, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, batch_max_size: 1, include_req_body: true, include_req_body_expr: [["arg_capture", "==", "yes"]], include_resp_body: false}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
       - {name: sink, kind: kafka, network_expect: [{payload: {matches: "request.*body.*matched-request"}}], network_respond: [{}]}
@@ -878,10 +878,10 @@ cases:
   - name: meta-refresh-interval-route-produces-record
     config:
       routes:
-        - {id: kafka-089, uri: /kafka-089, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, meta_refresh_interval: 1, batch_max_size: 1, include_req_body: true, log_format: {path: '$uri'}}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
+        - {id: kafka-089, uri: /kafka-089, plugins: {kafka-logger: {broker_list: {'{{FIXTURE.sink.HOST}}': '{{FIXTURE.sink.PORT}}'}, kafka_topic: integration, producer_type: sync, meta_refresh_interval: 1, batch_max_size: 1, include_req_body: true}}, upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}}
     fixtures:
       - {name: primary, kind: http, respond: [{status: 200, body: "upstream-ok"}]}
-      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"path":"/kafka\-089".*"body":"abcdef"'}}], network_respond: [{}]}
+      - {name: sink, kind: kafka, network_expect: [{payload: {matches: '"request":\{"body":"abcdef","method":"POST","uri":"/kafka-089"\}'}}], network_respond: [{}]}
     steps: [{name: meta-refresh-interval-route-produces-record-real-request-produces-asserted-record, input: {method: POST, path: /kafka-089, body: abcdef}, output: {status: 200, body: {equals: "upstream-ok"}}}]
 
   - name: max-pending-entries-drops-excess-records

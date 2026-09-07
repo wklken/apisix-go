@@ -340,7 +340,7 @@ func TestCompileAppliesPerResourceClientCAAndVerificationDepth(t *testing.T) {
 		t.Fatalf("depth-one chain rejected: %v", err)
 	}
 	tooDeepState := tls.ConnectionState{
-		VerifiedChains: [][]*x509.Certificate{{leaf, intermediate, clientCA}},
+		VerifiedChains: [][]*x509.Certificate{{leaf, intermediate, intermediate, clientCA}},
 	}
 	if err := selected.VerifyConnection(tooDeepState); err == nil {
 		t.Fatal("chain exceeding configured client depth was accepted")
@@ -376,7 +376,6 @@ func TestCompileDoesNotApplyOutboundTrustedCertificateAsClientCA(t *testing.T) {
 
 func TestCompileValidatesTLSAndResourceClientCAMaterial(t *testing.T) {
 	validCert, validKey := testServerKeyPair(t, "valid")
-	_, validCAPEM := testCertificateAuthority(t, "trusted")
 	tests := []struct {
 		name  string
 		input Input
@@ -418,21 +417,6 @@ func TestCompileValidatesTLSAndResourceClientCAMaterial(t *testing.T) {
 				},
 			},
 			want: "client.ca contains no certificates",
-		},
-		{
-			name: "unsupported skip URI",
-			input: Input{
-				Config: testFrontendConfig(),
-				SSLs: map[string]resource.SSL{
-					"bad": {
-						ID: "bad", Sni: "bad.example.test", Cert: validCert, Key: validKey, Status: 1,
-						Client: &resource.SSLClient{
-							CA: validCAPEM, Depth: 1, SkipMTLSURIRegex: []string{"/skip"},
-						},
-					},
-				},
-			},
-			want: "skip_mtls_uri_regex",
 		},
 	}
 	for _, test := range tests {

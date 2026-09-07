@@ -85,25 +85,34 @@ func validateRuntimeConfig(cfg *Config) error {
 	if cfg.Apisix.EnableControl && net.ParseIP(cfg.Apisix.Control.Ip) == nil {
 		return fmt.Errorf("apisix.control.ip must be a valid IP address")
 	}
+	if cfg.Apisix.TrustedAddresses != nil && len(cfg.Apisix.TrustedAddresses) == 0 {
+		return fmt.Errorf("apisix.trusted_addresses must contain at least one address")
+	}
+	if cfg.Apisix.DataEncryption.Keyring != nil && len(cfg.Apisix.DataEncryption.Keyring) == 0 {
+		return fmt.Errorf("apisix.data_encryption.keyring must contain at least one key")
+	}
+	for index, key := range cfg.Apisix.DataEncryption.Keyring {
+		if len(key) != 16 {
+			return fmt.Errorf("apisix.data_encryption.keyring[%d] must contain exactly 16 bytes", index)
+		}
+	}
 	for index, address := range cfg.Apisix.TrustedAddresses {
 		address = strings.TrimSpace(address)
-		if address == "" || net.ParseIP(address) != nil {
+		if net.ParseIP(address) != nil {
 			continue
 		}
 		if _, _, parseErr := net.ParseCIDR(address); parseErr != nil {
 			return fmt.Errorf("apisix.trusted_addresses[%d] must be a valid CIDR or IP address", index)
 		}
 	}
+	if pool := cfg.NginxConfig.HTTP.Upstream; pool != nil && pool.KeepaliveRequests < 0 {
+		return fmt.Errorf("nginx_config.http.upstream.keepalive_requests must not be negative")
+	}
 	if cfg.NginxConfig.HTTP.ClientMaxBodySize < 0 {
 		return fmt.Errorf("nginx_config.http.client_max_body_size must be non-negative")
 	}
 	if cfg.NginxConfig.HTTP.ClientBodyTimeout <= 0 {
 		return fmt.Errorf("nginx_config.http.client_body_timeout must be positive")
-	}
-	if sendTimeout := cfg.NginxConfig.HTTP.SendTimeout; sendTimeout != 0 {
-		return fmt.Errorf(
-			"nginx_config.http.send_timeout must be zero because Go cannot implement NGINX write-idle semantics",
-		)
 	}
 	provider, err := EffectiveConfigProvider(cfg)
 	if err != nil {
@@ -114,8 +123,8 @@ func validateRuntimeConfig(cfg *Config) error {
 			return fmt.Errorf("deployment.etcd.host must contain at least one endpoint for the etcd provider")
 		}
 		for index, endpoint := range cfg.Deployment.Etcd.Host {
-			if strings.TrimSpace(endpoint) == "" {
-				return fmt.Errorf("deployment.etcd.host[%d] must not be empty for the etcd provider", index)
+			if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+				return fmt.Errorf("deployment.etcd.host[%d] must begin with http:// or https://", index)
 			}
 		}
 		if strings.TrimSpace(cfg.Deployment.Etcd.Prefix) == "" {
@@ -171,22 +180,14 @@ func EffectiveConfigProvider(cfg *Config) (string, error) {
 		}
 		return "", fmt.Errorf("deployment.role_data_plane.config_provider is unsupported")
 	}
-	if provider != "etcd" {
-		return "", fmt.Errorf("deployment.%s config_provider must be etcd", role)
+	if provider != "etcd" && provider != "yaml" {
+		return "", fmt.Errorf("deployment.%s config_provider must be etcd or yaml", role)
 	}
 	return provider, nil
 }
 
 func decodeHTTPPluginAllowlist(raw any) ([]string, bool) {
 	switch value := raw.(type) {
-	case string:
-		if strings.Contains(value, ",") {
-			return strings.Split(value, ","), true
-		}
-		if value == "" || value != strings.TrimSpace(value) {
-			return []string{value}, true
-		}
-		return strings.Fields(value), true
 	case []string:
 		return append([]string(nil), value...), true
 	case []any:

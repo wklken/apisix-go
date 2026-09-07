@@ -11,7 +11,6 @@ import (
 
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/runtime"
-	"github.com/wklken/apisix-go/pkg/util"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
@@ -44,22 +43,10 @@ func buildRootSampler(conf RootSamplerConfig) sdktrace.Sampler {
 
 func loadMetadata(
 	view runtime.MetadataView,
-	pluginAttr map[string]map[string]any,
 ) (metadata Metadata, configured bool, err error) {
 	if found, decodeErr := view.Decode(name, &metadata); found || decodeErr != nil {
 		if decodeErr != nil {
 			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry metadata: %w", decodeErr)
-		}
-		return applyMetadataDefaults(metadata), true, nil
-	}
-
-	metadata = Metadata{}
-	if attr, ok := pluginAttr[name]; ok {
-		if attr == nil {
-			return Metadata{}, false, fmt.Errorf("OpenTelemetry plugin attributes %q must be an object", name)
-		}
-		if parseErr := util.Parse(attr, &metadata); parseErr != nil {
-			return Metadata{}, false, fmt.Errorf("decode OpenTelemetry plugin attributes: %w", parseErr)
 		}
 		return applyMetadataDefaults(metadata), true, nil
 	}

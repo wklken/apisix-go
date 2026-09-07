@@ -9,9 +9,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wklken/apisix-go/pkg/version"
 )
 
-const accessLogVersion = "apisix-go"
+const accessLogVersion = version.APISIXVersion
 
 var accessLogHostname = sync.OnceValue(func() string {
 	hostname, _ := os.Hostname()
@@ -85,13 +87,7 @@ func BuildAccessLogFromSnapshot(snapshot LogSnapshot, routeID string, serverAddr
 		"client_ip":  fmt.Sprint(SnapshotValue(snapshot, "$remote_addr")),
 		"start_time": float64(snapshot.Started.UnixNano()) / float64(time.Millisecond),
 		"latency":    latency, "upstream_latency": upstreamLatency, "apisix_latency": apisixLatency,
-		"upstream":        SnapshotUpstreamAddress(snapshot),
-		"request_id":      snapshot.Request.ID,
-		"node_id":         snapshot.NodeID,
-		"response_source": string(snapshot.Source),
-		"outcome":         string(snapshot.Outcome.Kind),
-		"upstream_status": SnapshotValue(snapshot, "$upstream_status"),
-		"retry_count":     SnapshotValue(snapshot, "$retry_count"),
+		"upstream": SnapshotUpstreamAddress(snapshot),
 	}
 	if consumer := snapshot.Request.Consumer.Username; consumer != "" {
 		fields["consumer"] = map[string]any{"username": consumer}

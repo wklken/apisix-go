@@ -83,7 +83,9 @@ built-in defaults
 ```
 
 Maps merge recursively and lists replace earlier lists. Absent, null, false,
-zero, and empty string remain distinct. The effective result is passed
+zero, and empty string remain distinct; null deletes a mapping key before
+schema defaults are applied. YAML anchors, aliases, and merge keys are supported.
+The effective result is passed
 explicitly into runtime construction; it is not mutable global state. See
 [Configuration](configuration.md) for operator-facing details.
 
@@ -129,6 +131,13 @@ A prepared generation owns one complete runtime generation:
 Cleanup is retryable and ordered: stop work, finalize resources, then release
 generation secrets. A timeout or residual task retains ownership for a later retry; it
 does not permit the generation to be detached early.
+
+Process-log rotation holds HTTP publication authority for the complete filesystem
+operation. The serving engine revokes the predecessor's authority before swapping
+the HTTP bundle and waits for an admitted rotation to finish; failed publication
+restores the predecessor's authority. Prepared and draining generations cannot
+start rotation. The compiler supplies only the scoped execution callback to plugins,
+without exposing task registries or resource handles.
 
 Local rate-limit counters and MCP session lookup are shared through compiler-owned
 resource leases. Unrelated HTTP publication does not reset an active quota or
@@ -194,11 +203,33 @@ re-panic decision.
 | Stream | Raw TCP with immutable route snapshots and at most one `mqtt-proxy` protocol binding. |
 | Not implemented | UDP, stream TLS/mTLS, PROXY protocol, service discovery, general stream-plugin chaining, external plugin runners, WASM, XRPC, QUIC, and HTTP/3. |
 
-WebSocket upgrades require `enable_websocket: true` and retain their HTTP
+Frontend certificate and key references are materialized through the generation
+secret catalog before TLS compilation. SSL private-key decryption follows the
+SSL keyring independently of the plugin data-encryption enable flag.
+URI-conditional mTLS stores its verification result and skip patterns in the
+connection context at handshake time. Each TLS connection also retains the
+effective SNI (including fallback) and an immutable index of protected hosts;
+requests for an mTLS-protected host must match that SNI. Requests retain this
+policy across later generation changes without retaining other hosts' key material.
+
+HTTP upstream upgrades require `enable_websocket: true` to forward the upgrade
+headers; disabled routes still proxy ordinary HTTP. Protocol-owned upgrades such
+as Kafka PubSub use their own handshake. Upgraded connections retain their HTTP
 generation until the connection closes. `SIGHUP` re-reads static configuration
 but may change only `nginx_config.error_log_level`; invalid input or any other
 static difference leaves the process unchanged. Provider updates use atomic
 in-memory publication.
+
+HTTP upstream selection supports weighted round robin, consistent hashing,
+least connections, and EWMA within health and priority groups. Request-owned
+attempts release their load counters on completion, error, and retry; latency
+samples require an actual upstream response. Generation-owned clusters retain
+health probes and connection pools until their leases drain.
+
+HTTP/1 upstream pools apply static defaults and resource `keepalive_pool`
+overrides for idle capacity, idle expiry, and requests per connection. The
+request cap retires connections without interrupting response bodies or accepted
+upgrades. HTTP/2 and gRPC transports do not yet implement this request-count cap.
 
 Protocol-specific transports remain plugin owned:
 

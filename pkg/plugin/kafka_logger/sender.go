@@ -41,15 +41,14 @@ func (p *Plugin) newWriter(brokers []Broker) (*kafka.Writer, error) {
 		Async:        p.config.ProducerType == "async",
 		BatchSize:    p.config.ProducerBatchNum,
 		BatchBytes:   int64(p.config.ProducerBatchSize),
-		BatchTimeout: time.Duration(p.config.ProducerTimeLinger) * time.Millisecond,
+		BatchTimeout: time.Duration(p.config.ProducerTimeLinger) * time.Second,
 		WriteTimeout: time.Duration(p.config.Timeout) * time.Second,
 		ReadTimeout:  time.Duration(p.config.Timeout) * time.Second,
 	}
-	if mechanism != nil {
-		writer.Transport = &kafka.Transport{
-			DialTimeout: time.Duration(p.config.Timeout) * time.Second,
-			SASL:        mechanism,
-		}
+	writer.Transport = &kafka.Transport{
+		DialTimeout: time.Duration(p.config.Timeout) * time.Second,
+		MetadataTTL: time.Duration(p.config.MetaRefreshInterval) * time.Second,
+		SASL:        mechanism,
 	}
 
 	return writer, nil
@@ -110,6 +109,14 @@ func (s *kafkaGoSender) Send(ctx context.Context, message kafkaMessage) error {
 	})
 }
 
+func (s *kafkaGoSender) WriteMessages(ctx context.Context, messages ...kafka.Message) error {
+	return s.writer.WriteMessages(ctx, messages...)
+}
+
 func (s *kafkaGoSender) Close() error {
-	return s.writer.Close()
+	err := s.writer.Close()
+	if transport, ok := s.writer.Transport.(*kafka.Transport); ok {
+		transport.CloseIdleConnections()
+	}
+	return err
 }

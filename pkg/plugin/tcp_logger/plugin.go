@@ -248,8 +248,11 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	if len(p.config.LogFormat) == 0 {
+	if p.config.LogFormat == nil {
 		p.logFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.logFormat = nil
+		}
 	} else {
 		p.logFormat = p.config.LogFormat
 	}
@@ -292,7 +295,7 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
-	if len(p.logFormat) > 0 {
+	if p.logFormat != nil {
 		fields = base.ResolveLogFormat(p.logFormat, func(value string) any {
 			switch value {
 			case "$host":
@@ -314,12 +317,14 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	} else {
 		fields = base.BuildAccessLogFromSnapshot(snapshot, p.RouteID, p.ServerAddr)
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.logFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.logFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}

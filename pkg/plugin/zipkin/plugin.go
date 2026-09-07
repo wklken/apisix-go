@@ -37,6 +37,7 @@ type Plugin struct {
 
 	reportTimeout     time.Duration
 	maxPendingEntries int
+	setNgxVar         bool
 }
 
 const (
@@ -100,6 +101,12 @@ type spanState struct {
 	context b3Context
 	started time.Time
 	once    sync.Once
+
+	mu           sync.Mutex
+	childIDs     [4]string
+	rewriteEnded time.Time
+	proxyStarted time.Time
+	headerAt     time.Time
 }
 
 type zipkinEndpoint struct {
@@ -140,6 +147,9 @@ func (p *Plugin) Init() error {
 }
 
 func (p *Plugin) PostInit() error {
+	if effective := p.StaticConfig(); effective != nil {
+		p.setNgxVar, _ = effective.Config.PluginAttr[name]["set_ngx_var"].(bool)
+	}
 	if p.config.SpanVersion != 0 && p.config.SpanVersion != 1 && p.config.SpanVersion != 2 {
 		return fmt.Errorf("zipkin span_version %d is unsupported; only v1 and v2 are accepted", p.config.SpanVersion)
 	}
@@ -327,15 +337,55 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
 	}
 	injectB3(r, traceContext)
+	if p.setNgxVar {
+		if apisixctx.GetRequestVars(r) == nil {
+			r = apisixctx.WithRequestVars(r)
+		}
+		flags := "00"
+		if traceContext.Sampled == "1" {
+			flags = "01"
+		}
+		apisixctx.RegisterRequestVar(r, "$zipkin_trace_id", traceContext.TraceID)
+		apisixctx.RegisterRequestVar(r, "$zipkin_span_id", traceContext.SpanID)
+		apisixctx.RegisterRequestVar(r, "$zipkin_context_traceparent",
+			"00-"+traceContext.TraceID+"-"+traceContext.SpanID+"-"+flags)
+	}
 	started := lifecycle.StartedAt()
 	if started.IsZero() {
 		started = time.Now()
 	}
 	state := &spanState{context: traceContext, started: started}
+	if traceContext.Sampled == "1" {
+		ids, idErr := randomHex(rand.Reader, 32)
+		if idErr != nil {
+			http.Error(w, "failed to generate span ids", http.StatusInternalServerError)
+			return base.StopRequestWithSource(r, apisixctx.ResponseSourceAPISIX)
+		}
+		for i := range state.childIDs {
+			state.childIDs[i] = ids[i*16 : (i+1)*16]
+		}
+		state.rewriteEnded = time.Now()
+	}
 	r = r.WithContext(context.WithValue(r.Context(), spanStateContextKey{}, state))
 	if traceContext.Sampled != "1" {
 		return base.ContinueRequest(r)
 	}
+	r = apisixctx.WithBeforeProxyHookRegistration(r, apisixctx.BeforeProxyHookRegistration{
+		Owner: name,
+		Phase: "before_proxy",
+		Hook: func(request *http.Request) error {
+			state.mu.Lock()
+			if state.proxyStarted.IsZero() {
+				state.proxyStarted = time.Now()
+			}
+			state.mu.Unlock()
+			outbound := state.context
+			outbound.ParentSpanID = outbound.SpanID
+			outbound.SpanID = state.childIDs[0]
+			injectB3(request, outbound)
+			return nil
+		},
+	})
 	if !lifecycle.AddFinalizer(name, func() error {
 		return p.finishSpan(state, lifecycle, r)
 	}) {
@@ -366,18 +416,67 @@ func (p *Plugin) finishSpan(state *spanState, lifecycle *apisixctx.RequestLifecy
 		if status == 0 {
 			status = http.StatusOK
 		}
-		if !p.processor.Push(p.buildSpanWithSource(
+		root := p.buildSpanWithSource(
 			state.context,
 			request,
 			status,
 			state.started,
 			duration,
 			lifecycle.ResponseSource(),
-		)) {
-			logger.Errorf("failed to enqueue zipkin span to %s", p.config.Endpoint)
+		)
+		spans := p.spanTree(state, root, finished)
+		for _, span := range spans {
+			if !p.processor.Push(span) {
+				logger.Errorf("failed to enqueue zipkin span to %s", p.config.Endpoint)
+			}
 		}
 	})
 	return nil
+}
+
+// RunStreamingHeaderFilter also runs at the final commit of bounded responses.
+func (p *Plugin) RunStreamingHeaderFilter(r *http.Request, _ *base.StreamingResponseState) error {
+	if r == nil {
+		return nil
+	}
+	state, _ := r.Context().Value(spanStateContextKey{}).(*spanState)
+	if state == nil || state.context.Sampled != "1" {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.headerAt.IsZero() {
+		state.headerAt = time.Now()
+	}
+	return nil
+}
+
+func (p *Plugin) spanTree(state *spanState, root map[string]any, finished time.Time) []map[string]any {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	spans := []map[string]any{root}
+	child := func(index int, name, parent string, start, end time.Time) {
+		spans = append(spans, map[string]any{
+			"traceId": state.context.TraceID, "id": state.childIDs[index],
+			"parentId": parent, "name": name,
+			"timestamp": start.UnixMicro(), "duration": max(end.Sub(start).Microseconds(), 0),
+			"localEndpoint": root["localEndpoint"],
+		})
+	}
+	if p.config.SpanVersion == 1 {
+		child(2, "apisix.rewrite", state.context.SpanID, state.started, state.rewriteEnded)
+		if !state.proxyStarted.IsZero() {
+			child(3, "apisix.access", state.context.SpanID, state.rewriteEnded, state.proxyStarted)
+			child(0, "apisix.proxy", state.context.SpanID, state.proxyStarted, finished)
+			if !state.headerAt.IsZero() {
+				child(1, "apisix.body_filter", state.childIDs[0], state.headerAt, finished)
+			}
+		}
+	} else if !state.headerAt.IsZero() {
+		child(0, "apisix.proxy", state.context.SpanID, state.started, state.headerAt)
+		child(1, "apisix.response_span", state.context.SpanID, state.headerAt, finished)
+	}
+	return spans
 }
 
 func (p *Plugin) shouldSample() (bool, error) {

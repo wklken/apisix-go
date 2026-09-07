@@ -300,3 +300,23 @@ cases:
           headers: {Content-Type: application/json}
           body: '{"messages":[{"role":"user","content":"hello"}]}'
         output: {status: 200, body: {equals: hello world}}
+
+  - name: prepend-to-empty-object
+    config:
+      routes:
+        - id: decorator-empty-object
+          uri: /decorate
+          plugins:
+            ai-prompt-decorator:
+              prepend: [{role: system, content: only-prepend}]
+          upstream: {type: roundrobin, nodes: {'{{FIXTURE.primary.ADDR}}': 1}}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - body: {json_equals: '{"messages":[{"role":"system","content":"only-prepend"}]}'}
+        respond: [{status: 200, body: decorated}]
+    steps:
+      - name: empty-object-receives-message
+        input: {method: POST, path: /decorate, headers: {Content-Type: application/json}, body: '{}'}
+        output: {status: 200, body: {equals: decorated}}

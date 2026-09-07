@@ -48,7 +48,6 @@ func TestConvertURIRejectsUnsupportedPatterns(t *testing.T) {
 		"articles/*/comments",
 		"/articles/pre*post/comments",
 		"/articles/*/comments/*/replies",
-		"/articles/:id/*",
 		"/articles/:/comments",
 		"/articles/{id}/comments",
 		"/user/:id/:id",
@@ -252,7 +251,7 @@ func TestEmbeddedWildcardSiblingRoutesCoexist(t *testing.T) {
 	}
 }
 
-func TestEmbeddedWildcardOverlappingSuffixUsesLatestRegistration(t *testing.T) {
+func TestEmbeddedWildcardOverlappingSuffixUsesLongerPath(t *testing.T) {
 	t.Parallel()
 
 	for _, specificFirst := range []bool{true, false} {
@@ -260,7 +259,6 @@ func TestEmbeddedWildcardOverlappingSuffixUsesLatestRegistration(t *testing.T) {
 		want := http.StatusCreated
 		if specificFirst {
 			name = "specific-first"
-			want = http.StatusAccepted
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

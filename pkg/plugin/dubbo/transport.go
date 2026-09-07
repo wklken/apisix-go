@@ -52,7 +52,7 @@ type Result struct {
 
 // Attempt performs one transport attempt: dial, write the frame, and decode
 // the response.
-func Attempt(ctx context.Context, target string, cfg Config, frame []byte) Result {
+func Attempt(ctx context.Context, target string, cfg Config, frame []byte) (result Result) {
 	release := func() {}
 	if cfg.AcquireSlot != nil {
 		acquired, rel := cfg.AcquireSlot(ctx, target)
@@ -62,6 +62,8 @@ func Attempt(ctx context.Context, target string, cfg Config, frame []byte) Resul
 		release = rel
 	}
 	defer release()
+	finishBalancing := pxy.BeginProtocolAttempt(ctx)
+	defer func() { finishBalancing(result.Err == nil) }()
 
 	conn, err := (&net.Dialer{Timeout: cfg.ConnectTimeout}).DialContext(ctx, "tcp", target)
 	if err != nil {

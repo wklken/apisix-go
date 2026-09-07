@@ -76,6 +76,7 @@ type ErrorPage struct {
 	Body        string `json:"body,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
 	bodySet     bool
+	present     bool
 }
 
 func (p *Plugin) Init() error {
@@ -195,6 +196,9 @@ func applyDefaults(metadata *Metadata) {
 }
 
 func defaultErrorPage(page *ErrorPage, title string) {
+	if !page.present {
+		return
+	}
 	if page.ContentType == "" {
 		page.ContentType = "text/html"
 	}
@@ -220,6 +224,7 @@ func (page *ErrorPage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*page = ErrorPage(value)
+	page.present = true
 	_, page.bodySet = fields["body"]
 	return nil
 }

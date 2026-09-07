@@ -13,17 +13,17 @@ import (
 	"github.com/wklken/apisix-go/pkg/plugin/ai_protocols"
 )
 
-func TestForwardSSERejectsMalformedDataAfterFirstEvent(t *testing.T) {
+func TestForwardSSEPreservesMalformedDataAfterFirstEvent(t *testing.T) {
 	body := "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n" +
 		"data: {malformed\n\n"
 	response := httptest.NewRecorder()
 
 	_, err := ForwardSSE(response, strings.NewReader(body), ai_protocols.OpenAIChat, 0)
-	if err == nil || !strings.Contains(err.Error(), "invalid SSE data") {
-		t.Fatalf("ForwardSSE() error = %v, want malformed data error", err)
+	if err != nil {
+		t.Fatalf("ForwardSSE() error = %v", err)
 	}
-	if strings.Contains(response.Body.String(), "malformed") || !strings.Contains(response.Body.String(), "first") {
-		t.Fatalf("forwarded body = %q, want only validated first event", response.Body.String())
+	if response.Body.String() != body {
+		t.Fatalf("forwarded body = %q, want %q", response.Body.String(), body)
 	}
 }
 

@@ -52,11 +52,12 @@ type PluginConfig any
 //	    "scheme": "http"            # 跟上游通信时使用的 scheme，默认是 `http`
 //	}
 type Upstream struct {
-	Type    string       `json:"type,omitempty"`
-	Nodes   []Node       `json:"nodes,omitempty"`
-	Scheme  string       `json:"scheme,omitempty"`
-	Timeout Timeout      `json:"timeout"`
-	TLS     *UpstreamTLS `json:"tls,omitempty"`
+	Type          string                 `json:"type,omitempty"`
+	Nodes         []Node                 `json:"nodes,omitempty"`
+	Scheme        string                 `json:"scheme,omitempty"`
+	Timeout       Timeout                `json:"timeout"`
+	TLS           *UpstreamTLS           `json:"tls,omitempty"`
+	KeepalivePool *UpstreamKeepalivePool `json:"keepalive_pool,omitempty"`
 
 	DiscoveryType string `json:"discovery_type,omitempty"`
 	ServiceName   string `json:"service_name,omitempty"`
@@ -67,10 +68,11 @@ type Upstream struct {
 	Checks       map[string]any `json:"checks,omitempty"`
 	HashOn       string         `json:"hash_on,omitempty"`
 	Key          string         `json:"key,omitempty"`
-	PassHost     string         `json:"pass_host,omitempty"`
-	UpstreamHost string         `json:"upstream_host,omitempty"`
-	Name         string         `json:"name,omitempty"`
-	Desc         string         `json:"desc,omitempty"`
+	keySet       bool
+	PassHost     string `json:"pass_host,omitempty"`
+	UpstreamHost string `json:"upstream_host,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Desc         string `json:"desc,omitempty"`
 }
 
 func (s *Upstream) UnmarshalJSON(data []byte) error {
@@ -125,6 +127,7 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		{name: "scheme", raw: upstreamData["scheme"], dest: &s.Scheme},
 		{name: "timeout", raw: upstreamData["timeout"], dest: &s.Timeout},
 		{name: "tls", raw: upstreamData["tls"], dest: &s.TLS},
+		{name: "keepalive_pool", raw: upstreamData["keepalive_pool"], dest: &s.KeepalivePool},
 		{name: "discovery_type", raw: upstreamData["discovery_type"], dest: &s.DiscoveryType},
 		{name: "service_name", raw: upstreamData["service_name"], dest: &s.ServiceName},
 		{name: "retries", raw: upstreamData["retries"], dest: &s.Retries},
@@ -145,12 +148,18 @@ func (s *Upstream) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	if raw := upstreamData["key"]; raw != nil && string(raw) != "null" {
+		s.keySet = true
+	}
 	if raw := upstreamData["retries"]; raw != nil {
 		s.retriesSet = true
 	}
 
 	return nil
 }
+
+// KeyConfigured preserves an explicitly empty vars_combinations hash template.
+func (s Upstream) KeyConfigured() bool { return s.keySet || s.Key != "" }
 
 // RetriesConfigured reports whether retries was explicitly present, including zero.
 func (s Upstream) RetriesConfigured() bool {
@@ -180,6 +189,26 @@ type Timeout struct {
 	Connect float64 `json:"connect,omitempty"`
 	Send    float64 `json:"send,omitempty"`
 	Read    float64 `json:"read,omitempty"`
+}
+
+// UpstreamKeepalivePool carries the per-peer idle pool settings.
+type UpstreamKeepalivePool struct {
+	Size        int     `json:"size"`
+	IdleTimeout float64 `json:"idle_timeout"`
+	Requests    int     `json:"requests"`
+}
+
+func (p *UpstreamKeepalivePool) UnmarshalJSON(data []byte) error {
+	type pool UpstreamKeepalivePool
+	decoded := pool{Size: 320, IdleTimeout: 60, Requests: 1000}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.Size < 1 || decoded.IdleTimeout < 0 || decoded.Requests < 1 {
+		return fmt.Errorf("invalid upstream keepalive_pool size, idle_timeout or requests")
+	}
+	*p = UpstreamKeepalivePool(decoded)
+	return nil
 }
 
 // UpstreamTLS contains APISIX upstream TLS fields used by HTTPS/grpcs and

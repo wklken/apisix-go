@@ -100,16 +100,8 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 	if err != nil {
 		return LogExecutor{}, err
 	}
-	bindings = resolved
+	bindings = filterPreferRouteBindings(resolved)
 	logBindings := make([]LogBinding, 0)
-	routePrometheus := false
-	for _, binding := range bindings {
-		if binding.Descriptor.Factory == "prometheus" &&
-			binding.Scope != ScopeSystem && binding.Scope != ScopeGlobal {
-			routePrometheus = true
-			break
-		}
-	}
 	globalPrometheusAdded := false
 	for _, binding := range bindings {
 		if !binding.logPolicySet {
@@ -134,7 +126,7 @@ func NewLogExecutorFromBindings(bindings []Binding) (LogExecutor, error) {
 		}
 		if descriptor.Factory == "prometheus" {
 			if binding.Scope == ScopeGlobal || binding.Scope == ScopeSystem {
-				if routePrometheus || globalPrometheusAdded {
+				if globalPrometheusAdded {
 					continue
 				}
 				globalPrometheusAdded = true

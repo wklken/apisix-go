@@ -91,6 +91,7 @@ type Descriptor struct {
 	requestStage          RequestStage
 	authenticatesConsumer bool
 	preAuthentication     bool
+	preferRoute           bool
 	response              ResolvedResponsePhases
 	responseCapability    ResponseCapability
 	finalizer             FinalizerKind
@@ -128,6 +129,7 @@ func DescriptorForFactory(factory string) (Descriptor, error) {
 		InstanceScope:       entry.InstanceScope,
 		requestStage:        requestStageForPhases(entry.Phases),
 		preAuthentication:   entry.PreAuthentication,
+		preferRoute:         entry.PreferRoute,
 		conditionalTerminal: entry.ConditionalTerminal,
 	}, nil
 }

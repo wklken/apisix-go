@@ -321,7 +321,6 @@ func TestAWSLambdaAPIKeyPrecedenceAndGenerationIsolation(t *testing.T) {
 	}{{"n", n, "api-n"}, {"n+1", next, "api-next"}} {
 		t.Run(test.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "http://lambda.invalid", strings.NewReader("body"))
-			req.Header.Set("X-Api-Key", "client-key")
 			req.Header.Set("Authorization", "Bearer client-token")
 			test.p.processRequest(req, function_upstream.Config{})
 			if got := req.Header.Get("X-Api-Key"); got != test.want {
@@ -382,7 +381,7 @@ func TestAWSLambdaIAMSignatureGenerationIsolationAndHeaderCleanup(t *testing.T) 
 				http.MethodPost, "http://lambda.invalid/path?b=two&a=one", strings.NewReader("payload"),
 			)
 			for key, value := range map[string]string{
-				"Authorization": "old-authorization", "X-Amz-Date": "old-date",
+				"X-Amz-Date":       "old-date",
 				"X-Amz-Credential": "old-credential", "X-Amz-Signature": "old-signature",
 				"X-Amz-SignedHeaders": "old-headers", "X-Amz-Security-Token": "old-token",
 				"x-aMz-CoNtEnT-sHa256": "old-content-digest",
@@ -394,8 +393,8 @@ func TestAWSLambdaIAMSignatureGenerationIsolationAndHeaderCleanup(t *testing.T) 
 			if got := req.Header.Get("Authorization"); !strings.Contains(got, want) {
 				t.Fatalf("Authorization = %q, want %q", got, want)
 			}
-			if req.URL.RawQuery != "a=one&b=two" {
-				t.Fatalf("signed query = %q, want canonical wire order", req.URL.RawQuery)
+			if req.URL.RawQuery != "b=two&a=one" {
+				t.Fatalf("signed query = %q, want original wire query", req.URL.RawQuery)
 			}
 			for _, key := range []string{
 				"X-Amz-Credential", "X-Amz-Signature", "X-Amz-SignedHeaders",
@@ -563,7 +562,7 @@ func TestRunRequestPhasePublishesUpstreamSource(t *testing.T) {
 	}
 }
 
-func TestHandlerOverwritesClientAWSAPIKey(t *testing.T) {
+func TestHandlerPreservesClientAWSAPIKey(t *testing.T) {
 	var gotAPIKey string
 	lambda := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAPIKey = r.Header.Get("X-Api-Key")
@@ -583,12 +582,12 @@ func TestHandlerOverwritesClientAWSAPIKey(t *testing.T) {
 	if res.Code != http.StatusNoContent {
 		t.Fatalf("response code = %d, want %d", res.Code, http.StatusNoContent)
 	}
-	if gotAPIKey != "configured-key" {
-		t.Fatalf("X-Api-Key = %q, want configured-key", gotAPIKey)
+	if gotAPIKey != "client-key" {
+		t.Fatalf("X-Api-Key = %q, want client-key", gotAPIKey)
 	}
 }
 
-func TestHandlerReplacesClientIAMCredentialHeaders(t *testing.T) {
+func TestHandlerPreservesClientIAMCredentialHeaders(t *testing.T) {
 	oldNow := now
 	now = func() time.Time {
 		return time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -625,16 +624,13 @@ func TestHandlerReplacesClientIAMCredentialHeaders(t *testing.T) {
 	if got == nil {
 		t.Fatal("lambda did not receive request")
 	}
-	wantCredential := "AWS4-HMAC-SHA256 Credential=AKID/20200102/us-west-2/lambda/aws4_request"
-	if authorization := got.Get("Authorization"); !strings.Contains(authorization, wantCredential) {
-		t.Fatalf("Authorization = %q, want configured credential %q", authorization, wantCredential)
-	}
-	if got.Get("X-Amz-Date") != "20200102T030405Z" {
-		t.Fatalf("X-Amz-Date = %q, want signer value", got.Get("X-Amz-Date"))
-	}
-	for _, name := range []string{"X-Amz-Credential", "X-Amz-Signature", "X-Amz-SignedHeaders", "X-Amz-Security-Token"} {
-		if got.Get(name) != "" {
-			t.Errorf("%s = %q, want client credential removed", name, got.Get(name))
+	for name, expected := range map[string]string{
+		"Authorization": "Bearer client-token", "X-Amz-Date": "19990101T000000Z",
+		"X-Amz-Credential": "client-credential", "X-Amz-Signature": "client-signature",
+		"X-Amz-SignedHeaders": "host", "X-Amz-Security-Token": "client-session",
+	} {
+		if got.Get(name) != expected {
+			t.Errorf("%s = %q, want preserved %q", name, got.Get(name), expected)
 		}
 	}
 	if got.Get("X-Trace") != "keep" {
@@ -716,8 +712,8 @@ func TestHandlerSignsIAMRequestWithAWSV4(t *testing.T) {
 	if gotAmzDate != "20200102T030405Z" {
 		t.Fatalf("X-Amz-Date = %q, want fixed signing date", gotAmzDate)
 	}
-	if gotQuery != "a=one&b=two" {
-		t.Fatalf("lambda query = %q, want canonical wire order", gotQuery)
+	if gotQuery != "b=two&a=one" {
+		t.Fatalf("lambda query = %q, want original wire query", gotQuery)
 	}
 	wantCredential := "AWS4-HMAC-SHA256 Credential=AKID/20200102/us-west-2/lambda/aws4_request"
 	if !strings.Contains(gotAuthorization, wantCredential) {

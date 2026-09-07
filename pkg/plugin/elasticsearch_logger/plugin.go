@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net"
 	"net/http"
@@ -486,11 +487,10 @@ func (p *Plugin) PostInit() error {
 	p.BatchProcessor = processor
 	p.secretMu.Unlock()
 
-	// Version detection runs once per stable config at initialization, reusing
-	// the pooled client instead of building a transport per attempt.
+	// Warm the version cache; a failed probe is retried before delivery.
 	if endpoint := p.endpointAddr(); endpoint != "" {
 		err := p.withClient(endpoint, func(client *elasticsearch.BaseClient) error {
-			p.fetchAndUpdateVersion(client)
+			p.fetchAndUpdateVersion(context.Background(), client)
 			return nil
 		})
 		if err != nil {
@@ -504,12 +504,14 @@ func (p *Plugin) PostInit() error {
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	fields := elasticsearchSnapshotLogFields(snapshot, p.LogFormat)
 	base.ApplySnapshotMatchedRouteFields(fields, snapshot, p.RouteID)
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
@@ -604,72 +606,38 @@ func (p *Plugin) SendBatch(ctx context.Context, entries []map[string]any, _ int)
 	if endpoint == "" {
 		return 0, nil
 	}
-	body, err := p.bulkBodyEntries(entries)
-	if err != nil {
-		return 0, fmt.Errorf("failed to marshal Elasticsearch bulk body: %w", err)
-	}
-	firstFail := 0
-	sendCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.Timeout)*time.Second)
-	defer cancel()
-	err = p.withClient(endpoint, func(client *elasticsearch.BaseClient) error {
+	err := p.withClient(endpoint, func(client *elasticsearch.BaseClient) error {
+		probeCtx, cancelProbe := context.WithTimeout(ctx, time.Duration(p.config.Timeout)*time.Second)
+		p.fetchAndUpdateVersion(probeCtx, client)
+		cancelProbe()
+		body, err := p.bulkBodyEntries(entries)
+		if err != nil {
+			return fmt.Errorf("failed to marshal Elasticsearch bulk body: %w", err)
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, time.Duration(p.config.Timeout)*time.Second)
+		defer cancel()
+		headers := http.Header{
+			"Content-Type": {"application/x-ndjson"},
+			"Accept":       {"application/vnd.elasticsearch+json"},
+		}
+		maps.Copy(headers, headerFromMapWithoutExactAuthorization(p.config.Headers))
 		resp, sendErr := (esapi.BulkRequest{
 			Body:   bytes.NewReader(body),
-			Header: http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Header: headers,
 		}).Do(sendCtx, client)
 		if sendErr != nil {
 			return fmt.Errorf("failed to send log message: %w", sendErr)
 		}
 		defer func() { _ = resp.Body.Close() }()
-		if resp.IsError() {
-			return fmt.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			return fmt.Errorf("failed to read Elasticsearch bulk response: %w", err)
 		}
-		var resultErr error
-		firstFail, resultErr = p.bulkResultFailure(resp.Body)
-		if resultErr != nil {
-			return fmt.Errorf("failed to deliver Elasticsearch bulk: %w", resultErr)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("failed to send log message: elasticsearch returned status %s", resp.Status())
 		}
 		return nil
 	})
-	if err != nil {
-		return firstFail, err
-	}
-	return firstFail, nil
-}
-
-// bulkResultFailure inspects a 2xx bulk response and returns the first failing
-// item as a 1-based index. A bulk operation is failing when its status is 300
-// or higher or it carries an error payload. A response that reports errors but
-// contains no decodable failing item is treated as a malformed result.
-func (p *Plugin) bulkResultFailure(body io.Reader) (int, error) {
-	var result struct {
-		Errors bool                         `json:"errors"`
-		Items  []map[string]json.RawMessage `json:"items"`
-	}
-	if err := json.NewDecoder(body).Decode(&result); err != nil {
-		return 1, fmt.Errorf("failed to decode Elasticsearch bulk result: %w", err)
-	}
-	for index, item := range result.Items {
-		for _, operationJSON := range item {
-			var operation struct {
-				Status int             `json:"status"`
-				Error  json.RawMessage `json:"error"`
-			}
-			if err := json.Unmarshal(operationJSON, &operation); err != nil {
-				return index + 1, fmt.Errorf("failed to decode Elasticsearch bulk item %d: %w", index+1, err)
-			}
-			if operation.Status >= 300 || bulkItemError(operation.Error) {
-				return index + 1, fmt.Errorf("elasticsearch bulk item %d failed: status %d", index+1, operation.Status)
-			}
-		}
-	}
-	if result.Errors {
-		return 1, fmt.Errorf("elasticsearch bulk result reported errors without a failing item")
-	}
-	return 0, nil
-}
-
-func bulkItemError(raw json.RawMessage) bool {
-	return len(raw) > 0 && string(raw) != "null"
+	return 0, err
 }
 
 func (p *Plugin) endpointAddr() string {
@@ -937,14 +905,14 @@ func (p *Plugin) bulkBodyEntry(log map[string]any) ([]byte, error) {
 	return body, nil
 }
 
-func (p *Plugin) fetchAndUpdateVersion(client *elasticsearch.BaseClient) {
+func (p *Plugin) fetchAndUpdateVersion(ctx context.Context, client *elasticsearch.BaseClient) {
 	p.versionMu.Lock()
 	defer p.versionMu.Unlock()
 	if p.esVersion != "" {
 		return
 	}
 
-	version, err := p.getMajorVersion(client)
+	version, err := p.getMajorVersion(ctx, client)
 	if err != nil {
 		logger.Errorf("failed to get Elasticsearch version: %s", err)
 		return
@@ -958,8 +926,8 @@ func (p *Plugin) elasticsearchVersion() string {
 	return p.esVersion
 }
 
-func (p *Plugin) getMajorVersion(client *elasticsearch.BaseClient) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.Timeout)*time.Second)
+func (p *Plugin) getMajorVersion(ctx context.Context, client *elasticsearch.BaseClient) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(p.config.Timeout)*time.Second)
 	defer cancel()
 	resp, err := (esapi.InfoRequest{}).Do(ctx, client)
 	if err != nil {

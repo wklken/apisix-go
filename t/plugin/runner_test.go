@@ -343,18 +343,11 @@ func TestRenderRuntimeConfigForcesStandaloneIsolation(t *testing.T) {
 		t.Fatalf("https_port = %v, want 10443", got)
 	}
 	plugins, ok := config["plugins"].([]any)
-	if !ok {
-		t.Fatalf("plugins = %#v, want [prometheus] for request metrics initialization", config["plugins"])
+	if !ok || len(plugins) != 0 {
+		t.Fatalf("plugins = %#v, want explicit empty list", config["plugins"])
 	}
-	if len(plugins) != 1 || plugins[0] != "prometheus" {
-		t.Fatalf("plugins = %#v, want [prometheus] for request metrics initialization", plugins)
-	}
-	prometheus, ok := pluginAttr["prometheus"].(map[string]any)
-	if !ok {
-		t.Fatalf("plugin_attr.prometheus = %#v, want map", pluginAttr["prometheus"])
-	}
-	if got := prometheus["enable_export_server"]; got != false {
-		t.Fatalf("prometheus.enable_export_server = %v, want false", got)
+	if _, ok := pluginAttr["prometheus"]; ok {
+		t.Fatal("undeclared Prometheus attributes were injected")
 	}
 }
 
@@ -608,7 +601,7 @@ func TestRenderRuntimeConfigPreservesRequiredPlugins(t *testing.T) {
 		t.Fatalf("unmarshal runtime config: %v", err)
 	}
 	plugins := config["plugins"].([]any)
-	if got, want := fmt.Sprint(plugins), "[node-status prometheus]"; got != want {
+	if got, want := fmt.Sprint(plugins), "[node-status]"; got != want {
 		t.Fatalf("plugins = %s, want %s", got, want)
 	}
 	apisix := config["apisix"].(map[string]any)
@@ -682,7 +675,7 @@ func TestRenderRuntimeConfigDerivesStandalonePlugins(t *testing.T) {
 	}
 	plugins := config["plugins"].([]any)
 	wantPlugins := "[error-log-logger key-auth basic-auth consumer-restriction jwt-auth limit-count limit-req multi-auth " +
-		"proxy-rewrite request-id response-rewrite workflow prometheus]"
+		"proxy-rewrite request-id response-rewrite workflow]"
 	if got := fmt.Sprint(plugins); got != wantPlugins {
 		t.Fatalf("plugins = %s, want %s", got, wantPlugins)
 	}
@@ -3146,20 +3139,7 @@ func renderRuntimeConfig(port int, overrides map[string]any) ([]byte, error) {
 			plugins = append(plugins, pluginName)
 		}
 	}
-	prometheusConfigured := false
-	for _, pluginName := range plugins {
-		if pluginName == "prometheus" {
-			prometheusConfigured = true
-			break
-		}
-	}
-	if !prometheusConfigured {
-		plugins = append(plugins, "prometheus")
-	}
 	config["plugins"] = plugins
-	pluginAttr := ensureMap(config, "plugin_attr")
-	prometheus := ensureMap(pluginAttr, "prometheus")
-	prometheus["enable_export_server"] = false
 	return yaml.Marshal(config)
 }
 
@@ -5084,7 +5064,11 @@ func runHTTPInput(
 	}
 	var responseBody []byte
 	if len(output.Chunks) > 0 {
-		responseBody, err = readAndAssertResponseChunks(t, response.Body, output.Chunks)
+		firstDeadline := time.Time{}
+		if output.FirstChunkLessThan > 0 {
+			firstDeadline = started.Add(output.FirstChunkLessThan)
+		}
+		responseBody, err = readAndAssertResponseChunks(t, response.Body, output.Chunks, firstDeadline)
 	} else {
 		responseBody, err = io.ReadAll(response.Body)
 	}
@@ -5116,7 +5100,12 @@ type responseSSEFrame struct {
 	err   error
 }
 
-func readAndAssertResponseChunks(t *testing.T, body io.Reader, expected []Matcher) ([]byte, error) {
+func readAndAssertResponseChunks(
+	t *testing.T,
+	body io.Reader,
+	expected []Matcher,
+	firstDeadlines ...time.Time,
+) ([]byte, error) {
 	t.Helper()
 	done := make(chan struct{})
 	defer close(done)
@@ -5132,6 +5121,10 @@ func readAndAssertResponseChunks(t *testing.T, body io.Reader, expected []Matche
 			}
 			if frame.err != nil {
 				return nil, frame.err
+			}
+			if i == 0 && len(firstDeadlines) > 0 && !firstDeadlines[0].IsZero() &&
+				!time.Now().Before(firstDeadlines[0]) {
+				return nil, errors.New("first response SSE frame exceeded first_chunk_less_than from request start")
 			}
 			_, _ = full.WriteString(frame.value)
 			if err := matcher.match(frame.value, true); err != nil {
@@ -5843,6 +5836,40 @@ func assertHeaders(t *testing.T, scope string, expected map[string]Matcher, actu
 		}
 		if err := matcher.matchHeader(value, values); err != nil {
 			t.Errorf("%s header %s: %v", scope, name, err)
+		}
+	}
+}
+
+func TestRenderRuntimeConfigPreservesPrometheusTopology(t *testing.T) {
+	for _, overrides := range []map[string]any{
+		{},
+		{"plugins": []any{"prometheus"}},
+		{"plugins": []any{"prometheus"}, "plugin_attr": map[string]any{"prometheus": map[string]any{"enable_export_server": true}}},
+	} {
+		before, err := cloneConfigMap(overrides)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rendered, err := renderRuntimeConfig(19080, overrides)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := yaml.Unmarshal(rendered, &got); err != nil {
+			t.Fatal(err)
+		}
+		wantPlugins := before["plugins"]
+		if wantPlugins == nil {
+			wantPlugins = []any{}
+		}
+		if !reflect.DeepEqual(got["plugins"], wantPlugins) {
+			t.Errorf("plugins=%v want=%v", got["plugins"], wantPlugins)
+		}
+		if !reflect.DeepEqual(got["plugin_attr"], before["plugin_attr"]) {
+			t.Errorf("plugin_attr=%v want=%v", got["plugin_attr"], before["plugin_attr"])
+		}
+		if !reflect.DeepEqual(overrides, before) {
+			t.Errorf("input mutated: %v", overrides)
 		}
 	}
 }

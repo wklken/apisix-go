@@ -103,7 +103,9 @@ const schema = `
       "type": "array",
       "minItems": 1,
       "items": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^[ -~]*$",
+        "not": {"pattern": "^tag="}
       },
       "default": ["apisix"]
     },
@@ -359,10 +361,13 @@ func (p *Plugin) PostInit() error {
 		p.config.InactiveTimeout = int(logger_batch.DefaultInactiveTimeout / time.Second)
 	}
 
-	if len(p.config.LogFormat) > 0 {
+	if p.config.LogFormat != nil {
 		p.LogFormat = p.config.LogFormat
 	} else {
 		p.LogFormat = metadata.LogFormat
+		if len(metadata.LogFormat) == 0 {
+			p.LogFormat = nil
+		}
 	}
 	p.SetLogCapturePolicy(
 		p.config.IncludeReqBody, p.config.IncludeRespBody,
@@ -371,7 +376,8 @@ func (p *Plugin) PostInit() error {
 	)
 
 	httpClient := &http.Client{
-		Timeout: time.Duration(p.config.Timeout) * time.Millisecond,
+		Timeout:       time.Duration(p.config.Timeout) * time.Millisecond,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: !*p.config.SSLVerify},
 		},
@@ -404,7 +410,7 @@ func (p *Plugin) PostInit() error {
 
 func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	var fields map[string]any
-	if len(p.LogFormat) > 0 {
+	if p.LogFormat != nil {
 		fields = resolveLogglySnapshotFormat(snapshot, p.LogFormat)
 		if routeID := fmt.Sprint(base.SnapshotValue(snapshot, "$route_id")); routeID != "" {
 			fields["route_id"] = routeID
@@ -412,12 +418,14 @@ func (p *Plugin) RunLogPhase(snapshot base.LogSnapshot) error {
 	} else {
 		fields = base.BuildAccessLogFromSnapshot(snapshot, "")
 	}
-	if p.config.IncludeReqBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeReqBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeReqBodyExpr) {
 		if body := base.SnapshotRequestBody(snapshot, p.config.MaxReqBodyBytes); body != "" {
 			base.NestedLogMap(fields, "request")["body"] = body
 		}
 	}
-	if p.config.IncludeRespBody && base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
+	if p.LogFormat == nil && p.config.IncludeRespBody &&
+		base.SnapshotExpressionMatches(snapshot, p.config.IncludeRespBodyExpr) {
 		if body := base.SnapshotResponseBody(snapshot, p.config.MaxRespBodyBytes); body != "" {
 			base.NestedLogMap(fields, "response")["body"] = body
 		}
@@ -630,7 +638,7 @@ func (p *Plugin) sendHTTPBulk(ctx context.Context, payload []byte, token string)
 	if err != nil {
 		return fmt.Errorf("failed to send loggly bulk message: %w", err)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to send loggly bulk message: status %d", resp.StatusCode)
 	}
 	return nil
@@ -680,7 +688,7 @@ func (p *Plugin) buildMessage(log map[string]any, token string) string {
 
 	return strings.Join([]string{
 		fmt.Sprintf("<%d>1", 8+messageSeverity(p.config.Severity, p.config.SeverityMap, log)),
-		time.Now().UTC().Format(time.RFC3339Nano),
+		time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 		hostname,
 		"apisix",
 		fmt.Sprint(os.Getpid()),

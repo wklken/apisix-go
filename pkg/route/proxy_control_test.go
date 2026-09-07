@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +28,11 @@ func TestBufferRequestBodyIfNeededBuffersWhenEnabled(t *testing.T) {
 	req.ContentLength = int64(len("upload-body"))
 	req = proxy_control.WithRequestBuffering(req, true)
 
-	if err := bufferRequestBodyIfNeeded(httptest.NewRecorder(), req); err != nil {
+	cleanup, err := bufferRequestBodyIfNeeded(req)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
 		t.Fatalf("bufferRequestBodyIfNeeded() error = %v", err)
 	}
 
@@ -59,7 +65,11 @@ func TestBufferRequestBodyIfNeededSkipsWhenDisabled(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/upload", original)
 	req = proxy_control.WithRequestBuffering(req, false)
 
-	if err := bufferRequestBodyIfNeeded(httptest.NewRecorder(), req); err != nil {
+	cleanup, err := bufferRequestBodyIfNeeded(req)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
 		t.Fatalf("bufferRequestBodyIfNeeded() error = %v", err)
 	}
 
@@ -71,38 +81,16 @@ func TestBufferRequestBodyIfNeededSkipsWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestBufferRequestBodyIfNeededRejectsBodyAboveReplayLimit(t *testing.T) {
-	body := bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit+1))
-	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", bytes.NewReader(body))
-	request = proxy_control.WithRequestBuffering(request, true)
-	recorder := httptest.NewRecorder()
-	err := bufferRequestBodyIfNeeded(recorder, request)
+func TestBufferRequestBodyPreservesConfiguredClientLimit(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("too big"))
+	request.Body = http.MaxBytesReader(httptest.NewRecorder(), request.Body, 3)
+	cleanup, err := bufferRequestBodyIfNeeded(request)
+	if cleanup != nil {
+		defer cleanup()
+	}
 	var maxBytesErr *http.MaxBytesError
 	if !errors.As(err, &maxBytesErr) {
-		t.Fatalf("bufferRequestBodyIfNeeded() error = %v, want *http.MaxBytesError", err)
-	}
-}
-
-func TestProxyHandlerRejectsOversizedBufferedRequestWith413(t *testing.T) {
-	handler := testPreparedProxyHandler(t,
-		resource.Route{
-			ID: "oversized-buffered-request",
-			Upstream: resource.Upstream{
-				Scheme: "http",
-				Nodes:  []resource.Node{{Host: "127.0.0.1", Port: 1, Weight: 1}},
-			},
-		},
-		resource.Service{}, testEffectiveConfig(),
-	)
-
-	body := bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit+1))
-	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/upload", bytes.NewReader(body))
-	request = proxy_control.WithRequestBuffering(request, true)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusRequestEntityTooLarge)
+		t.Fatalf("error=%v want configured body limit rejection", err)
 	}
 }
 
@@ -307,4 +295,154 @@ type routeRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f routeRoundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestDefaultRequestBufferingMakesIncomingPostReplayable(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/", &countingReadCloser{Reader: strings.NewReader("replay-body")})
+	if request.GetBody != nil {
+		t.Fatal("fixture already replayable")
+	}
+	cleanup, err := bufferRequestBodyIfNeeded(request)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.GetBody == nil {
+		t.Fatal("default buffering did not make POST replayable")
+	}
+	var attempts int
+	retried := pxy.WithRetries(request, 1, func(*http.Request) bool { return true })
+	response, err := pxy.NewRetryTransport(routeRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("dial failed")
+		}
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil || string(body) != "replay-body" {
+			t.Fatalf("retry body=%q error=%v", body, readErr)
+		}
+		return &http.Response{StatusCode: 204, Body: http.NoBody}, nil
+	})).RoundTrip(retried)
+	if err != nil || response == nil || response.StatusCode != 204 || attempts != 2 {
+		t.Fatalf("attempts=%d response=%v error=%v", attempts, response, err)
+	}
+}
+
+func TestBufferedRequestAboveMemoryThresholdRemainsReplayable(t *testing.T) {
+	payload := bytes.Repeat([]byte("z"), int(proxy_control.DefaultRequestBufferingLimit)+1)
+	request := proxy_control.WithRequestBuffering(
+		httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(payload)),
+		true,
+	)
+	cleanup, err := bufferRequestBodyIfNeeded(request)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("large request was rejected: %v", err)
+	}
+	if request.GetBody == nil {
+		t.Fatal("large body is not replayable")
+	}
+	replay, err := request.GetBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = replay.Close() }()
+	got, err := io.ReadAll(replay)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("replay len=%d error=%v", len(got), err)
+	}
+}
+
+func TestDefaultAndLargeBufferedPostRetryBeforeSend(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		disabled bool
+		size     int
+	}{{"default", false, 12}, {"spooled", false, int(proxy_control.DefaultRequestBufferingLimit) + 1}, {"disabled", true, 12}} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := strings.Repeat("x", test.size)
+			var received string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				received = string(body)
+				w.WriteHeader(204)
+			}))
+			defer upstream.Close()
+			route := testRouteFromJSON(
+				t,
+				fmt.Sprintf(
+					`{"id":"post-retry","uri":"/","upstream":{"nodes":{"127.0.0.1:1":1,%q:1}}}`,
+					upstream.Listener.Addr().String(),
+				),
+			)
+			handler := testPreparedProxyHandler(t, route, resource.Service{}, testEffectiveConfig())
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"http://gateway.test/",
+				&countingReadCloser{Reader: strings.NewReader(payload)},
+			)
+			if test.disabled {
+				request = proxy_control.WithRequestBuffering(request, false)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if test.disabled {
+				if response.Code != 502 || received != "" {
+					t.Fatalf("disabled status=%d received=%d", response.Code, len(received))
+				}
+				return
+			}
+			if response.Code != 204 || received != payload {
+				t.Fatalf(
+					"status=%d received=%d want=%d body=%s",
+					response.Code,
+					len(received),
+					len(payload),
+					response.Body.String(),
+				)
+			}
+		})
+	}
+}
+
+func TestRequestBodySpoolIsUnlinkedAndClosedWithOwner(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("TMPDIR", directory)
+	payload := bytes.Repeat([]byte("x"), int(proxy_control.DefaultRequestBufferingLimit)+1)
+	request := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(payload))
+	cleanup, err := bufferRequestBodyIfNeeded(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup == nil {
+		t.Fatal("spooled body has no cleanup owner")
+	}
+	defer cleanup()
+	files, err := os.ReadDir(directory)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("spool directory=%v error=%v", files, err)
+	}
+	replay, err := request.GetBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(replay)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("replay len=%d error=%v", len(got), err)
+	}
+	cleanup()
+	replay, err = request.GetBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(replay); err == nil {
+		t.Fatal("retired spool descriptor is still readable")
+	}
 }

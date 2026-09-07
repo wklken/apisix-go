@@ -1,0 +1,41 @@
+cases:
+  - name: disabled-sse-first-frame-arrives-before-completion
+    config:
+      routes:
+        - id: streaming-buffering-disabled
+          uri: /stream
+          plugins:
+            proxy-buffering:
+              disable_proxy_buffering: true
+          upstream:
+            nodes: {'{{UPSTREAM_ADDR}}': 1}
+    input:
+      path: /stream
+    upstream:
+      respond:
+        status: 200
+        headers: {Content-Type: text/event-stream}
+        chunks:
+          - "data: first\n\n"
+          - "data: second\n\n"
+          - "data: third\n\n"
+          - "data: fourth\n\n"
+          - "data: fifth\n\n"
+          - "data: sixth\n\n"
+          - "data: seventh\n\n"
+          - "data: [DONE]\n\n"
+        chunk_delay: 200ms
+    output:
+      status: 200
+      headers: {Content-Type: {equals: text/event-stream}}
+      first_chunk_less_than: 750ms
+      elapsed_at_least: 1400ms
+      chunks:
+        - {equals: "data: first\n\n"}
+        - {equals: "data: second\n\n"}
+        - {equals: "data: third\n\n"}
+        - {equals: "data: fourth\n\n"}
+        - {equals: "data: fifth\n\n"}
+        - {equals: "data: sixth\n\n"}
+        - {equals: "data: seventh\n\n"}
+        - {equals: "data: [DONE]\n\n"}

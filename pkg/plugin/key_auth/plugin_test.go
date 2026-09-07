@@ -149,6 +149,24 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestHandlerRejectsEmptyHeaderAndDoesNotFallThroughToQuery(t *testing.T) {
+	addKeyAuthConsumer(t, "query-user", "query-key")
+	p := newTestPlugin(t, Config{})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?apikey=query-key", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("apikey", "")
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("empty header must not fall through to a valid query key")
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusUnauthorized, rr.Body.String())
+	}
+}
+
 func TestHandlerAcceptsHeaderKeyAndAttachesConsumer(t *testing.T) {
 	addKeyAuthConsumer(t, "key-user", "header-key")
 	p := newTestPlugin(t, Config{})

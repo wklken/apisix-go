@@ -1,9 +1,10 @@
 cases:
   - name: default-node-status
     runtime:
-      plugins: [node-status]
+      plugins: [node-status, public-api]
     config:
-      routes: []
+      routes:
+        - {id: node-status-public-api, uri: /apisix/status, plugins: {public-api: {}}}
     steps:
       - name: status
         input:
@@ -23,9 +24,10 @@ cases:
     runtime:
       apisix:
         id: user-set-apisix-instance-id-A
-      plugins: [node-status]
+      plugins: [node-status, public-api]
     config:
-      routes: []
+      routes:
+        - {id: node-status-public-api, uri: /apisix/status, plugins: {public-api: {}}}
     input:
       path: /apisix/status
     output:

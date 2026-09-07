@@ -49,11 +49,12 @@ const (
 )
 
 type (
-	authenticationStateKey     struct{}
-	requestHeaderProvenanceKey struct{}
-	forwardedForCandidateKey   struct{}
-	matchedRouteKey            struct{}
-	apisixConfigIdentityKey    struct{}
+	authenticationStateKey        struct{}
+	authSuccessWithoutConsumerKey struct{}
+	requestHeaderProvenanceKey    struct{}
+	forwardedForCandidateKey      struct{}
+	matchedRouteKey               struct{}
+	apisixConfigIdentityKey       struct{}
 )
 
 type apisixConfigIdentitySuffix struct {
@@ -224,6 +225,24 @@ func AuthenticationStateFrom(r *http.Request) (AuthenticationState, bool) {
 	}
 }
 
+// WithAuthSuccessWithoutConsumer records that an auth plugin authenticated the
+// request without attaching a consumer, matching APISIX jwe-decrypt rewrite.
+func WithAuthSuccessWithoutConsumer(r *http.Request, source string) *http.Request {
+	if r == nil || source == "" {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), authSuccessWithoutConsumerKey{}, source))
+}
+
+// AuthSuccessWithoutConsumer reports a consumer-less auth win and its source.
+func AuthSuccessWithoutConsumer(r *http.Request) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	source, ok := r.Context().Value(authSuccessWithoutConsumerKey{}).(string)
+	return source, ok && source != ""
+}
+
 // NewAuthenticationProbeRequest makes an isolated request for a losing auth
 // probe. Headers, URL state, body readers, diagnostics, and authentication
 // state are independent from the parent request.
@@ -232,6 +251,7 @@ func NewAuthenticationProbeRequest(r *http.Request) *http.Request {
 		return nil
 	}
 	probeContext := context.WithValue(r.Context(), authenticationStateKey{}, nil)
+	probeContext = context.WithValue(probeContext, authSuccessWithoutConsumerKey{}, nil)
 	probeContext = context.WithValue(probeContext, authProbeDiagnosticKey, nil)
 	probe := r.Clone(probeContext)
 	// Body replay is deliberately not owned by this generic helper. In

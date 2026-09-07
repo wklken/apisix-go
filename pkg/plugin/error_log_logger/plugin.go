@@ -803,7 +803,10 @@ func (p *Plugin) sendToTCP(ctx context.Context, lines []string) error {
 		"tcp",
 		addr,
 		operationTimeout,
-		&tls.Config{ServerName: cfg.TLSServerName},
+		&tls.Config{
+			ServerName:         cfg.TLSServerName,
+			InsecureSkipVerify: true, //nolint:gosec // APISIX 3.17 sslhandshake third arg is false; no ssl_verify field
+		},
 		cfg.TLS,
 	)
 	if err != nil {

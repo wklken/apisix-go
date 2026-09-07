@@ -1,6 +1,10 @@
 package resource
 
-import "github.com/wklken/apisix-go/pkg/json"
+import (
+	"errors"
+
+	"github.com/wklken/apisix-go/pkg/json"
+)
 
 // SSL describes the APISIX SSL resource fields needed by upstream TLS.
 // The metadata fields are retained so snapshots can be parsed without
@@ -38,6 +42,7 @@ type SSL struct {
 	Certs        []string          `json:"certs,omitempty" yaml:"certs,omitempty"`
 	Keys         []string          `json:"keys,omitempty" yaml:"keys,omitempty"`
 	Key          string            `json:"key,omitempty" yaml:"key,omitempty"`
+	GM           bool              `json:"gm,omitempty" yaml:"gm,omitempty"`
 	Client       *SSLClient        `json:"client,omitempty" yaml:"client,omitempty"`
 	SSLProtocols []string          `json:"ssl_protocols,omitempty" yaml:"ssl_protocols,omitempty"`
 	Status       int               `json:"status,omitempty" yaml:"status,omitempty"`
@@ -58,6 +63,19 @@ func (s *SSL) UnmarshalJSON(data []byte) error {
 		s.Status = 1
 	} else {
 		s.Status = *aux.Status
+	}
+	return s.Validate()
+}
+
+func (s SSL) Validate() error {
+	if !s.GM {
+		return nil
+	}
+	if s.Cert == "" || s.Key == "" {
+		return errors.New("enc cert/key are required")
+	}
+	if len(s.Certs) != 1 || len(s.Keys) != 1 {
+		return errors.New("sign cert/key are required")
 	}
 	return nil
 }

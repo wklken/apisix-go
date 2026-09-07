@@ -88,6 +88,15 @@ func (p *Plugin) handleCodeFlow(w http.ResponseWriter, r *http.Request, next htt
 		}
 	}
 
+	if p.config.UnauthAction == "pass" {
+		next.ServeHTTP(w, r)
+		return
+	}
+	if p.config.UnauthAction == "deny" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
 	p.beginAuthorization(w, r, redirectURI, nil, "")
 }
 

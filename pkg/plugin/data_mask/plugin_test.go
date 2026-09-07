@@ -140,7 +140,7 @@ func TestLogSnapshotSanitizerMasksQueryHeadersAndURLEncodedBody(t *testing.T) {
 	}))
 }
 
-func TestLogSnapshotSanitizerFailsClosedWhenURLEncodedBodyExceedsArgumentLimit(t *testing.T) {
+func TestLogSnapshotSanitizerSkipsWhenURLEncodedBodyExceedsArgumentLimit(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		MaxReqPostArgs: new(1),
 		Request: []MaskRule{{
@@ -159,12 +159,21 @@ func TestLogSnapshotSanitizerFailsClosedWhenURLEncodedBodyExceedsArgumentLimit(t
 	)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("incomplete sanitized form reached the snapshot consumer")
+	var gotBody string
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		gotBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rr.Code)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want skip-at-log 204; body=%q", rr.Code, rr.Body.String())
+	}
+	if gotBody != "token=secret&keep=yes" {
+		t.Fatalf("snapshot body = %q, want original unmasked form", gotBody)
 	}
 }
 
@@ -555,7 +564,7 @@ func TestPostInitRejectsMalformedOrUnsupportedJSONPath(t *testing.T) {
 	}
 }
 
-func TestLogSnapshotSanitizerRejectsMalformedJSON(t *testing.T) {
+func TestLogSnapshotSanitizerSkipsMalformedJSON(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Request: []MaskRule{{
 			Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "*****",
@@ -564,16 +573,21 @@ func TestLogSnapshotSanitizerRejectsMalformedJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/orders", strings.NewReader(`{"token":`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-
-	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("next handler was called for malformed JSON")
+	var gotBody string
+	serveSanitizedSnapshot(t, p, rr, req, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		gotBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rr.Code)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want skip-at-log 204; body=%q", rr.Code, rr.Body.String())
 	}
-	if rr.Body.Len() == 0 {
-		t.Fatal("response body is empty, want parse error")
+	if gotBody != `{"token":` {
+		t.Fatalf("snapshot body = %q, want original malformed JSON", gotBody)
 	}
 }
 

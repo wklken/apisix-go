@@ -640,7 +640,7 @@ func (p *Plugin) PostInit() error {
 	}
 
 	client := &http.Client{
-		Timeout:   time.Duration(p.config.Timeout) * time.Second,
+		Timeout:   oidcHTTPClientTimeout(p.config.Timeout),
 		Transport: p.transport(),
 	}
 	if p.beforeReadyPublish != nil {
@@ -664,6 +664,20 @@ func (p *Plugin) currentTime() time.Time {
 		return p.now()
 	}
 	return time.Now()
+}
+
+func oidcHTTPClientTimeout(timeout int) time.Duration {
+	if timeout < 1000 || timeout%1000 != 0 {
+		timeout *= 1000
+	}
+	return time.Duration(timeout) * time.Millisecond
+}
+
+func (p *Plugin) shouldVerifyBearer() bool {
+	return p.config.BearerOnly ||
+		p.config.IntrospectionEndpoint != "" ||
+		p.config.PublicKey != "" ||
+		p.config.UseJWKS
 }
 
 func validTokenSigningAlgorithm(algorithm string) bool {
@@ -817,24 +831,21 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		hasToken, token, statusCode, errMsg := p.bearerToken(r, clientXAccessToken)
-		if errMsg != "" {
-			http.Error(w, errMsg, statusCode)
-			return
+		hasToken, token, statusCode, errMsg := false, "", 0, ""
+		if p.shouldVerifyBearer() {
+			hasToken, token, statusCode, errMsg = p.bearerToken(r, clientXAccessToken)
+			if errMsg != "" {
+				http.Error(w, errMsg, statusCode)
+				return
+			}
+			if !hasToken {
+				if p.config.BearerOnly {
+					p.writeBearerUnauthorized(w)
+					return
+				}
+			}
 		}
 		if !hasToken {
-			if p.config.BearerOnly {
-				p.writeBearerUnauthorized(w)
-				return
-			}
-			if p.config.UnauthAction == "pass" {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if p.config.UnauthAction == "deny" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
 			p.handleCodeFlow(w, r, next)
 			return
 		}

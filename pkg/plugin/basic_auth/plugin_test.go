@@ -166,6 +166,26 @@ func TestHandlerAcceptsBasicAuthAndAttachesConsumer(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsPasswordWithExtraColonAsUserAndSecret(t *testing.T) {
+	p := newTestPlugin(t, Config{}, basicAuthBoundConsumer("user", "user", "secret"))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("user:secret:extra")))
+	rr := httptest.NewRecorder()
+
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != "user" {
+			t.Fatalf("consumer_name = %v, want user", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func TestHandlerUsesInjectedConsumerLookupAuthoritatively(t *testing.T) {
 	lookup := &basicAuthConsumerLookup{byKey: map[string]resource.Consumer{
 		"basic-lookup-key": basicAuthBoundConsumer("basic-lookup-key", "lookup-basic-user", "lookup-password"),
@@ -743,6 +763,12 @@ func TestParseBasicAuthorizationDiagnostics(t *testing.T) {
 			redacted: []string{"YmFy", "bar"},
 		},
 		{name: "case insensitive", header: "bASiC Zm9vOmJhcg==", wantUser: "foo", wantPass: "bar"},
+		{
+			name:     "extra colon uses first two split fields",
+			header:   "Basic " + base64.StdEncoding.EncodeToString([]byte("user:secret:extra")),
+			wantUser: "user",
+			wantPass: "secret",
+		},
 	}
 
 	for _, test := range tests {

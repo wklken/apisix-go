@@ -22,16 +22,9 @@ func TestCollapseHeaderValuesLowercasesAndCopiesValues(t *testing.T) {
 	}
 }
 
-func TestCollapseAccessLogHeaderValuesRedactsSensitiveHeaders(t *testing.T) {
+func TestCollapseAccessLogHeaderValuesKeepsCredentialHeaders(t *testing.T) {
 	got := CollapseAccessLogHeaderValues(testAccessLogHeaders())
-	for _, name := range testSensitiveAccessLogHeaders {
-		if _, ok := got[name]; ok {
-			t.Fatalf("sensitive header %q = %#v, want omitted", name, got[name])
-		}
-	}
-	if got["x-visible"] == nil {
-		t.Fatalf("safe headers = %#v, want benign header", got)
-	}
+	assertAccessLogHeadersKeepCredentials(t, got)
 	if got["host"] != "gateway.test" {
 		t.Fatalf("host = %#v, want preserved host header", got["host"])
 	}
@@ -111,7 +104,7 @@ func TestApplyMatchedRouteFieldsMatchesAPISIX317CustomLogFormat(t *testing.T) {
 	}
 }
 
-func TestBuildAccessLogFromSnapshotRedactsSensitiveHeaders(t *testing.T) {
+func TestBuildAccessLogFromSnapshotKeepsCredentialHeaders(t *testing.T) {
 	detached := BuildAccessLogFromSnapshot(LogSnapshot{
 		Request: apisixlog.RequestLogSnapshot{
 			Method: http.MethodGet,
@@ -123,19 +116,19 @@ func TestBuildAccessLogFromSnapshotRedactsSensitiveHeaders(t *testing.T) {
 		Started:  time.Unix(100, 0),
 		Finished: time.Unix(101, 0),
 	}, "route-1")
-	assertSafeDefaultAccessLogHeaders(t, detached)
+	assertDefaultAccessLogHeadersKeepCredentials(t, detached)
 }
 
-var testSensitiveAccessLogHeaders = []string{
-	"authorization",
-	"proxy-authorization",
-	"cookie",
-	"set-cookie",
-	"apikey",
-	"x-api-key",
-	"x-functions-key",
-	"x-amz-security-token",
-	"x-goog-api-key",
+var testCredentialAccessLogHeaderValues = map[string]string{
+	"authorization":        "secret-authorization",
+	"proxy-authorization":  "secret-proxy-authorization",
+	"cookie":               "secret-cookie",
+	"set-cookie":           "secret-set-cookie",
+	"apikey":               "secret-apikey",
+	"x-api-key":            "secret-api-key",
+	"x-functions-key":      "secret-functions-key",
+	"x-amz-security-token": "secret-amz-token",
+	"x-goog-api-key":       "secret-goog-key",
 }
 
 func testAccessLogHeaders() http.Header {
@@ -154,7 +147,7 @@ func testAccessLogHeaders() http.Header {
 	}
 }
 
-func assertSafeDefaultAccessLogHeaders(t *testing.T, fields map[string]any) {
+func assertDefaultAccessLogHeadersKeepCredentials(t *testing.T, fields map[string]any) {
 	t.Helper()
 	for _, section := range []string{"request", "response"} {
 		payload, ok := fields[section].(map[string]any)
@@ -165,17 +158,22 @@ func assertSafeDefaultAccessLogHeaders(t *testing.T, fields map[string]any) {
 		if !ok {
 			t.Fatalf("%s headers = %#v, want object", section, payload["headers"])
 		}
-		for _, name := range testSensitiveAccessLogHeaders {
-			if _, ok := headers[name]; ok {
-				t.Fatalf("%s sensitive header %q = %#v, want omitted", section, name, headers[name])
-			}
-		}
-		if got := headers["x-visible"]; got == nil {
-			t.Fatalf("%s headers = %#v, want benign header", section, headers)
-		}
+		assertAccessLogHeadersKeepCredentials(t, headers)
 	}
 	request := fields["request"].(map[string]any)
 	if request["headers"].(map[string]any)["host"] == nil {
 		t.Fatalf("request headers = %#v, want host", request["headers"])
+	}
+}
+
+func assertAccessLogHeadersKeepCredentials(t *testing.T, headers map[string]any) {
+	t.Helper()
+	for name, want := range testCredentialAccessLogHeaderValues {
+		if got := headers[name]; got != want {
+			t.Fatalf("header %q = %#v, want %q from ngx.req.get_headers() with no omit", name, got, want)
+		}
+	}
+	if got := headers["x-visible"]; got == nil {
+		t.Fatalf("headers = %#v, want benign header", headers)
 	}
 }

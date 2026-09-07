@@ -147,11 +147,12 @@ func TestCompileHTTPBindsBatchRequestsGenerationMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	registry := public_api.NewRegistry()
 	snapshot, err := CompileHTTP(context.Background(), CompileInput{
 		Revision:                  1,
 		StaticConfig:              &appconfig.Config{Plugins: []string{"batch-requests"}},
 		Metadata:                  metadata,
-		PublicAPIRegistry:         public_api.NewRegistry(),
+		PublicAPIRegistry:         registry,
 		GraphQLProxyCacheRegistry: graphql_proxy_cache.NewRegistry(),
 	})
 	if err != nil {
@@ -165,6 +166,16 @@ func TestCompileHTTPBindsBatchRequestsGenerationMetadata(t *testing.T) {
 	)
 	response := httptest.NewRecorder()
 	snapshot.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("data-plane batch-requests response = %d, want 404 without a public-api route", response.Code)
+	}
+
+	handler := registry.Lookup(http.MethodPost, "/apisix/batch-requests")
+	if handler == nil {
+		t.Fatal("compiled batch-requests handler is missing from public API registry")
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("response status = %d, want 400; body=%q", response.Code, response.Body.String())
 	}

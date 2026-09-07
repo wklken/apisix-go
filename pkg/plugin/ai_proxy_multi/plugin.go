@@ -849,7 +849,7 @@ func (p *Plugin) executeInstanceRequest(
 				ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[target.index].Name)
 				continue
 			}
-			base.WriteJSONMessage(w, http.StatusServiceUnavailable, "failed to request LLM: "+err.Error())
+			base.WriteJSONMessage(w, ai_common.ProviderRequestErrorStatus(err), "failed to request LLM")
 			p.registerLogging(r, protocol, body)
 			return
 		}

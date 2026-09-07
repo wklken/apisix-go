@@ -322,7 +322,7 @@ func TestSendBatchWritesTLSMessageWithServerName(t *testing.T) {
 }
 
 func TestSendRejectsUntrustedTLSMessageByDefault(t *testing.T) {
-	addr, _, _ := startTLSServer(t)
+	addr, received, _ := startTLSServer(t)
 	host, port := splitAddr(t, addr)
 
 	p := newTestPlugin(t, Config{
@@ -331,8 +331,16 @@ func TestSendRejectsUntrustedTLSMessageByDefault(t *testing.T) {
 		TLS:     true,
 		Timeout: 1000,
 	})
-	if err := p.sendBody(context.Background(), []byte("secure")); err == nil {
-		t.Fatal("sendBody() error = nil, want untrusted TLS peer rejection")
+	if err := p.sendBody(context.Background(), []byte("secure")); err != nil {
+		t.Fatalf("sendBody() error = %v, want untrusted TLS accepted by default (sslhandshake verify=false)", err)
+	}
+	select {
+	case message := <-received:
+		if !strings.Contains(message, "secure") {
+			t.Fatalf("message = %q, want untrusted TLS payload", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for untrusted tls log message")
 	}
 }
 
@@ -340,11 +348,13 @@ func TestTLSUsesHostAsServerNameWhenVerificationEnabled(t *testing.T) {
 	addr, _, serverNames := startTLSServer(t)
 	_, port := splitAddr(t, addr)
 	blankServerName := ""
+	verify := true
 
 	p := newTestPlugin(t, Config{
 		Host:       "localhost",
 		Port:       mustAtoi(t, port),
 		TLS:        true,
+		SSLVerify:  &verify,
 		TLSOptions: &blankServerName,
 		Timeout:    1000,
 	})
@@ -377,8 +387,8 @@ func TestPostInitAppliesBatchDefaults(t *testing.T) {
 	if p.config.RetryDelay != 1 {
 		t.Fatalf("retry_delay = %d, want 1", p.config.RetryDelay)
 	}
-	if p.config.SSLVerify == nil || !*p.config.SSLVerify {
-		t.Fatalf("SSLVerify = %v, want true", p.config.SSLVerify)
+	if p.config.SSLVerify == nil || *p.config.SSLVerify {
+		t.Fatalf("SSLVerify = %v, want false", p.config.SSLVerify)
 	}
 }
 

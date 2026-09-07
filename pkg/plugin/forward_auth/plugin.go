@@ -288,9 +288,12 @@ func (p *Plugin) setForwardedHeaders(authReq *http.Request, facts base.Authoriza
 	authReq.Header.Set("X-Forwarded-Proto", facts.Scheme)
 	authReq.Header.Set("X-Forwarded-Method", facts.Method)
 	authReq.Header.Set("X-Forwarded-Host", facts.Host)
-	uri := facts.Path
-	if facts.RawQuery != "" {
-		uri += "?" + facts.RawQuery
+	uri := facts.RequestURI
+	if uri == "" {
+		uri = facts.Path
+		if facts.RawQuery != "" {
+			uri += "?" + facts.RawQuery
+		}
 	}
 	authReq.Header.Set("X-Forwarded-Uri", uri)
 	authReq.Header.Set("X-Forwarded-For", facts.ClientIP)

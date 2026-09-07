@@ -731,7 +731,7 @@ func TestLogSnapshotSanitizerRunsBeforeLoggerAndFinalizer(t *testing.T) {
 	}
 }
 
-func TestLogSnapshotSanitizerErrorStopsRawSnapshotConsumers(t *testing.T) {
+func TestLogSnapshotSanitizerErrorContinuesRemainingLogPlugins(t *testing.T) {
 	request, lifecycle := ctx.EnsureRequestLifecycle(
 		httptest.NewRequest(http.MethodPost, "/", strings.NewReader("secret-body")),
 		time.Unix(1, 0),
@@ -760,13 +760,20 @@ func TestLogSnapshotSanitizerErrorStopsRawSnapshotConsumers(t *testing.T) {
 	)
 	failures := lifecycle.Finalize()
 	if len(failures) != 1 || !strings.Contains(failures[0].Err.Error(), "sanitize failed") {
-		t.Fatalf("Finalize() failures = %#v, want sanitizer failure", failures)
+		t.Fatalf("Finalize() failures = %#v, want sanitizer failure recorded", failures)
 	}
-	if got, want := order, []string{"sanitizer:sanitize"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("callback order = %v, want %v", got, want)
+	if got, want := order, []string{
+		"sanitizer:sanitize",
+		"logger:log",
+		"logger:finalizer",
+	}; !reflect.DeepEqual(
+		got,
+		want,
+	) {
+		t.Fatalf("callback order = %v, want remaining log plugins to run", got)
 	}
-	if len(loggerPlugin.seen) != 0 {
-		t.Fatalf("logger saw raw snapshot after sanitizer error: %#v", loggerPlugin.seen)
+	if len(loggerPlugin.seen) != 1 {
+		t.Fatalf("logger snapshots = %d, want 1 after sanitizer error", len(loggerPlugin.seen))
 	}
 }
 

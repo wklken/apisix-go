@@ -12,10 +12,28 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/wklken/apisix-go/pkg/config"
 	"github.com/wklken/apisix-go/pkg/json"
+	"github.com/wklken/apisix-go/pkg/plugin/public_api"
 )
 
 func TestRegisterExtraRoutesAddsBatchRequestsWhenEnabled(t *testing.T) {
+	mux := chi.NewRouter()
+	registerExtraRoutes(mux, &config.Config{Plugins: []string{"batch-requests"}})
+
+	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{
+		"pipeline": [{"method": "GET", "path": "/hello"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("response code = %d, want 404 without a public-api route; body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestRegisterExtraRoutesRegistersBatchRequestsOnPublicAPI(t *testing.T) {
 	staticConfig := &config.Config{Plugins: []string{"batch-requests"}}
+	registry := public_api.NewRegistry()
 
 	mux := chi.NewRouter()
 	mux.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +45,14 @@ func TestRegisterExtraRoutesAddsBatchRequestsWhenEnabled(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte("created"))
 	})
-	registerExtraRoutes(mux, staticConfig)
+	registerExtraRoutes(mux, staticConfig, registry)
+
+	if handler := registry.Lookup(http.MethodPost, "/apisix/batch-requests"); handler == nil {
+		t.Fatal("batch-requests handler is missing from public API registry")
+	}
+
+	p := newPublicAPITestPlugin(t, map[string]any{}, registry)
+	mux.Method(http.MethodPost, "/apisix/batch-requests", p.Handler(http.NotFoundHandler()))
 
 	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{
 		"query": {"token": "global"},
@@ -39,7 +64,6 @@ func TestRegisterExtraRoutesAddsBatchRequestsWhenEnabled(t *testing.T) {
 	}`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()
-
 	mux.ServeHTTP(res, req)
 
 	if res.Code != http.StatusOK {
@@ -76,6 +100,29 @@ func TestRegisterExtraRoutesAddsBatchRequestsWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRegisterExtraRoutesRegistersCustomBatchURIOnly(t *testing.T) {
+	registry := public_api.NewRegistry()
+	mux := chi.NewRouter()
+	registerExtraRoutes(mux, &config.Config{
+		Plugins:    []string{"batch-requests"},
+		PluginAttr: map[string]map[string]any{"batch-requests": {"uri": "/foo/bar"}},
+	}, registry)
+
+	req := httptest.NewRequest(http.MethodPost, "/foo/bar", strings.NewReader(`{"pipeline":[{"path":"/missing"}]}`))
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("custom URI data-plane response = %d, want 404 without a public-api route", res.Code)
+	}
+
+	if registry.Lookup(http.MethodPost, "/apisix/batch-requests") != nil {
+		t.Fatal("default URI must not stay registered when plugin_attr.uri is customized")
+	}
+	if registry.Lookup(http.MethodPost, "/foo/bar") == nil {
+		t.Fatal("custom URI handler is missing from public API registry")
+	}
+}
+
 func TestRegisterExtraRoutesSkipsBatchRequestsWhenDisabled(t *testing.T) {
 	mux := chi.NewRouter()
 	registerExtraRoutes(mux, &config.Config{})
@@ -91,7 +138,7 @@ func TestRegisterExtraRoutesSkipsBatchRequestsWhenDisabled(t *testing.T) {
 
 func TestBatchRequestsRejectsInvalidBody(t *testing.T) {
 	mux := chi.NewRouter()
-	registerExtraRoutes(mux, &config.Config{Plugins: []string{"batch-requests"}})
+	mountBatchRequestsPublicAPI(t, mux, &config.Config{Plugins: []string{"batch-requests"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{"pipeline":[]}`))
 	res := httptest.NewRecorder()
@@ -116,7 +163,7 @@ func TestBatchRequestsParentCancellationStopsPipeline(t *testing.T) {
 		started.Add(1)
 		<-r.Context().Done()
 	})
-	registerExtraRoutes(mux, &config.Config{Plugins: []string{"batch-requests"}})
+	mountBatchRequestsPublicAPI(t, mux, &config.Config{Plugins: []string{"batch-requests"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/apisix/batch-requests", strings.NewReader(`{
 		"pipeline": [
@@ -159,4 +206,14 @@ func TestBatchRequestsParentCancellationStopsPipeline(t *testing.T) {
 	if len(body) != 1 || body[0]["status"] != float64(http.StatusGatewayTimeout) {
 		t.Fatalf("pipeline responses = %#v, want one 504 for the canceled request", body)
 	}
+}
+
+func mountBatchRequestsPublicAPI(t *testing.T, mux *chi.Mux, staticConfig *config.Config) *public_api.Registry {
+	t.Helper()
+	registry := public_api.NewRegistry()
+	registerExtraRoutes(mux, staticConfig, registry)
+	uri := batchRequestsURI(staticConfig)
+	p := newPublicAPITestPlugin(t, map[string]any{}, registry)
+	mux.Method(http.MethodPost, uri, p.Handler(http.NotFoundHandler()))
+	return registry
 }

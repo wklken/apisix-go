@@ -87,6 +87,10 @@ var defaultScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
 }
 
+var defaultAuthFileScopes = []string{
+	"https://www.googleapis.com/auth/cloud-platform",
+}
+
 const schema = `
 {
   "type": "object",
@@ -690,11 +694,19 @@ func (p *Plugin) resolveAuthConfig() (*AuthConfig, error) {
 	if err := json.Unmarshal(data, &auth); err != nil {
 		return nil, err
 	}
-	p.applyAuthDefaults(&auth)
+	p.applyAuthFileDefaults(&auth)
 	return &auth, nil
 }
 
 func (p *Plugin) applyAuthDefaults(auth *AuthConfig) {
+	p.applyAuthDefaultsWith(auth, defaultScopes)
+}
+
+func (p *Plugin) applyAuthFileDefaults(auth *AuthConfig) {
+	p.applyAuthDefaultsWith(auth, defaultAuthFileScopes)
+}
+
+func (p *Plugin) applyAuthDefaultsWith(auth *AuthConfig, scopes []string) {
 	if auth == nil {
 		return
 	}
@@ -705,7 +717,7 @@ func (p *Plugin) applyAuthDefaults(auth *AuthConfig) {
 		auth.EntriesURI = defaultEntriesURI
 	}
 	if len(auth.Scope) == 0 && len(auth.Scopes) == 0 {
-		auth.Scope = append([]string(nil), defaultScopes...)
+		auth.Scope = append([]string(nil), scopes...)
 	}
 }
 

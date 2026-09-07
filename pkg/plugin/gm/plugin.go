@@ -1,10 +1,10 @@
 package gm
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/resource"
 )
 
 type Plugin struct {
@@ -58,14 +58,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 }
 
 func ValidateSSLConfig(cfg SSLConfig) error {
-	if !cfg.GM {
-		return nil
-	}
-	if cfg.Cert == "" || cfg.Key == "" {
-		return errors.New("enc cert/key are required")
-	}
-	if len(cfg.Certs) != 1 || len(cfg.Keys) != 1 {
-		return errors.New("sign cert/key are required")
-	}
-	return nil
+	return resource.SSL{
+		Cert:  cfg.Cert,
+		Key:   cfg.Key,
+		Certs: cfg.Certs,
+		Keys:  cfg.Keys,
+		GM:    cfg.GM,
+		Snis:  cfg.SNIs,
+	}.Validate()
 }

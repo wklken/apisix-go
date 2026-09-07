@@ -482,8 +482,8 @@ func TestHandlerRejectsWithOPAStatusReasonAndHeaders(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsNonTerminalOPAStatus(t *testing.T) {
-	for _, code := range []int{99, 100, 600} {
+func TestHandlerReturnsOPAStatusEvenIfNonTerminal(t *testing.T) {
+	for _, code := range []int{100, 600} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -500,8 +500,11 @@ func TestHandlerRejectsNonTerminalOPAStatus(t *testing.T) {
 				t.Fatal("next handler should not be called")
 			})
 
-			if res.Code != http.StatusServiceUnavailable {
-				t.Fatalf("response code = %d, want %d", res.Code, http.StatusServiceUnavailable)
+			if res.Code != code {
+				t.Fatalf("response code = %d, want OPA status_code %d", res.Code, code)
+			}
+			if got := strings.TrimSpace(res.Body.String()); got != "bad status" {
+				t.Fatalf("body = %q, want bad status", got)
 			}
 		})
 	}

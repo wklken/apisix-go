@@ -204,6 +204,29 @@ func TestHandlerRejectsUnknownPipelineField(t *testing.T) {
 	}
 }
 
+func TestHandlerEchoesInvalidJSONBodyInError(t *testing.T) {
+	handler := NewHandlerWithLimits(http.NewServeMux(), Limits{})
+	const rawBody = "invalid json string"
+	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(rawBody))
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want 400; body=%q", res.Code, res.Body.String())
+	}
+	var payload ErrorResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error response: %v; body=%q", err, res.Body.String())
+	}
+	prefix := "invalid request body: " + rawBody + ", err: "
+	if !strings.HasPrefix(payload.ErrorMessage, prefix) {
+		t.Fatalf("error_msg = %q, want prefix %q", payload.ErrorMessage, prefix)
+	}
+	if strings.TrimPrefix(payload.ErrorMessage, prefix) == "" {
+		t.Fatalf("error_msg = %q, want decoder err after prefix", payload.ErrorMessage)
+	}
+}
+
 func TestHandlerRejectsTrailingJSONValue(t *testing.T) {
 	handler := NewHandlerWithLimits(http.NewServeMux(), Limits{})
 	req := httptest.NewRequest(
@@ -563,10 +586,10 @@ func TestHandlerDefaultsToAPISIXPipelineLimit(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsInvalidPipelinePathWithoutPanic(t *testing.T) {
+func TestHandlerRejectsEmptyPipelinePath(t *testing.T) {
 	handler := NewHandlerWithLimits(http.NewServeMux(), Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
-		"pipeline": [{"path": "http://[::1"}]
+		"pipeline": [{"path": ""}]
 	}`))
 	res := httptest.NewRecorder()
 
@@ -575,8 +598,8 @@ func TestHandlerRejectsInvalidPipelinePathWithoutPanic(t *testing.T) {
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("response code = %d, want 400; body=%q", res.Code, res.Body.String())
 	}
-	if !strings.Contains(res.Body.String(), "pipeline[0].path") {
-		t.Fatalf("response body = %q, want invalid pipeline path message", res.Body.String())
+	if !strings.Contains(res.Body.String(), "path") {
+		t.Fatalf("response body = %q, want required path message", res.Body.String())
 	}
 }
 
@@ -1008,7 +1031,7 @@ func TestHandlerPinsPipelineHostToOuterRequest(t *testing.T) {
 	}
 }
 
-func TestHandlerDoesNotAllowPipelineHeadersToOverrideOuterTrustAndCredentials(t *testing.T) {
+func TestHandlerLetsPipelineItemCredentialsWinOverOuter(t *testing.T) {
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Got-Authorization", r.Header.Get("Authorization"))
 		w.Header().Set("X-Got-Cookie", r.Header.Get("Cookie"))
@@ -1018,15 +1041,15 @@ func TestHandlerDoesNotAllowPipelineHeadersToOverrideOuterTrustAndCredentials(t 
 	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"headers": {
-			"Authorization": "Bearer common-attacker",
-			"Cookie": "session=common-attacker",
+			"Authorization": "Bearer common",
+			"Cookie": "session=common",
 			"X-Forwarded-For": "198.51.100.1"
 		},
 		"pipeline": [{
 			"path": "/inner",
 			"headers": {
-				"Authorization": "Bearer item-attacker",
-				"Cookie": "session=item-attacker",
+				"Authorization": "Bearer item",
+				"Cookie": "session=item",
 				"X-Forwarded-For": "198.51.100.2"
 			}
 		}]
@@ -1039,13 +1062,56 @@ func TestHandlerDoesNotAllowPipelineHeadersToOverrideOuterTrustAndCredentials(t 
 
 	responses := decodePipelineResponses(t, res.Body.String())
 	for header, want := range map[string]string{
-		"X-Got-Authorization": "Bearer outer",
-		"X-Got-Cookie":        "session=outer",
+		"X-Got-Authorization": "Bearer item",
+		"X-Got-Cookie":        "session=item",
 		"X-Got-Forwarded-For": "203.0.113.10",
 	} {
 		if got := responses[0].Headers[header]; got != want {
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
+	}
+}
+
+func TestHandlerFillsPipelineCredentialGapsFromCommonThenOuter(t *testing.T) {
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Got-Authorization", r.Header.Get("Authorization"))
+		w.Header().Set("X-Got-Cookie", r.Header.Get("Cookie"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
+
+	commonFills := httptest.NewRecorder()
+	commonReq := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"headers": {
+			"Authorization": "Bearer common",
+			"Cookie": "session=common"
+		},
+		"pipeline": [{"path": "/inner"}]
+	}`))
+	commonReq.Header.Set("Authorization", "Bearer outer")
+	commonReq.Header.Set("Cookie", "session=outer")
+	handler.ServeHTTP(commonFills, commonReq)
+	commonResponses := decodePipelineResponses(t, commonFills.Body.String())
+	if got := commonResponses[0].Headers["X-Got-Authorization"]; got != "Bearer common" {
+		t.Fatalf("common Authorization = %q, want Bearer common", got)
+	}
+	if got := commonResponses[0].Headers["X-Got-Cookie"]; got != "session=common" {
+		t.Fatalf("common Cookie = %q, want session=common", got)
+	}
+
+	outerFills := httptest.NewRecorder()
+	outerReq := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
+		"pipeline": [{"path": "/inner"}]
+	}`))
+	outerReq.Header.Set("Authorization", "Bearer outer")
+	outerReq.Header.Set("Cookie", "session=outer")
+	handler.ServeHTTP(outerFills, outerReq)
+	outerResponses := decodePipelineResponses(t, outerFills.Body.String())
+	if got := outerResponses[0].Headers["X-Got-Authorization"]; got != "Bearer outer" {
+		t.Fatalf("outer Authorization = %q, want Bearer outer", got)
+	}
+	if got := outerResponses[0].Headers["X-Got-Cookie"]; got != "session=outer" {
+		t.Fatalf("outer Cookie = %q, want session=outer", got)
 	}
 }
 
@@ -1104,20 +1170,32 @@ func TestHandlerPreservesTrustedCredentialHeaderProvenance(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsAbsolutePipelineTarget(t *testing.T) {
-	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{})
+func TestHandlerAdmitsAbsolutePipelinePath(t *testing.T) {
+	var gotPath string
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"pipeline": [{"path": "http://internal.example/secret"}]
 	}`))
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "path must start with /") {
-		t.Fatalf("response = %d %q, want path-only rejection", res.Code, res.Body.String())
+	if res.Code != http.StatusOK || strings.Contains(res.Body.String(), "path must start with /") {
+		t.Fatalf("response = %d %q, want APISIX minLength-1 admission", res.Code, res.Body.String())
+	}
+	responses := decodePipelineResponses(t, res.Body.String())
+	if responses[0].Status != http.StatusNoContent {
+		t.Fatalf("pipeline status = %d, want 204; body=%q", responses[0].Status, res.Body.String())
+	}
+	if gotPath != "/secret" {
+		t.Fatalf("dispatched path = %q, want /secret", gotPath)
 	}
 }
 
-func TestHandlerRejectsSchemeRelativePipelineTarget(t *testing.T) {
+func TestHandlerAdmitsSchemeRelativePipelinePath(t *testing.T) {
 	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"pipeline": [{"path": "//internal.example/secret"}]
@@ -1126,13 +1204,18 @@ func TestHandlerRejectsSchemeRelativePipelineTarget(t *testing.T) {
 
 	handler.ServeHTTP(res, req)
 
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "path is invalid") {
-		t.Fatalf("response = %d %q, want path-only rejection", res.Code, res.Body.String())
+	if res.Code != http.StatusOK || strings.Contains(res.Body.String(), "path is invalid") {
+		t.Fatalf("response = %d %q, want APISIX minLength-1 admission", res.Code, res.Body.String())
 	}
 }
 
-func TestHandlerRejectsPipelineQueryEmbeddedInPath(t *testing.T) {
-	handler := NewHandlerWithLimits(http.NotFoundHandler(), Limits{})
+func TestHandlerAdmitsPipelineQueryEmbeddedInPath(t *testing.T) {
+	var gotRawQuery string
+	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"pipeline": [{"path": "/inner?admin=true"}]
 	}`))
@@ -1140,8 +1223,15 @@ func TestHandlerRejectsPipelineQueryEmbeddedInPath(t *testing.T) {
 
 	handler.ServeHTTP(res, req)
 
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "path is invalid") {
-		t.Fatalf("response = %d %q, want query field requirement", res.Code, res.Body.String())
+	if res.Code != http.StatusOK || strings.Contains(res.Body.String(), "path is invalid") {
+		t.Fatalf("response = %d %q, want APISIX minLength-1 admission", res.Code, res.Body.String())
+	}
+	responses := decodePipelineResponses(t, res.Body.String())
+	if responses[0].Status != http.StatusNoContent {
+		t.Fatalf("pipeline status = %d, want 204; body=%q", responses[0].Status, res.Body.String())
+	}
+	if gotRawQuery != "admin=true" {
+		t.Fatalf("dispatched query = %q, want admin=true", gotRawQuery)
 	}
 }
 

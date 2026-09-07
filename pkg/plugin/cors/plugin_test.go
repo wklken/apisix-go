@@ -379,7 +379,7 @@ func TestHandlerAllowsRegexOrigin(t *testing.T) {
 	}
 }
 
-func TestPostInitAllowsCredentialsWithEmptyOptions(t *testing.T) {
+func TestPostInitRejectsCredentialsWithEmptyOptions(t *testing.T) {
 	p := &Plugin{config: Config{
 		AllowOrigins:    "http://test.com",
 		AllowMethods:    "",
@@ -391,8 +391,8 @@ func TestPostInitAllowsCredentialsWithEmptyOptions(t *testing.T) {
 	if err := p.Init(); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if err := p.PostInit(); err != nil {
-		t.Fatalf("PostInit() error = %v, want explicit empty options accepted", err)
+	if err := p.PostInit(); err == nil {
+		t.Fatal("PostInit() error = nil, want omitted methods/headers rejected after schema defaults")
 	}
 }
 

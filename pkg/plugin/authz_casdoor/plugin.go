@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -116,7 +117,7 @@ func (p *Plugin) PostInit() error {
 		p.client = &http.Client{Transport: httpclient.NewTransport(), Timeout: 10 * time.Second}
 	}
 	if p.newState == nil {
-		p.newState = func() (string, error) { return randomState(rand.Reader) }
+		p.newState = func() (string, error) { return randomState() }
 	}
 	if p.now == nil {
 		p.now = time.Now
@@ -187,7 +188,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		p.redirectToAuthorizeLocked(w, r, originalURL.RequestURI())
+		p.redirectToAuthorizeLocked(w, r, originalURL.Path)
 		p.lifecycleMu.RUnlock()
 	})
 }
@@ -204,16 +205,11 @@ func (p *Plugin) handleCallbackLocked(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	if code == "" || state == "" {
-		http.Error(
-			w,
-			util.BuildMessageResponse("failed when accessing token. Invalid code or state"),
-			http.StatusBadRequest,
-		)
+		writeCallbackPlainError(w, "failed when accessing token. Invalid code or state")
 		return
 	}
 	if state != session.State {
-		logger.Error("invalid state")
-		http.Error(w, util.BuildMessageResponse("invalid state"), http.StatusBadRequest)
+		writeCallbackPlainError(w, "invalid state")
 		return
 	}
 
@@ -454,10 +450,12 @@ func newProcessSessionSecret() ([32]byte, error) {
 	return value, err
 }
 
-func randomState(reader io.Reader) (string, error) {
-	raw := make([]byte, 16)
-	if _, err := io.ReadFull(reader, raw); err != nil {
-		return "", fmt.Errorf("generate random state: %w", err)
-	}
-	return hex.EncodeToString(raw), nil
+func writeCallbackPlainError(w http.ResponseWriter, message string) {
+	logger.Error(message)
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = io.WriteString(w, message)
+}
+
+func randomState() (string, error) {
+	return strconv.Itoa(mathrand.IntN(0x7fffffff) + 1), nil
 }

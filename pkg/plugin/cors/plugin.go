@@ -192,29 +192,20 @@ func (p *Plugin) PostInit() error {
 	}
 	p.metadata = metadata
 
-	if p.config.AllowCredential && wildcardCredentialOption(p.config) {
-		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
-	}
-	if p.config.AllowCredential && p.config.AllowOrigins == "" && p.config.AllowMethods == "" &&
-		p.config.AllowHeaders == "" && p.config.ExposeHeaders == "" && p.config.MaxAge == 0 &&
-		p.config.TimingAllowOrigins == nil {
-		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
-	}
-
 	if p.config.AllowOrigins == "" {
 		p.config.AllowOrigins = "*"
 	}
-
 	if p.config.AllowMethods == "" {
 		p.config.AllowMethods = "*"
 	}
-
 	if p.config.AllowHeaders == "" {
 		p.config.AllowHeaders = "*"
 	}
-
 	if !p.config.maxAgeSet && p.config.MaxAge == 0 {
 		p.config.MaxAge = 5
+	}
+	if p.config.AllowCredential && wildcardCredentialOption(p.config) {
+		return fmt.Errorf("you can not set '*' for other CORS options when allow_credential is true")
 	}
 	for _, rule := range p.config.AllowOriginsByRegex {
 		compiled, err := regexp.Compile(rule)

@@ -1727,8 +1727,11 @@ func TestHandlerLeavesUpstreamResponseVarsUnsetWhenProviderRequestFails(t *testi
 
 	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("response code = %d, want 503", rr.Code)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("response code = %d, want 500", rr.Code)
+	}
+	if got := rr.Body.String(); got != `{"message":"failed to request LLM"}` {
+		t.Fatalf("body = %q, want fixed failed to request LLM without dial URL", got)
 	}
 	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
 	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")
@@ -1740,6 +1743,75 @@ func TestHandlerLeavesUpstreamResponseVarsUnsetWhenProviderRequestFails(t *testi
 		if got := apisixctx.GetRequestVar(req, key); got != nil {
 			t.Fatalf("%s = %#v, want unset", key, got)
 		}
+	}
+}
+
+func TestHandlerMapsLLMTimeoutToGatewayTimeoutWithoutErrorText(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{{
+			Name:     "one",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Header: map[string]string{"Authorization": "Bearer test-token"}},
+			Options:  map[string]any{"model": "gpt-4"},
+			Override: Override{Endpoint: "http://192.0.2.10/v1/chat/completions"},
+		}},
+	})
+	p.client.Transport = multiStreamRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})
+	req := apisixctx.WithRequestVars(httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"messages":[{"role":"user","content":"ping"}]}`),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Fatalf("response code = %d, want 504; body=%q", rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.String(); got != `{"message":"failed to request LLM"}` {
+		t.Fatalf("body = %q, want fixed failed to request LLM without err.Error()", got)
+	}
+}
+
+func TestHandlerForwardsClientAuthorizationWhenAuthIsQueryOnly(t *testing.T) {
+	var gotAuth, gotQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotQuery = r.URL.Query().Get("api_key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+	p := newTestPlugin(t, Config{
+		Instances: []Instance{{
+			Name:     "one",
+			Provider: "openai-compatible",
+			Weight:   1,
+			Auth:     Auth{Query: map[string]string{"api_key": "query-secret"}},
+			Options:  map[string]any{"model": "gpt-4"},
+			Override: Override{Endpoint: upstream.URL + "/v1/chat/completions"},
+		}},
+	})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/anything",
+		strings.NewReader(`{"messages":[{"role":"user","content":"ping"}]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer client-secret")
+	rr := httptest.NewRecorder()
+	p.Handler(http.NotFoundHandler()).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("response code = %d, body=%q", rr.Code, rr.Body.String())
+	}
+	if gotAuth != "Bearer client-secret" {
+		t.Fatalf("Authorization = %q, want forwarded client header", gotAuth)
+	}
+	if gotQuery != "query-secret" {
+		t.Fatalf("api_key = %q, want configured query auth", gotQuery)
 	}
 }
 

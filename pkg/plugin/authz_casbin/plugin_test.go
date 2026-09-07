@@ -11,6 +11,7 @@ import (
 
 	projectjson "github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
+	"github.com/wklken/apisix-go/pkg/plugin/proxy_rewrite"
 	"github.com/wklken/apisix-go/pkg/runtime"
 	"github.com/wklken/apisix-go/pkg/util"
 )
@@ -278,6 +279,41 @@ func TestHandlerRejectsRequestWhenPolicyDoesNotMatch(t *testing.T) {
 	}
 	if got := rr.Header().Get("X-Content-Type-Options"); got != "" {
 		t.Fatalf("X-Content-Type-Options = %q, want absent", got)
+	}
+}
+
+func TestHandlerAllowsOriginalURIWhenProxyRewriteChangesPath(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		Model:    testModel,
+		Policy:   "p, alice, /admin, GET",
+		Username: "X-User",
+	})
+	rewrite := &proxy_rewrite.Plugin{}
+	if err := rewrite.Init(); err != nil {
+		t.Fatalf("proxy-rewrite Init() error = %v", err)
+	}
+	rewrite.Config().(*proxy_rewrite.Config).Uri = "/public"
+	if err := rewrite.PostInit(); err != nil {
+		t.Fatalf("proxy-rewrite PostInit() error = %v", err)
+	}
+
+	called := false
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.Header.Set("X-User", "alice")
+	rr := httptest.NewRecorder()
+	rewrite.Handler(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != "/public" {
+			t.Fatalf("upstream path = %q, want /public after proxy-rewrite", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))).ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("next handler was not called; casbin should enforce original /admin, not rewritten /public")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
 	}
 }
 

@@ -447,7 +447,15 @@ func (e LogExecutor) runComposite(
 			return selector.ShouldSanitizeLogSnapshot(preSanitizedSnapshot), nil
 		})
 		if err != nil {
-			return logCallbackFailure("log sanitizer selector", binding.Factory, err)
+			failure := logCallbackFailure("log sanitizer selector", binding.Factory, err)
+			if isLogPanicError(err) {
+				return failure
+			}
+			if firstErr == nil {
+				firstErr = failure
+			}
+			selectedSanitizers[index] = false
+			continue
 		}
 		selectedSanitizers[index] = selected
 	}
@@ -460,7 +468,13 @@ func (e LogExecutor) runComposite(
 			defer recoverLogCallbackAbort(binding.Factory, PhaseLog, &err)
 			return callback.SanitizeLogSnapshot(&snapshot)
 		}); err != nil {
-			return logCallbackFailure("log sanitizer", binding.Factory, err)
+			failure := logCallbackFailure("log sanitizer", binding.Factory, err)
+			if isLogPanicError(err) {
+				return failure
+			}
+			if firstErr == nil {
+				firstErr = failure
+			}
 		}
 	}
 	for _, binding := range bindings {
@@ -519,6 +533,11 @@ func logCallbackFailure(callback, factory string, err error) error {
 		return err
 	}
 	return fmt.Errorf("%s %q: %w", callback, factory, err)
+}
+
+func isLogPanicError(err error) bool {
+	_, ok := err.(*PanicError)
+	return ok
 }
 
 func scopeRank(scope Scope) int {

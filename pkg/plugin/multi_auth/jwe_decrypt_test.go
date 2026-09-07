@@ -37,9 +37,11 @@ func TestHandlerAcceptsValidJWEDecryptAuthentication(t *testing.T) {
 	res := httptest.NewRecorder()
 
 	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		state, ok := ctx.AuthenticationStateFrom(r)
-		if !ok || state.Source != "jwe-decrypt" || state.Consumer().Username != consumerName {
-			t.Fatalf("authentication state = %#v, %v; want jwe-decrypt consumer %q", state, ok, consumerName)
+		if _, ok := ctx.AuthenticationStateFrom(r); ok {
+			t.Fatal("jwe-decrypt attached consumer identity")
+		}
+		if got := ctx.GetApisixVar(r, "$consumer_name"); got != nil && got != "" {
+			t.Fatalf("consumer_name = %v, want unset", got)
 		}
 		if got := r.Header.Get("Authorization"); got != plaintext {
 			t.Fatalf("Authorization = %q, want decrypted %q", got, plaintext)

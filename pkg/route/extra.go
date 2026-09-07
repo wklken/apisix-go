@@ -53,9 +53,7 @@ func registerExtraRoutesStrict(
 		registry = public_api.NewRegistry()
 	}
 	if pluginEnabled(staticConfig, "node-status") {
-		mux.Handle("/apisix/status", http.NotFoundHandler())
 		handler := node_status.StatusHandler(staticConfig.Apisix.ID)
-		mux.Get("/apisix/status", handler)
 		registry.Register("GET", "/apisix/status", handler)
 	}
 	if pluginEnabled(staticConfig, "server-info") {
@@ -70,12 +68,7 @@ func registerExtraRoutesStrict(
 		if err != nil {
 			return fmt.Errorf("configure batch-requests endpoint: %w", err)
 		}
-		uri := batchRequestsURI(staticConfig)
-		mux.Method("POST", uri, handler)
-		registry.Register("POST", batch_requests.DefaultURI, handler)
-		if uri != batch_requests.DefaultURI {
-			registry.Register("POST", uri, handler)
-		}
+		registry.Register("POST", batchRequestsURI(staticConfig), handler)
 	}
 	if pluginEnabled(staticConfig, "graphql-proxy-cache") {
 		if graphqlPurgeRegistry == nil {

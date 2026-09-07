@@ -98,8 +98,9 @@ func JSONValueEqual(left any, right any) bool {
 }
 
 // CopyForwardHeaders copies request headers that are safe to forward to the
-// provider, skipping hop-by-hop and credential headers so provider auth
-// stays the configured credential.
+// provider. Oracle ai-transport/http.lua blacklists host, content-length, and
+// accept-encoding; hop-by-hop headers are also omitted. Plugin auth.header may
+// overwrite Authorization after this copy.
 func CopyForwardHeaders(dst, src http.Header) {
 	for field, values := range src {
 		if !safeToForwardHeader(field) {
@@ -116,7 +117,7 @@ func safeToForwardHeader(field string) bool {
 		return false
 	}
 	switch strings.ToLower(field) {
-	case "host", "content-length", "accept-encoding", "authorization", "cookie":
+	case "host", "content-length", "accept-encoding":
 		return false
 	}
 	return true

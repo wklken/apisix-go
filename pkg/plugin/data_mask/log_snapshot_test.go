@@ -98,7 +98,7 @@ func TestDataMaskLogSnapshotMasksFormWithoutChangingSourceBytes(t *testing.T) {
 	}
 }
 
-func TestDataMaskLogSnapshotFailsClosedForIncompleteOrMalformedBody(t *testing.T) {
+func TestDataMaskLogSnapshotSkipsIncompleteOrMalformedBody(t *testing.T) {
 	p := newTestPlugin(t, Config{MaxBodySize: 8, Request: []MaskRule{
 		{Type: "body", BodyFormat: "json", Name: "$.token", Action: "replace", Value: "***"},
 	}})
@@ -115,29 +115,51 @@ func TestDataMaskLogSnapshotFailsClosedForIncompleteOrMalformedBody(t *testing.T
 			snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
 				Body: []byte(test.body), BodyTruncated: test.truncated,
 			}}
-			if err := p.SanitizeLogSnapshot(&snapshot); err == nil {
-				t.Fatal("SanitizeLogSnapshot() error = nil, want fail-closed error")
+			if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+				t.Fatalf("SanitizeLogSnapshot() error = %v, want skip-at-log", err)
 			}
-			if len(snapshot.Request.Body) != 0 {
-				t.Fatalf("snapshot retained unsafe body %q", snapshot.Request.Body)
+			if got := string(snapshot.Request.Body); got != test.body {
+				t.Fatalf("snapshot body = %q, want original %q", got, test.body)
 			}
 		})
 	}
 }
 
-func TestDataMaskLogSnapshotFailsClosedWhenFormExceedsArgumentLimit(t *testing.T) {
+func TestDataMaskLogSnapshotSkipsWhenFormExceedsArgumentLimit(t *testing.T) {
 	maxArgs := 1
 	p := newTestPlugin(t, Config{MaxReqPostArgs: &maxArgs, Request: []MaskRule{
 		{Type: "body", BodyFormat: "urlencoded", Name: "token", Action: "replace", Value: "***"},
 	}})
+	const raw = "keep=visible&token=secret"
 	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
-		Body: []byte("keep=visible&token=secret"),
+		Body: []byte(raw),
 	}}
-	if err := p.SanitizeLogSnapshot(&snapshot); err == nil {
-		t.Fatal("SanitizeLogSnapshot() error = nil, want incomplete form rejection")
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v, want skip-at-log", err)
 	}
-	if len(snapshot.Request.Body) != 0 || !snapshot.Request.BodyTruncated {
-		t.Fatalf("unsafe form snapshot = %q/truncated=%v", snapshot.Request.Body, snapshot.Request.BodyTruncated)
+	if got := string(snapshot.Request.Body); got != raw {
+		t.Fatalf("snapshot body = %q, want original form", got)
+	}
+}
+
+func TestPostInitAdmitsPCRELookaheadRegex(t *testing.T) {
+	p := &Plugin{config: Config{Request: []MaskRule{{
+		Type: "query", Name: "token", Action: "regex", Regex: `(?=secret)`, Value: "***",
+	}}}}
+	if err := p.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if err := p.PostInit(); err != nil {
+		t.Fatalf("PostInit() error = %v, want PCRE lookahead admitted", err)
+	}
+	snapshot := base.LogSnapshot{Request: apisixlog.RequestLogSnapshot{
+		Query: url.Values{"token": {"secret"}},
+	}}
+	if err := p.SanitizeLogSnapshot(&snapshot); err != nil {
+		t.Fatalf("SanitizeLogSnapshot() error = %v, want regex skip", err)
+	}
+	if got := snapshot.Request.Query.Get("token"); got != "secret" {
+		t.Fatalf("token = %q, want original after invalid regex skip", got)
 	}
 }
 

@@ -181,6 +181,48 @@ func TestHandlerIntrospectsBearerTokenFromDiscovery(t *testing.T) {
 	}
 }
 
+func TestHandlerDoesNotIntrospectLeftoverBearerWithoutOfficialFlags(t *testing.T) {
+	var introspected bool
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 "http://" + r.Host,
+				"authorization_endpoint": "http://" + r.Host + "/authorize",
+				"token_endpoint":         "http://" + r.Host + "/token",
+				"introspection_endpoint": "http://" + r.Host + "/introspect",
+			})
+		case "/introspect":
+			introspected = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"active": true, "sub": "alice"})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(idp.Close)
+
+	p := newTestPlugin(t, codeFlowConfig(idp.URL))
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	req.Header.Set("Authorization", "Bearer leftover-token")
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("leftover Bearer reached upstream without a session")
+	})).ServeHTTP(rr, req)
+
+	if introspected {
+		t.Fatal("discovery introspection_endpoint was treated as the official introspection flag")
+	}
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 authenticate/redirect; body=%s", rr.Code, rr.Body.String())
+	}
+	location := rr.Header().Get("Location")
+	if !strings.Contains(location, "/authorize") {
+		t.Fatalf("Location = %q, want authorization redirect", location)
+	}
+}
+
 func TestTokenActiveRequiresExplicitBooleanTrue(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -850,6 +892,58 @@ func TestHandlerUnauthActionPassAllowsRequestWithoutToken(t *testing.T) {
 	}
 }
 
+func TestHandlerUnauthActionPassRestoresValidSession(t *testing.T) {
+	p := newTestPlugin(t, Config{
+		ClientID:     "apisix",
+		ClientSecret: "secret-a",
+		Discovery:    "http://idp.example.test/.well-known/openid-configuration",
+		UnauthAction: "pass",
+		Session:      SessionConfig{Secret: "0123456789abcdef"},
+	})
+	cookieWriter := httptest.NewRecorder()
+	now := time.Now()
+	if err := p.writeSession(cookieWriter, sessionData{
+		CreatedAt:   now.Unix(),
+		UpdatedAt:   now.Unix(),
+		AccessToken: "session-access-token",
+		ExpiresAt:   now.Add(time.Hour).Unix(),
+		Userinfo:    `{"sub":"alice"}`,
+	}); err != nil {
+		t.Fatalf("writeSession() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/orders", nil)
+	req.AddCookie(cookieWriter.Result().Cookies()[0])
+	rr := httptest.NewRecorder()
+	called := false
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if got := r.Header.Get("X-Access-Token"); got != "session-access-token" {
+			t.Fatalf("X-Access-Token = %q, want restored session token", got)
+		}
+		if got := r.Header.Get("X-Userinfo"); got == "" {
+			t.Fatal("X-Userinfo was not restored from the session")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("next handler was not called")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	restored := false
+	for _, cookie := range rr.Result().Cookies() {
+		if cookie.Name == p.config.Session.CookieName && cookie.Value != "" {
+			restored = true
+			break
+		}
+	}
+	if !restored {
+		t.Fatal("unauth_action=pass did not restore the session cookie")
+	}
+}
+
 func TestMaterializeSecretsParsesPublicKeyAndKeepsOnlyDescriptor(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -1346,6 +1440,38 @@ func TestPostInitAppliesUpstreamCompatibleDefaults(t *testing.T) {
 		!*p.config.Session.CookieHTTPOnly || p.config.Session.CookieSecure == nil ||
 		!*p.config.Session.CookieSecure || p.config.Session.CookieSameSite != "Default" {
 		t.Fatalf("OIDC session defaults not applied: %#v", p.config.Session)
+	}
+}
+
+func TestPostInitHTTPClientTimeoutUsesOfficialMillisecondHeuristic(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout int
+		want    time.Duration
+	}{
+		{name: "schema default seconds", timeout: 3, want: 3 * time.Second},
+		{name: "sub-thousand seconds", timeout: 1, want: time.Second},
+		{name: "exact thousand is milliseconds", timeout: 1000, want: time.Second},
+		{name: "multiple of thousand is milliseconds", timeout: 2000, want: 2 * time.Second},
+		{name: "non-multiple stays seconds via multiply", timeout: 1500, want: 1500 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := newTestPlugin(t, Config{
+				ClientID:   "apisix",
+				Discovery:  "https://idp.example.test/.well-known/openid-configuration",
+				BearerOnly: true,
+				UseJWKS:    true,
+				Timeout:    test.timeout,
+			})
+			if p.client == nil || p.client.Timeout != test.want {
+				got := time.Duration(0)
+				if p.client != nil {
+					got = p.client.Timeout
+				}
+				t.Fatalf("client timeout = %s, want %s", got, test.want)
+			}
+		})
 	}
 }
 

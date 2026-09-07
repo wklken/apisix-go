@@ -27,6 +27,7 @@ import (
 	"github.com/wklken/apisix-go/pkg/logger"
 	"github.com/wklken/apisix-go/pkg/observability/metrics"
 	"github.com/wklken/apisix-go/pkg/observability/otel"
+	"github.com/wklken/apisix-go/pkg/plugin/example_plugin"
 	"github.com/wklken/apisix-go/pkg/plugin/node_status"
 	"github.com/wklken/apisix-go/pkg/plugin/server_info"
 	pxy "github.com/wklken/apisix-go/pkg/proxy"
@@ -527,17 +528,23 @@ func newStatusHandler(serviceable func() bool) http.Handler {
 }
 
 func newControlHandler(cfg *config.Config, view *server_info.View) http.Handler {
-	if cfg == nil || !cfg.Apisix.EnableControl || !pluginConfigured(cfg, "server-info") || view == nil {
+	if cfg == nil || !cfg.Apisix.EnableControl {
 		return http.NotFoundHandler()
 	}
-	serverInfoHandler := view.Handler()
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/server_info" {
-			http.NotFound(w, r)
-			return
-		}
-		serverInfoHandler.ServeHTTP(w, r)
-	})
+	mux := http.NewServeMux()
+	hasRoute := false
+	if pluginConfigured(cfg, "server-info") && view != nil {
+		mux.Handle("GET /v1/server_info", view.Handler())
+		hasRoute = true
+	}
+	if pluginConfigured(cfg, "example-plugin") {
+		mux.HandleFunc("GET "+example_plugin.HelloURI, example_plugin.Hello)
+		hasRoute = true
+	}
+	if !hasRoute {
+		return http.NotFoundHandler()
+	}
+	return mux
 }
 
 func (s *Server) httpGenerationReady() bool {

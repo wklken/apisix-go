@@ -115,6 +115,31 @@ func newTestPlugin(t *testing.T, cfg Config) *Plugin {
 	return p
 }
 
+func TestHandlerForwardsOriginalRequestURIAfterPathRewrite(t *testing.T) {
+	var forwardedURI string
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedURI = r.Header.Get("X-Forwarded-Uri")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer auth.Close()
+
+	p := newTestPlugin(t, Config{URI: auth.URL})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get?x=1", nil)
+	req.URL.Path = "/rewritten"
+	req.URL.RawQuery = "y=2"
+	rr := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rr, req)
+
+	if forwardedURI != "/get?x=1" {
+		t.Fatalf("X-Forwarded-Uri = %q, want original /get?x=1", forwardedURI)
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandlerAllowsRequestAndCopiesUpstreamHeaders(t *testing.T) {
 	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer token" {

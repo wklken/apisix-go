@@ -107,9 +107,10 @@ type probeResponseWriter struct {
 }
 
 type authFailure struct {
-	name    string
-	status  int
-	message string
+	name            string
+	status          int
+	message         string
+	wwwAuthenticate string
 }
 
 type probeBodyState struct {
@@ -485,6 +486,11 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		failure.log()
 	}
 
+	if len(failures) > 0 {
+		if last := failures[len(failures)-1]; last.wwwAuthenticate != "" {
+			w.Header().Set("WWW-Authenticate", last.wwwAuthenticate)
+		}
+	}
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"message":"Authorization Failed"}`))
 	return base.StopRequest(r)
@@ -532,7 +538,7 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		} else {
 			authenticatedRequest = probeRequest
 		}
-		if result.Decision == base.RequestContinue && hasAuthenticationState(authenticatedRequest) {
+		if result.Decision == base.RequestContinue && childAuthenticated(authenticatedRequest) {
 			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 		}
 		authenticatedRequest = nil
@@ -540,12 +546,12 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		a.plugin.Handler(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 			authenticatedRequest = request
 		})).ServeHTTP(writer, probeRequest)
-		if hasAuthenticationState(authenticatedRequest) {
+		if childAuthenticated(authenticatedRequest) {
 			return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 		}
 		authenticatedRequest = nil
 	}
-	if hasAuthenticationState(authenticatedRequest) {
+	if childAuthenticated(authenticatedRequest) {
 		return a.successRequest(authenticatedRequest, r, originalBody, bodyState), authFailure{}
 	}
 	if bodyState != nil {
@@ -553,14 +559,16 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 	}
 	restoreContextMap(ctx.GetApisixVars(r), apisixVars)
 	restoreContextMap(ctx.GetRequestVars(r), requestVars)
+	applyFailedChildRequestMutations(r, probeRequest)
 	message := strings.TrimSpace(recordedDiagnostic.String())
 	if message == "" {
 		message = strings.TrimSpace(writer.body.String())
 	}
 	return nil, authFailure{
-		name:    a.name,
-		status:  writer.status,
-		message: message,
+		name:            a.name,
+		status:          writer.status,
+		message:         message,
+		wwwAuthenticate: writer.header.Get("WWW-Authenticate"),
 	}
 }
 
@@ -600,6 +608,19 @@ func restoreContextMap(target, source map[string]any) {
 		}
 	}
 	maps.Copy(target, source)
+}
+
+func applyFailedChildRequestMutations(parent, probe *http.Request) {
+	if parent == nil || probe == nil {
+		return
+	}
+	parent.Header = probe.Header.Clone()
+	parent.Host = probe.Host
+	if probe.URL == nil {
+		return
+	}
+	cloned := *probe.URL
+	parent.URL = &cloned
 }
 
 // truncateAuthDiagnostic appends message to buffer without a separator,
@@ -678,6 +699,17 @@ func (body *snapshotErrorBody) Close() error             { return nil }
 
 func hasAuthenticationState(request *http.Request) bool {
 	_, ok := ctx.AuthenticationStateFrom(request)
+	return ok
+}
+
+func childAuthenticated(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	if hasAuthenticationState(request) {
+		return true
+	}
+	_, ok := ctx.AuthSuccessWithoutConsumer(request)
 	return ok
 }
 

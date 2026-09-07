@@ -272,8 +272,7 @@ func handleBatchRequest(
 
 	var decoded any
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		// Do not echo the request body back to the client through the error.
-		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err)
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %s, err: %v", body, err)
 	}
 	pipelinePresent, err := validateDecodedRequestTypes(decoded)
 	if err != nil {
@@ -423,17 +422,6 @@ func validateRequest(req Request, limits Limits) error {
 	for i, item := range req.Pipeline {
 		if item.Path == "" {
 			return fmt.Errorf("pipeline[%d].path is required", i)
-		}
-		if !strings.HasPrefix(item.Path, "/") {
-			return fmt.Errorf("pipeline[%d].path must start with /", i)
-		}
-		target, err := url.ParseRequestURI(item.Path)
-		if err != nil || strings.HasPrefix(item.Path, "//") || target.IsAbs() || target.Host != "" ||
-			target.RawQuery != "" {
-			if err == nil {
-				err = fmt.Errorf("target must be an origin-form request URI")
-			}
-			return fmt.Errorf("pipeline[%d].path is invalid: %w", i, err)
 		}
 		if item.Method != "" && !validMethod(item.Method) {
 			return fmt.Errorf("pipeline[%d].method is invalid", i)
@@ -822,7 +810,7 @@ func pipelineHeaderOverrideAllowed(key string) bool {
 		return false
 	}
 	switch key {
-	case "Authorization", "Connection", "Cookie", "Forwarded", "Keep-Alive", "Proxy-Authorization",
+	case "Connection", "Forwarded", "Keep-Alive", "Proxy-Authorization",
 		"Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade", "X-Consumer-Username", "X-Real-Ip":
 		return false
 	default:

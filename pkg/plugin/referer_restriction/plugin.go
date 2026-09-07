@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/Shopify/goreferrer"
 	"github.com/wklken/apisix-go/pkg/json"
 	"github.com/wklken/apisix-go/pkg/plugin/base"
 	"github.com/wklken/apisix-go/pkg/util"
@@ -125,8 +124,7 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 		parsed, err := url.Parse(rawReferer)
 		host := ""
 		if err == nil && parsed.Scheme != "" && parsed.Host != "" {
-			referer := goreferrer.DefaultRules.Parse(rawReferer)
-			host = referer.Host()
+			host = parsed.Hostname()
 		}
 		if host == "" {
 			if !*p.config.BypassMissing {

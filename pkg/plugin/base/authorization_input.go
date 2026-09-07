@@ -3,6 +3,7 @@ package base
 import (
 	"net"
 	"net/http"
+	"net/url"
 
 	apisixctx "github.com/wklken/apisix-go/pkg/apisix/ctx"
 )
@@ -24,6 +25,7 @@ type AuthorizationFacts struct {
 	Host       string                `json:"host"`
 	Path       string                `json:"path"`
 	RawQuery   string                `json:"raw_query,omitempty"`
+	RequestURI string                `json:"request_uri,omitempty"`
 	Headers    map[string][]string   `json:"headers"`
 	ClientIP   string                `json:"client_ip"`
 	ClientPort string                `json:"client_port,omitempty"`
@@ -87,6 +89,7 @@ func CaptureAuthorizationFacts(
 		Host:       host,
 		Path:       path,
 		RawQuery:   rawQuery,
+		RequestURI: originalRequestURI(r),
 		Headers:    headers,
 		ClientIP:   clientIP,
 		ClientPort: clientPort,
@@ -95,4 +98,19 @@ func CaptureAuthorizationFacts(
 		Route:      route,
 		Service:    service,
 	}
+}
+
+func originalRequestURI(r *http.Request) string {
+	raw := r.RequestURI
+	if raw == "" {
+		if r.URL != nil {
+			return r.URL.RequestURI()
+		}
+		return ""
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return raw
+	}
+	return parsed.RequestURI()
 }

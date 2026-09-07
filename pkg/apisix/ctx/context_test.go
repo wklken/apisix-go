@@ -510,6 +510,7 @@ func TestAuthenticationProbeStartsWithoutPublishedState(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "http://example.com/original?one=1", strings.NewReader("payload"))
 	request.Header.Set("X-Probe", "original")
 	request = WithAuthenticationState(request, NewAuthenticationState("key-auth", resource.Consumer{Username: "alice"}))
+	request = WithAuthSuccessWithoutConsumer(request, "jwe-decrypt")
 	request = WithAuthProbeDiagnosticRecorder(request, func(string) {})
 
 	probe := NewAuthenticationProbeRequest(request)
@@ -525,6 +526,9 @@ func TestAuthenticationProbeStartsWithoutPublishedState(t *testing.T) {
 	}
 	if _, ok := AuthenticationStateFrom(probe); ok {
 		t.Fatal("probe unexpectedly retained authentication state")
+	}
+	if source, ok := AuthSuccessWithoutConsumer(probe); ok || source != "" {
+		t.Fatalf("probe unexpectedly retained consumer-less auth success %q", source)
 	}
 	if RecordAuthProbeDiagnostic(probe, "losing probe") {
 		t.Fatal("probe unexpectedly retained diagnostics recorder")

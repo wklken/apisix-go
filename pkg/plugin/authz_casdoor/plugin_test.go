@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -461,16 +462,19 @@ func TestUnauthenticatedRequestRedirectsToCasdoorAuthorize(t *testing.T) {
 	}
 }
 
-type failingReader struct{}
-
-func (failingReader) Read([]byte) (int, error) {
-	return 0, errors.New("entropy unavailable")
-}
-
-func TestRandomStateFailsClosed(t *testing.T) {
-	state, err := randomState(failingReader{})
-	if err == nil || state != "" {
-		t.Fatalf("randomState() = %q, %v; want empty state and error", state, err)
+func TestRandomStateIsDecimalMathRandomRange(t *testing.T) {
+	for range 32 {
+		state, err := randomState()
+		if err != nil {
+			t.Fatalf("randomState() error = %v", err)
+		}
+		value, err := strconv.Atoi(state)
+		if err != nil {
+			t.Fatalf("randomState() = %q, want decimal integer in 1..0x7fffffff", state)
+		}
+		if value < 1 || value > 0x7fffffff {
+			t.Fatalf("randomState() = %d, want 1..0x7fffffff like math.random", value)
+		}
 	}
 }
 
@@ -552,8 +556,8 @@ func TestCallbackFetchesAccessTokenAndRedirectsOriginalURI(t *testing.T) {
 	if callbackRR.Code != http.StatusFound {
 		t.Fatalf("status = %d, want 302", callbackRR.Code)
 	}
-	if callbackRR.Header().Get("Location") != "/orders/1?debug=true" {
-		t.Fatalf("Location = %q, want original URI", callbackRR.Header().Get("Location"))
+	if callbackRR.Header().Get("Location") != "/orders/1" {
+		t.Fatalf("Location = %q, want path-only ngx.var.uri", callbackRR.Header().Get("Location"))
 	}
 	if tokenForm.Get("code") != "code-a" {
 		t.Fatalf("code = %q, want code-a", tokenForm.Get("code"))
@@ -723,8 +727,8 @@ func TestCallbackUsesOriginalRequestURIWhenProxyRewriteRunsFirst(t *testing.T) {
 	if callbackResponse.Code != http.StatusFound {
 		t.Fatalf("callback status = %d, want 302", callbackResponse.Code)
 	}
-	if got := callbackResponse.Header().Get("Location"); got != "/anything/d?param1=foo&param2=bar" {
-		t.Fatalf("callback Location = %q, want original request URI", got)
+	if got := callbackResponse.Header().Get("Location"); got != "/anything/d" {
+		t.Fatalf("callback Location = %q, want path-only original URI", got)
 	}
 	select {
 	case form := <-tokenRequests:
@@ -1018,6 +1022,14 @@ func TestCasdoorSessionRejectsOversizeTokenCookie(t *testing.T) {
 }
 
 func TestCallbackRejectsInvalidState(t *testing.T) {
+	logged := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if entry.Level == "ERROR" && entry.Message == "invalid state" {
+			logged <- entry
+		}
+	})
+	t.Cleanup(stop)
+
 	p := newTestPlugin(t, Config{
 		EndpointAddr: "https://door.example.com",
 		ClientID:     "client-a",
@@ -1044,6 +1056,62 @@ func TestCallbackRejectsInvalidState(t *testing.T) {
 
 	if callbackRR.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", callbackRR.Code)
+	}
+	if got := callbackRR.Body.String(); got != "invalid state" {
+		t.Fatalf("body = %q, want raw APISIX 400 text", got)
+	}
+	if strings.Contains(callbackRR.Header().Get("Content-Type"), "json") {
+		t.Fatalf("Content-Type = %q, want non-JSON plain text", callbackRR.Header().Get("Content-Type"))
+	}
+	select {
+	case <-logged:
+	default:
+		t.Fatal("invalid state did not logger.Error the same string")
+	}
+}
+
+func TestCallbackRejectsMissingCodeOrStateWithRawPlainText(t *testing.T) {
+	logged := make(chan logger.Entry, 1)
+	stop := logger.ReplaceObserver(t.Name(), func(entry logger.Entry) {
+		if entry.Level == "ERROR" && entry.Message == "failed when accessing token. Invalid code or state" {
+			logged <- entry
+		}
+	})
+	t.Cleanup(stop)
+
+	p := newTestPlugin(t, Config{
+		EndpointAddr: "https://door.example.com",
+		ClientID:     "client-a",
+		ClientSecret: testClientSecret,
+		CallbackURL:  "https://gateway.example.com/callback",
+	})
+
+	initReq := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/orders/1", nil)
+	initRR := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})).ServeHTTP(initRR, initReq)
+	sessionCookie := findSessionCookie(initRR.Result().Cookies())
+	if sessionCookie == nil {
+		t.Fatal("session cookie was not set")
+	}
+
+	callbackReq := httptest.NewRequest(http.MethodGet, "http://gateway.example.com/callback", nil)
+	callbackReq.AddCookie(sessionCookie)
+	callbackRR := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})).ServeHTTP(callbackRR, callbackReq)
+
+	if callbackRR.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", callbackRR.Code)
+	}
+	if got := callbackRR.Body.String(); got != "failed when accessing token. Invalid code or state" {
+		t.Fatalf("body = %q, want raw APISIX 400 text", got)
+	}
+	if strings.Contains(callbackRR.Header().Get("Content-Type"), "json") {
+		t.Fatalf("Content-Type = %q, want non-JSON plain text", callbackRR.Header().Get("Content-Type"))
+	}
+	select {
+	case <-logged:
+	default:
+		t.Fatal("missing code/state did not logger.Error the same string")
 	}
 }
 

@@ -2,11 +2,17 @@ package error_log_logger
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1214,6 +1220,35 @@ func TestSendToTCPHonorsParentDeadline(t *testing.T) {
 	}
 }
 
+func TestSendToTCPAcceptsUntrustedTLSByDefault(t *testing.T) {
+	addr, received := startErrorLogTLSServer(t)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	p := &Plugin{
+		config: Config{
+			TCP: &TCPConfig{
+				Host: host,
+				Port: mustAtoi(t, port),
+				TLS:  true,
+			},
+			Timeout: 3,
+		},
+	}
+	if err := p.sendToTCP(context.Background(), []string{"untrusted tls line"}); err != nil {
+		t.Fatalf("sendToTCP() error = %v, want untrusted TLS accepted (sslhandshake verify=false)", err)
+	}
+	select {
+	case message := <-received:
+		if !strings.Contains(message, "untrusted tls line") {
+			t.Fatalf("message = %q, want untrusted TLS payload", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for untrusted tls error log")
+	}
+}
+
 func TestBatchProcessorDefaultsMaxPendingEntries(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		TCP:             &TCPConfig{Host: "127.0.0.1", Port: 1},
@@ -1932,6 +1967,55 @@ func mustAtoi(t *testing.T, s string) int {
 		t.Fatalf("atoi %q: %v", s, err)
 	}
 	return n
+}
+
+func startErrorLogTLSServer(t *testing.T) (string, <-chan string) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "logs.example.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"logs.example.test"},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatalf("listen tls: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	received := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		buf := make([]byte, 4096)
+		n, err := conn.Read(buf)
+		if err == nil {
+			received <- string(buf[:n])
+		}
+	}()
+	return ln.Addr().String(), received
 }
 
 type deadlineWriteConn struct {

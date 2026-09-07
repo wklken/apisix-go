@@ -377,7 +377,7 @@ func TestHandlerValidatesRequestTargetOnlySignature(t *testing.T) {
 	}
 }
 
-func TestHandlerRejectsSignedHeaderWithoutRequestValue(t *testing.T) {
+func TestHandlerSkipsListedSignedHeaderMissingFromRequest(t *testing.T) {
 	addHMACConsumer(t, "missing-header-user", "missing-header-key", "missing-header-secret")
 	p := newTestPlugin(t, Config{
 		SignedHeaders: []string{"date", "x-tenant"},
@@ -405,8 +405,45 @@ func TestHandlerRejectsSignedHeaderWithoutRequestValue(t *testing.T) {
 	)
 	req.Header.Set("Authorization", auth)
 	recorder := httptest.NewRecorder()
+	p.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d; body=%s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+}
+
+func TestHandlerRejectsRequiredSignedHeaderMissingFromSigningList(t *testing.T) {
+	addHMACConsumer(t, "missing-signing-user", "missing-signing-key", "missing-signing-secret")
+	p := newTestPlugin(t, Config{
+		SignedHeaders: []string{"date", "x-tenant"},
+		ClockSkew:     1_000_000_000,
+	})
+	date := "Thu, 24 Sep 2020 06:39:52 GMT"
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/get", nil)
+	req = ctx.WithApisixVars(req, map[string]string{})
+	req.Header.Set("Date", date)
+	req.Header.Set("X-Tenant", "acme")
+	params := signatureParams{
+		KeyID:     "missing-signing-key",
+		Algorithm: "hmac-sha256",
+		Headers:   []string{"date"},
+	}
+	generated, err := generateSignature(req, "missing-signing-secret", params)
+	if err != nil {
+		t.Fatalf("generateSignature() error = %v", err)
+	}
+	auth := fmt.Sprintf(
+		`Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"`,
+		params.KeyID,
+		params.Algorithm,
+		strings.Join(params.Headers, " "),
+		base64.StdEncoding.EncodeToString(generated),
+	)
+	req.Header.Set("Authorization", auth)
+	recorder := httptest.NewRecorder()
 	p.Handler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("missing signed header reached downstream")
+		t.Fatal("missing signed header in signing list reached downstream")
 	})).ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("response code = %d, want %d; body=%s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())

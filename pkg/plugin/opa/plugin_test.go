@@ -482,8 +482,8 @@ func TestHandlerRejectsWithOPAStatusReasonAndHeaders(t *testing.T) {
 	}
 }
 
-func TestHandlerReturnsOPAStatusEvenIfNonTerminal(t *testing.T) {
-	for _, code := range []int{100, 600} {
+func TestHandlerReturnsOPAExtendedFinalStatus(t *testing.T) {
+	for _, code := range []int{600} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")

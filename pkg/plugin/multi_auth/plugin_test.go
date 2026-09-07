@@ -617,7 +617,10 @@ func TestHandlerRunsEveryAuthPluginWithinArrayObject(t *testing.T) {
 
 func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
 	req := newMultiAuthRequest()
-	authenticated, failure := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(req)
+	authenticated, failure := (configuredAuth{name: "status-only-auth", plugin: statusOnlyAuth{}}).succeeds(
+		req,
+		http.Header{},
+	)
 	if authenticated != nil || failure.status != http.StatusUnauthorized || failure.message != "" {
 		t.Fatalf(
 			"status-only auth result = (%v, %+v), want nil request with 401 empty-message failure",
@@ -629,7 +632,10 @@ func TestStatusOnlyAuthFailureDoesNotPanic(t *testing.T) {
 
 func TestSuccessfulDirectAuthDoesNotLeakProbeRecorderContext(t *testing.T) {
 	req := newMultiAuthRequest()
-	authenticated, failure := (configuredAuth{name: "direct-success-auth", plugin: directSuccessAuth{}}).succeeds(req)
+	authenticated, failure := (configuredAuth{name: "direct-success-auth", plugin: directSuccessAuth{}}).succeeds(
+		req,
+		http.Header{},
+	)
 	if authenticated == nil || failure.name != "" {
 		t.Fatalf(
 			"direct success result = (%v, %+v), want authenticated request without failure",

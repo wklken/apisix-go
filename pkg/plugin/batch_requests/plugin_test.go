@@ -1115,7 +1115,7 @@ func TestHandlerFillsPipelineCredentialGapsFromCommonThenOuter(t *testing.T) {
 	}
 }
 
-func TestHandlerPreservesTrustedCredentialHeaderProvenance(t *testing.T) {
+func TestHandlerAuthenticatesWithPipelineCredentialHeaders(t *testing.T) {
 	dispatcher := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, header := range []string{"apikey", "X-Custom-Key", "X-Custom-JWT", "X-Rbac-Token", "X-Access-Token"} {
 			trusted := apisixctx.RestoreTrustedRequestHeader(r, header)
@@ -1130,20 +1130,20 @@ func TestHandlerPreservesTrustedCredentialHeaderProvenance(t *testing.T) {
 	handler := NewHandlerWithLimits(dispatcher, Limits{})
 	req := httptest.NewRequest(http.MethodPost, DefaultURI, strings.NewReader(`{
 		"headers": {
-			"apikey": "common-attacker",
-			"X-Custom-Key": "common-attacker",
-			"X-Custom-JWT": "common-attacker",
-			"X-Rbac-Token": "common-attacker",
-			"X-Access-Token": "common-attacker"
+			"apikey": "common-key",
+			"X-Custom-Key": "common-key",
+			"X-Custom-JWT": "common-key",
+			"X-Rbac-Token": "common-key",
+			"X-Access-Token": "common-key"
 		},
 		"pipeline": [{
 			"path": "/inner",
 			"headers": {
-				"apikey": "item-attacker",
-				"X-Custom-Key": "item-attacker",
-				"X-Custom-JWT": "item-attacker",
-				"X-Rbac-Token": "item-attacker",
-				"X-Access-Token": "item-attacker",
+				"apikey": "item-key",
+				"X-Custom-Key": "item-key",
+				"X-Custom-JWT": "item-key",
+				"X-Rbac-Token": "item-key",
+				"X-Access-Token": "item-key",
 				"X-Backend-Header": "item-value"
 			}
 		}]
@@ -1157,11 +1157,11 @@ func TestHandlerPreservesTrustedCredentialHeaderProvenance(t *testing.T) {
 
 	responses := decodePipelineResponses(t, res.Body.String())
 	for header, want := range map[string]string{
-		"X-Got-Apikey":         "outer-key",
-		"X-Got-X-Custom-Key":   "outer-custom-key",
-		"X-Got-X-Custom-Jwt":   "outer-custom-jwt",
-		"X-Got-X-Rbac-Token":   "outer-rbac",
-		"X-Got-X-Access-Token": "",
+		"X-Got-Apikey":         "item-key",
+		"X-Got-X-Custom-Key":   "item-key",
+		"X-Got-X-Custom-Jwt":   "item-key",
+		"X-Got-X-Rbac-Token":   "item-key",
+		"X-Got-X-Access-Token": "item-key",
 		"X-Got-Backend-Header": "item-value",
 	} {
 		if got := responses[0].Headers[header]; got != want {

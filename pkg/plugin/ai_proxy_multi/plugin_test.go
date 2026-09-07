@@ -1730,8 +1730,9 @@ func TestHandlerLeavesUpstreamResponseVarsUnsetWhenProviderRequestFails(t *testi
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("response code = %d, want 500", rr.Code)
 	}
-	if got := rr.Body.String(); got != `{"message":"failed to request LLM"}` {
-		t.Fatalf("body = %q, want fixed failed to request LLM without dial URL", got)
+	if got := rr.Body.String(); !strings.Contains(got, "<title>500 Internal Server Error</title>") ||
+		strings.Contains(got, upstreamAddress) {
+		t.Fatalf("body = %q, want default APISIX error page without dial URL", got)
 	}
 	assertLLMRequestVar(t, req, "$upstream_addr", upstreamAddress)
 	assertLLMRequestVar(t, req, "$upstream_uri", "/v1/chat/completions")
@@ -1771,8 +1772,9 @@ func TestHandlerMapsLLMTimeoutToGatewayTimeoutWithoutErrorText(t *testing.T) {
 	if rr.Code != http.StatusGatewayTimeout {
 		t.Fatalf("response code = %d, want 504; body=%q", rr.Code, rr.Body.String())
 	}
-	if got := rr.Body.String(); got != `{"message":"failed to request LLM"}` {
-		t.Fatalf("body = %q, want fixed failed to request LLM without err.Error()", got)
+	if got := rr.Body.String(); !strings.Contains(got, "<title>504 Gateway Time-out</title>") ||
+		strings.Contains(got, "failed to request LLM") {
+		t.Fatalf("body = %q, want default APISIX error page", got)
 	}
 }
 

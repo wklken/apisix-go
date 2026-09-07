@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/model"
@@ -198,22 +197,8 @@ func (p *Plugin) username(r *http.Request) string {
 }
 
 func requestPath(r *http.Request) string {
-	if path := originalRequestPath(r); path != "" {
-		return path
-	}
 	if r.URL != nil {
 		return r.URL.Path
 	}
 	return ""
-}
-
-func originalRequestPath(r *http.Request) string {
-	if r.RequestURI == "" {
-		return ""
-	}
-	parsed, err := url.ParseRequestURI(r.RequestURI)
-	if err != nil {
-		return ""
-	}
-	return parsed.Path
 }

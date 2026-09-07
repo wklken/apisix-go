@@ -107,10 +107,9 @@ type probeResponseWriter struct {
 }
 
 type authFailure struct {
-	name            string
-	status          int
-	message         string
-	wwwAuthenticate string
+	name    string
+	status  int
+	message string
 }
 
 type probeBodyState struct {
@@ -476,7 +475,7 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 	}
 	failures := make([]authFailure, 0, len(auths))
 	for _, auth := range auths {
-		authenticatedRequest, failure := auth.succeeds(r)
+		authenticatedRequest, failure := auth.succeeds(r, w.Header())
 		if authenticatedRequest != nil {
 			return base.ContinueRequest(authenticatedRequest)
 		}
@@ -486,11 +485,6 @@ func (p *Plugin) RunRequestPhase(w http.ResponseWriter, r *http.Request) base.Re
 		failure.log()
 	}
 
-	if len(failures) > 0 {
-		if last := failures[len(failures)-1]; last.wwwAuthenticate != "" {
-			w.Header().Set("WWW-Authenticate", last.wwwAuthenticate)
-		}
-	}
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"message":"Authorization Failed"}`))
 	return base.StopRequest(r)
@@ -516,12 +510,20 @@ func (p *Plugin) releaseAuthGeneration(generation *authGeneration) {
 	closePreparedAuthChildren(retired)
 }
 
-func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
+func (a configuredAuth) succeeds(r *http.Request, responseHeaders http.Header) (*http.Request, authFailure) {
 	var authenticatedRequest *http.Request
 	originalBody := r.Body
 	apisixVars := cloneContextMap(ctx.GetApisixVars(r))
 	requestVars := cloneContextMap(ctx.GetRequestVars(r))
 	writer := &probeResponseWriter{header: http.Header{}, status: http.StatusOK}
+	defer func() {
+		// Preserve explicit APISIX authentication challenges across children,
+		// without leaking headers synthesized by Go error-response helpers.
+		key := http.CanonicalHeaderKey("WWW-Authenticate")
+		if values, assigned := writer.header[key]; assigned {
+			responseHeaders[key] = slices.Clone(values)
+		}
+	}()
 	probeTemplate := r.Clone(r.Context())
 	probeTemplate.Body = nil
 	probeTemplate.GetBody = nil
@@ -565,10 +567,9 @@ func (a configuredAuth) succeeds(r *http.Request) (*http.Request, authFailure) {
 		message = strings.TrimSpace(writer.body.String())
 	}
 	return nil, authFailure{
-		name:            a.name,
-		status:          writer.status,
-		message:         message,
-		wwwAuthenticate: writer.header.Get("WWW-Authenticate"),
+		name:    a.name,
+		status:  writer.status,
+		message: message,
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -849,7 +850,7 @@ func (p *Plugin) executeInstanceRequest(
 				ai_runtime.FromRequest(r).SetInstanceName(p.config.Instances[target.index].Name)
 				continue
 			}
-			base.WriteJSONMessage(w, ai_common.ProviderRequestErrorStatus(err), "failed to request LLM")
+			writeProviderRequestError(w, ai_common.ProviderRequestErrorStatus(err))
 			p.registerLogging(r, protocol, body)
 			return
 		}
@@ -1583,4 +1584,23 @@ func (p *Plugin) transport() http.RoundTripper {
 	transport.TLSHandshakeTimeout = timeout
 	transport.ResponseHeaderTimeout = timeout
 	return pxy.NewProgressTimeoutTransport(transport, timeout, timeout)
+}
+
+// writeProviderRequestError renders the default APISIX page for status-only
+// transport failures; provider error details must not enter the response.
+func writeProviderRequestError(w http.ResponseWriter, status int) {
+	title := http.StatusText(status)
+	if status == http.StatusGatewayTimeout {
+		title = "Gateway Time-out"
+	}
+	heading := fmt.Sprintf("%d %s", status, title)
+	body := "<html>\r\n<head><title>" + heading + "</title></head>\r\n" +
+		"<body>\r\n<center><h1>" + heading + "</h1></center>\r\n" +
+		"<hr><center>openresty</center>\r\n" +
+		"<p><em>Powered by <a href=\"https://apisix.apache.org/\">APISIX</a>.</em></p>" +
+		"</body>\r\n</html>\r\n"
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, body)
 }

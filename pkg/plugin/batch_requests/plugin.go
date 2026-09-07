@@ -592,11 +592,6 @@ func dispatchPipelineRequestBounded(
 	req.RemoteAddr = outer.RemoteAddr
 	req.Host = outer.Host
 	req.Header = mergeHeaders(trustedOuterHeaders, batch.Headers, item.Headers, outer.RemoteAddr)
-	req = apisixctx.WithRequestHeaderProvenance(
-		req,
-		trustedOuterHeaders,
-		pipelineHeaderKeys(batch.Headers, item.Headers),
-	)
 	req.Header.Del("X-Consumer-Username")
 	req.Header.Del("Host")
 	req.Header.Del("X-Forwarded-Host")
@@ -816,15 +811,4 @@ func pipelineHeaderOverrideAllowed(key string) bool {
 	default:
 		return true
 	}
-}
-
-func pipelineHeaderKeys(common, item map[string]string) []string {
-	keys := make([]string, 0, len(common)+len(item))
-	for key := range common {
-		keys = append(keys, key)
-	}
-	for key := range item {
-		keys = append(keys, key)
-	}
-	return keys
 }

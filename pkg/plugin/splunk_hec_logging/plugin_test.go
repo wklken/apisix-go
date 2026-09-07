@@ -583,7 +583,7 @@ func TestRunLogPhasePreservesSplunkDefaultEventFields(t *testing.T) {
 	}
 }
 
-func TestDefaultEventsRedactSensitiveHeaders(t *testing.T) {
+func TestDefaultEventsPreserveConfiguredHeaders(t *testing.T) {
 	requestHeaders := http.Header{
 		"Authorization": {"Bearer request-secret"},
 		"Cookie":        {"session=request-secret"},
@@ -606,25 +606,25 @@ func TestDefaultEventsRedactSensitiveHeaders(t *testing.T) {
 		Response: apisixlog.ResponseLogSnapshot{Header: responseHeaders},
 		Outcome:  apisixctx.ResponseOutcome{Status: http.StatusOK},
 	}
-	assertSplunkHeadersSanitized(t, splunkSnapshotDefaultEvent(snapshot))
+	assertSplunkHeadersPreserved(t, splunkSnapshotDefaultEvent(snapshot))
 }
 
-func assertSplunkHeadersSanitized(t *testing.T, fields map[string]any) {
+func assertSplunkHeadersPreserved(t *testing.T, fields map[string]any) {
 	t.Helper()
 	requestHeaders := splunkTestHeaderMap(t, fields["request_headers"])
-	if _, ok := requestHeaders["authorization"]; ok {
-		t.Fatalf("request headers contain authorization: %#v", requestHeaders)
+	if got := requestHeaders["authorization"]; got != "Bearer request-secret" {
+		t.Fatalf("request authorization = %#v, want original header", got)
 	}
-	if _, ok := requestHeaders["cookie"]; ok {
-		t.Fatalf("request headers contain cookie: %#v", requestHeaders)
+	if got := requestHeaders["cookie"]; got != "session=request-secret" {
+		t.Fatalf("request cookie = %#v, want original header", got)
 	}
 	if got := requestHeaders["x-trace-id"]; got != "trace-a" {
 		t.Fatalf("request x-trace-id = %#v, want trace-a", got)
 	}
 
 	responseHeaders := splunkTestHeaderMap(t, fields["response_headers"])
-	if _, ok := responseHeaders["set-cookie"]; ok {
-		t.Fatalf("response headers contain set-cookie: %#v", responseHeaders)
+	if got := responseHeaders["set-cookie"]; got != "session=response-secret" {
+		t.Fatalf("response set-cookie = %#v, want original header", got)
 	}
 	if got := responseHeaders["x-upstream"]; got != "orders" {
 		t.Fatalf("response x-upstream = %#v, want orders", got)

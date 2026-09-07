@@ -203,6 +203,12 @@ func (p *Plugin) Handler(next http.Handler) http.Handler {
 			if decision.StatusCode == 0 {
 				decision.StatusCode = http.StatusForbidden
 			}
+			if decision.StatusCode >= 100 && decision.StatusCode < 200 {
+				// ngx.exit with an informational status does not complete a final
+				// response. Returning here would let net/http synthesize a 200.
+				<-r.Context().Done()
+				panic(http.ErrAbortHandler)
+			}
 			w.WriteHeader(decision.StatusCode)
 			if decision.Reason != nil {
 				_, _ = w.Write([]byte(reasonString(decision.Reason)))

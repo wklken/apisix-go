@@ -329,3 +329,101 @@ cases:
         input:
           path: /hello?password=secret&token=mytoken
         output: *done_output
+
+  - name: access-log-query-header-json
+    config:
+      routes:
+        - id: data-mask-json-log
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - {type: query, name: password, action: remove}
+                - {type: query, name: token, action: replace, value: '*****'}
+                - {type: header, name: Authorization, action: replace, value: 'masked-header'}
+                - {type: body, body_format: json, name: '$.password', action: remove}
+                - {type: body, body_format: json, name: '$.token', action: replace, value: 'masked-body'}
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+              include_req_body: true
+              log_format:
+                request_uri: $request_uri
+                authorization: $http_authorization
+                request_body: $request_body
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: '/hello?password=secret&token=original'}
+            headers:
+              Authorization: {equals: 'Bearer original'}
+            body: {equals: '{"password":"secret","token":"original"}'}
+        respond:
+          - {status: 200, body: done}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /logs}
+            body:
+              json_equals: '{"route_id":"data-mask-json-log","request_uri":"/hello?token=*****","authorization":"masked-header","request_body":"{\"token\":\"masked-body\"}"}'
+        respond:
+          - {status: 200}
+    steps:
+      - name: log-masks-query-header-and-json-without-changing-upstream
+        input:
+          method: POST
+          path: /hello?password=secret&token=original
+          headers: {Authorization: 'Bearer original', Content-Type: application/json}
+          body: '{"password":"secret","token":"original"}'
+        output: *done_output
+
+  - name: access-log-urlencoded
+    config:
+      routes:
+        - id: data-mask-form-log
+          uri: /hello
+          plugins:
+            data-mask:
+              request:
+                - {type: body, body_format: urlencoded, name: password, action: remove}
+                - {type: body, body_format: urlencoded, name: token, action: replace, value: 'masked-body'}
+            http-logger:
+              uri: '{{FIXTURE.sink.URL}}/logs'
+              batch_max_size: 1
+              include_req_body: true
+              log_format: {request_body: $request_body}
+          upstream:
+            type: roundrobin
+            nodes: {'{{FIXTURE.primary.ADDR}}': 1}
+    fixtures:
+      - name: primary
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /hello}
+            body: {equals: 'password=secret&token=original'}
+        respond:
+          - {status: 200, body: done}
+      - name: sink
+        kind: http
+        expect:
+          - method: POST
+            path: {equals: /logs}
+            body:
+              json_equals: '{"route_id":"data-mask-form-log","request_body":"token=masked-body"}'
+        respond:
+          - {status: 200}
+    steps:
+      - name: log-masks-form-without-changing-upstream
+        input:
+          method: POST
+          path: /hello
+          headers: {Content-Type: application/x-www-form-urlencoded}
+          body: password=secret&token=original
+        output: *done_output

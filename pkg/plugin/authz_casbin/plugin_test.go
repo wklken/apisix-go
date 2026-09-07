@@ -282,7 +282,7 @@ func TestHandlerRejectsRequestWhenPolicyDoesNotMatch(t *testing.T) {
 	}
 }
 
-func TestHandlerAllowsOriginalURIWhenProxyRewriteChangesPath(t *testing.T) {
+func TestHandlerAuthorizesBeforeProxyRewriteChangesPath(t *testing.T) {
 	p := newTestPlugin(t, Config{
 		Model:    testModel,
 		Policy:   "p, alice, /admin, GET",
@@ -301,7 +301,7 @@ func TestHandlerAllowsOriginalURIWhenProxyRewriteChangesPath(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	req.Header.Set("X-User", "alice")
 	rr := httptest.NewRecorder()
-	rewrite.Handler(p.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p.Handler(rewrite.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		if r.URL.Path != "/public" {
 			t.Fatalf("upstream path = %q, want /public after proxy-rewrite", r.URL.Path)
